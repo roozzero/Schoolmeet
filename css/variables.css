@@ -7,8 +7,23 @@
   --color-sky-blue: #7DBFE5;
   --color-border-blue: #C6DDF0;
   --color-white: #FFFFFF;
-  --color-error: #DC2626;
-  --color-success: #0D9488;
+  --color-error: #E11D48;
+  --color-success: #10B981;
+
+  /* Reference Image Palette (Warm Oatmeal, Ivory Cream & Roast Espresso Brown) */
+  --admin-bg: #EDE8D6;
+  --admin-surface: #FAF5EC;
+  --admin-surface-alt: #F3ECE0;
+  --admin-border: #E5DBCB;
+  --admin-divider: #E6D8C5;
+  --admin-text-main: #251B15;
+  --admin-text-muted: #6E5D4F;
+  --admin-primary: #5A3A22;
+  --admin-primary-hover: #462C19;
+  --admin-role-teal: #1B5E5A;
+  --admin-badge-bg: #EADCCA;
+  --admin-badge-text: #5A3A22;
+  --admin-gradient: linear-gradient(135deg, #5A3A22 0%, #734B2D 100%);
 
   --font-vazir: 'Vazirmatn', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
 }
@@ -18,6 +33,7 @@
 *::after {
   box-sizing: border-box;
   font-family: var(--font-vazir);
+  font-feature-settings: "ss01" 1;
 }
 
 html,
@@ -30,6 +46,7 @@ body {
   overflow: hidden;
   direction: rtl;
   font-family: var(--font-vazir);
+  font-feature-settings: "ss01" 1;
   background-color: var(--color-outer-navy);
   color: var(--color-deep-navy);
   -webkit-font-smoothing: antialiased;
@@ -46,4 +63,3 @@ div {
 .view-hidden {
   display: none !important;
 }
-

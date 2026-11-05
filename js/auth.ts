@@ -9,13 +9,15 @@ import {
   showToast,
 } from './modal';
 import { parseCurrentLocation, updateBrowserUrl } from './router';
-import { AdminSectionId } from './types';
+import { loadDbState, saveDbState } from './store';
+import { initStudentPanelEvents, navigateStudentSection } from './student';
+import { AdminSectionId, StudentSectionId } from './types';
 import {
   clearFieldError,
   isValidClassCode,
   isValidPhone,
-  normalizeDigits,
   setFieldError,
+  toPersianDigits,
 } from './validation';
 
 /**
@@ -23,6 +25,7 @@ import {
  */
 function switchAuthTab(targetTab: 'login' | 'register', updateHistory = true): void {
   $('#admin-workspace-view').addClass('view-hidden');
+  $('#student-workspace-view').addClass('view-hidden');
   $('#public-auth-view').removeClass('view-hidden');
 
   $('.mode-tab-btn').removeClass('is-active').attr('aria-selected', 'false');
@@ -49,11 +52,27 @@ function switchAuthTab(targetTab: 'login' | 'register', updateHistory = true): v
  */
 function enterAdminWorkspace(
   section: AdminSectionId = 'dashboard',
-  updateHistory = true
+  updateHistory = true,
+  subPage?: string
 ): void {
   $('#public-auth-view').addClass('view-hidden');
+  $('#student-workspace-view').addClass('view-hidden');
   $('#admin-workspace-view').removeClass('view-hidden');
-  navigateAdminSection(section, updateHistory);
+  navigateAdminSection(section, updateHistory, subPage);
+}
+
+/**
+ * Open the Student Panel Workspace at a specific section and update browser URL
+ */
+function enterStudentWorkspace(
+  section: StudentSectionId = 'dashboard',
+  updateHistory = true,
+  subPage?: string
+): void {
+  $('#public-auth-view').addClass('view-hidden');
+  $('#admin-workspace-view').addClass('view-hidden');
+  $('#student-workspace-view').removeClass('view-hidden');
+  navigateStudentSection(section, updateHistory, subPage);
 }
 
 /**
@@ -62,8 +81,9 @@ function enterAdminWorkspace(
 function syncRouteWithLocation(): void {
   const route = parseCurrentLocation();
   if (route.view === 'admin') {
-    enterAdminWorkspace(route.section, false);
-    updateBrowserUrl(`/admin/${route.section}`, true);
+    enterAdminWorkspace(route.section, false, route.subPage);
+  } else if (route.view === 'student') {
+    enterStudentWorkspace(route.section, false, route.subPage);
   } else {
     switchAuthTab(route.tab, false);
     updateBrowserUrl(route.tab === 'register' ? '/register' : '/login', true);
@@ -71,8 +91,9 @@ function syncRouteWithLocation(): void {
 }
 
 $(function () {
-  // Initialize Admin Panel Event Listeners
+  // Initialize Admin & Student Panel Event Listeners
   initAdminPanelEvents();
+  initStudentPanelEvents();
 
   // Sync initial route and bind browser Back/Forward history navigation
   syncRouteWithLocation();
@@ -80,13 +101,27 @@ $(function () {
     syncRouteWithLocation();
   });
 
+  // Live conversion of numeric fields to Persian numerals across the whole app
+  $(document).on(
+    'input',
+    'input[type="tel"], #prof-modal-national, #grade-modal-score, .js-gb-score-input',
+    function () {
+      const $el = $(this);
+      const currentVal = String($el.val() || '');
+      const persianVal = toPersianDigits(currentVal);
+      if (currentVal !== persianVal) {
+        $el.val(persianVal);
+      }
+    }
+  );
+
   // 1. Tab Switching (ورود به حساب [/login] | ثبت‌نام دانش‌آموز [/register])
   $('#tab-btn-login').on('click', () => switchAuthTab('login', true));
   $('#tab-btn-register').on('click', () => switchAuthTab('register', true));
 
   // Quick Admin Fill / Login Helper Button
   $('#btn-admin-quick-login').on('click', () => {
-    $('#login-phone').val('09120000000');
+    $('#login-phone').val('۰۹۱۲۰۰۰۰۰۰۰');
     $('#login-password').val('admin1234');
     clearFieldError($('#login-phone'), true);
     clearFieldError($('#login-password'), true);
@@ -94,6 +129,29 @@ $(function () {
     showToast(
       'ورود به پنل مدیریت',
       'با حساب مدیر سامانه (۰۹۱۲۰۰۰۰۰۰۰) وارد پنل مدیریت شدید.',
+      'success'
+    );
+  });
+
+  // Quick Test Student Fill / Login Helper Button
+  $('#btn-student-quick-login').on('click', () => {
+    $('#login-phone').val('۰۹۱۲۱۱۱۲۲۳۳');
+    $('#login-password').val('student1234');
+    clearFieldError($('#login-phone'), true);
+    clearFieldError($('#login-password'), true);
+
+    const state = loadDbState();
+    const testSt =
+      state.students.find((s) => s.phone === '09121112233') || state.students[0];
+    if (testSt) {
+      state.activeStudentId = testSt.id;
+      saveDbState(state);
+    }
+
+    enterStudentWorkspace('dashboard', true);
+    showToast(
+      'ورود به پنل دانش‌آموز',
+      'با حساب دانش‌آموز تست (امیرحسین رضایی — ۰۹۱۲۱۱۱۲۲۳۳) وارد پنل دانش‌آموزی شدید.',
       'success'
     );
   });
@@ -142,7 +200,7 @@ $(function () {
     $('#recovery-phone-input').val('');
     showToast(
       'کد بازیابی ارسال شد',
-      `کد بازنشانی رمز عبور به شماره ${normalizeDigits(phoneVal)} پیامک شد.`,
+      `کد بازنشانی رمز عبور به شماره ${toPersianDigits(phoneVal)} پیامک شد.`,
       'success'
     );
   });
@@ -150,7 +208,7 @@ $(function () {
   // 5. Congratulatory Modal Controls
   $('#btn-congrats-go-login, #congrats-modal').on('click', function (e) {
     if (e.target === this || $(this).attr('id') === 'btn-congrats-go-login') {
-      const registeredPhone = $('#modal-student-phone').text().trim();
+      const registeredPhone = toPersianDigits($('#modal-student-phone').text().trim());
       closeCongratulationModal();
       switchAuthTab('login', true);
       if (registeredPhone) {
@@ -199,6 +257,9 @@ $(function () {
         if (response.role === 'admin') {
           enterAdminWorkspace('dashboard', true);
           showToast('ورود مدیر سامانه', response.message, 'success');
+        } else if (response.role === 'student') {
+          enterStudentWorkspace('dashboard', true);
+          showToast('ورود به پنل دانش‌آموز', response.message, 'success');
         } else {
           showToast('وضعیت حساب دانش‌آموز', response.message, 'info');
         }

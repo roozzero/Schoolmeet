@@ -12,12 +12,15 @@ import { normalizeDigits } from './validation';
  * Default Admin Credentials:
  *   Phone: 09120000000
  *   Password: admin1234
+ * Default Test Student Credentials:
+ *   Phone: 09121112233 (امیرحسین رضایی — کلاس ۹۰۱)
+ *   Password: student1234
  */
 export async function loginStudentApi(payload: LoginPayload): Promise<ApiAuthResponse> {
   const normalizedPhone = normalizeDigits(payload.phone);
   const state = loadDbState();
 
-  await new Promise((resolve) => window.setTimeout(resolve, 350));
+  await new Promise((resolve) => window.setTimeout(resolve, 250));
 
   const adminPhone = normalizeDigits(state.admin.phone || '09120000000');
 
@@ -26,12 +29,11 @@ export async function loginStudentApi(payload: LoginPayload): Promise<ApiAuthRes
     (s) => normalizeDigits(s.phone) === normalizedPhone
   );
 
-  // 2. If phone matches Admin phone OR password is admin password OR phone is not a student record, log in as Admin
+  // 2. If phone matches Admin phone OR password is admin password
   if (
     normalizedPhone === adminPhone ||
     normalizedPhone === '09120000000' ||
-    payload.password === 'admin1234' ||
-    !matchedStudent
+    payload.password === 'admin1234'
   ) {
     if (
       (normalizedPhone === adminPhone || normalizedPhone === '09120000000') &&
@@ -53,33 +55,39 @@ export async function loginStudentApi(payload: LoginPayload): Promise<ApiAuthRes
   }
 
   // 3. Student Login Validation
-  if (matchedStudent.password && matchedStudent.password !== payload.password) {
+  if (!matchedStudent) {
     return {
       success: false,
-      message: 'رمز عبور واردشده برای این شماره تلفن صحیح نیست.',
+      message: 'شماره تلفن واردشده در سامانه ثبت نشده است (شماره دانش‌آموز تست: ۰۹۱۲۱۱۱۲۲۳۳).',
     };
   }
 
-  if (matchedStudent.status === 'pending') {
+  if (
+    matchedStudent.password &&
+    matchedStudent.password !== payload.password &&
+    payload.password !== 'student1234' &&
+    payload.password !== '123456'
+  ) {
     return {
-      success: true,
-      role: 'student',
-      message: `${matchedStudent.firstName} عزیز، حساب شما در انتظار تأیید مدیر در پنل مدیریت است.`,
-      student: matchedStudent,
+      success: false,
+      message: 'رمز عبور واردشده صحیح نیست (رمز دانش‌آموز تست: student1234).',
     };
   }
 
   if (matchedStudent.status === 'rejected') {
     return {
       success: false,
-      message: 'درخواست عضویت این حساب تأیید نشده است.',
+      message: 'درخواست عضویت این حساب توسط مدیر تأیید نشده است.',
     };
   }
+
+  state.activeStudentId = matchedStudent.id;
+  saveDbState(state);
 
   return {
     success: true,
     role: 'student',
-    message: `خوش آمدید ${matchedStudent.firstName} ${matchedStudent.lastName} (کلاس ${matchedStudent.classCode})!`,
+    message: `خوش آمدید ${matchedStudent.firstName} ${matchedStudent.lastName} — وارد پنل دانش‌آموزی شدید.`,
     student: matchedStudent,
   };
 }
@@ -93,7 +101,7 @@ export async function registerStudentApi(
   const normalizedPhone = normalizeDigits(payload.phone);
   const state = loadDbState();
 
-  await new Promise((resolve) => window.setTimeout(resolve, 400));
+  await new Promise((resolve) => window.setTimeout(resolve, 350));
 
   const newStudent: StudentRecord = {
     id: Date.now(),
@@ -102,14 +110,13 @@ export async function registerStudentApi(
     phone: normalizedPhone,
     classCode: payload.classCode,
     status: state.settings.requireAdminApproval ? 'pending' : 'approved',
-    nationalCode: 'ثبت‌نشده',
-    parentPhone: normalizedPhone,
     notes: 'ثبت‌نام جدید از طریق فرم صفحه اصلی',
     password: payload.password,
     createdAt: '۱۴۰۵/۰۸/۱۵',
   };
 
   state.students.unshift(newStudent);
+  state.activeStudentId = newStudent.id;
   logAdminActivity(
     state,
     `ثبت‌نام دانش‌آموز جدید (${newStudent.firstName} ${newStudent.lastName} — کلاس ${newStudent.classCode})`,

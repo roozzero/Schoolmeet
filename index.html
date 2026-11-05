@@ -104,7 +104,7 @@
 
               <form id="form-login" novalidate>
                 <div class="ice-steps-card space-y-4">
-                  <!-- اینپوت اول: شماره تلفن -->
+                  <!-- اینپوت اول: شماره تلفن (با اعداد فارسی) -->
                   <div class="scool-input-group">
                     <label for="login-phone" class="scool-field-label">
                       شماره تلفن
@@ -116,7 +116,7 @@
                         name="phone"
                         class="school-input tabular-nums"
                         placeholder="۰۹۱۲۰۰۰۰۰۰۰"
-                        value="09120000000"
+                        value="۰۹۱۲۰۰۰۰۰۰۰"
                         maxlength="11"
                         autocomplete="tel"
                         required
@@ -159,24 +159,37 @@
                     </div>
                     <div class="field-error-msg" role="alert"></div>
 
-                    <!-- فراموشی رمز عبور دقیقاً زیر اینپوت رمز عبور + دسترسی حساب ادمین -->
-                    <div class="mt-2.5 flex items-center justify-between gap-2">
-                      <button
-                        type="button"
-                        id="btn-forgot-password"
-                        class="text-xs font-bold text-[#10375C] hover:underline bg-transparent border-none p-0 cursor-pointer"
-                      >
-                        فراموشی رمز عبور؟
-                      </button>
+                    <!-- فراموشی رمز عبور دقیقاً زیر اینپوت رمز عبور + دسترسی سریع حساب ادمین و دانش‌آموز تست -->
+                    <div class="mt-2.5 space-y-2">
+                      <div class="flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          id="btn-forgot-password"
+                          class="text-xs font-bold text-[#10375C] hover:underline bg-transparent border-none p-0 cursor-pointer"
+                        >
+                          فراموشی رمز عبور؟
+                        </button>
 
-                      <button
-                        type="button"
-                        id="btn-admin-quick-login"
-                        class="text-[11px] font-bold text-[#274C6E] hover:text-[#10375C] underline bg-transparent border-none p-0 cursor-pointer tabular-nums"
-                        title="شماره ادمین: 09120000000 | رمز: admin1234"
-                      >
-                        ورود با حساب ادمین (۰۹۱۲۰۰۰۰۰۰۰)
-                      </button>
+                        <button
+                          type="button"
+                          id="btn-admin-quick-login"
+                          class="text-[11px] font-bold text-[#274C6E] hover:text-[#10375C] underline bg-transparent border-none p-0 cursor-pointer tabular-nums"
+                          title="شماره ادمین: ۰۹۱۲۰۰۰۰۰۰۰ | رمز: admin1234"
+                        >
+                          ورود با حساب ادمین (۰۹۱۲۰۰۰۰۰۰۰)
+                        </button>
+                      </div>
+
+                      <div class="flex items-center justify-end">
+                        <button
+                          type="button"
+                          id="btn-student-quick-login"
+                          class="text-[11px] font-extrabold text-[#0D9488] hover:text-[#0F766E] underline bg-transparent border-none p-0 cursor-pointer tabular-nums"
+                          title="اکانت دانش‌آموز تست: امیرحسین رضایی | شماره: ۰۹۱۲۱۱۱۲۲۳۳ | رمز: student1234"
+                        >
+                          ورود با اکانت دانش‌آموز تست (۰۹۱۲۱۱۱۲۲۳۳)
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -240,7 +253,7 @@
                     </div>
                   </div>
 
-                  <!-- ردیف دوم: شماره تلفن و انتخاب کلاس (901 / 902 / 903) -->
+                  <!-- ردیف دوم: شماره تلفن و انتخاب کلاس (۹۰۱ / ۹۰۲ / ۹۰۳) -->
                   <div class="grid grid-cols-2 gap-3">
                     <div class="scool-input-group">
                       <label for="reg-phone" class="scool-field-label">
@@ -356,123 +369,231 @@
     </div>
 
     <!-- =======================================================================
-         نمای دوم: پنل مدیریت جامع اسکول میت (۱۰ بخش کامل)
+         نمای دوم: پنل مدیریت جامع اسکول میت (سایدبار شناور مطابق تصویر مرجع)
          ======================================================================= -->
     <div id="admin-workspace-view" class="admin-workspace-shell view-hidden">
-      <!-- نوار کناری پنل مدیریت (Sidebar) -->
+      <!-- سایدبار شناور و فاصله‌دار از گوشه‌ها مطابق تصویر ارسالی -->
       <aside id="admin-sidebar" class="admin-sidebar" aria-label="منوی پنل مدیریت">
-        <div>
-          <!-- هدر برند در سایدبار -->
-          <div class="p-4 border-b border-white/10 flex items-center gap-3">
-            <div class="brand-school-icon !w-11 !h-10" aria-hidden="true"></div>
-            <div>
-              <div class="text-base font-black text-white">اسکول میت</div>
-              <div class="text-[11px] text-[#7DBFE5]">پنل مدیریت آموزشی</div>
+        <div class="flex flex-col flex-1 min-h-0">
+          <!-- بخش بالایی سایدبار: مشخصات و تصویر ادمین / کاربر -->
+          <div class="admin-sidebar-profile-top">
+            <div
+              class="admin-ref-avatar-box"
+              role="img"
+              aria-label="تصویر پروفایل مدیر"
+            ></div>
+            <div class="admin-sidebar-user-meta">
+              <div id="sidebar-admin-name" class="admin-sidebar-user-name">
+                روزبه توکلی
+              </div>
+              <div id="sidebar-admin-role" class="admin-sidebar-user-role">
+                مدیر ارشد اسکول میت
+              </div>
             </div>
           </div>
 
-          <!-- لیست ۱۰ بخش اصلی پنل مدیریت -->
+          <!-- منوهای ۱۰گانه در زیر مشخصات کاربر -->
           <nav class="admin-nav-list" aria-label="بخش‌های پنل مدیریت">
             <button type="button" class="admin-nav-btn is-active" data-section="dashboard">
               <span>داشبورد</span>
             </button>
+
             <button type="button" class="admin-nav-btn" data-section="classes">
               <span>مدیریت کلاس‌ها</span>
-              <span class="admin-nav-counter">۳ کلاس</span>
+              <span id="nav-badge-classes" class="admin-nav-counter">۳</span>
             </button>
+
             <button type="button" class="admin-nav-btn" data-section="students">
               <span>دانش‌آموزان</span>
-              <span id="nav-badge-students" class="admin-nav-counter"></span>
+              <span id="nav-badge-students" class="admin-nav-counter">۵</span>
             </button>
+
+            <button type="button" class="admin-nav-btn" data-section="gradebook">
+              <span>دفتر نمره</span>
+              <span id="nav-badge-gradebook" class="admin-nav-counter">۶</span>
+            </button>
+
             <button type="button" class="admin-nav-btn" data-section="assignments">
               <span>تکالیف</span>
-              <span id="nav-badge-assignments" class="admin-nav-counter"></span>
+              <span id="nav-badge-assignments" class="admin-nav-counter">۳</span>
             </button>
-            <button type="button" class="admin-nav-btn" data-section="schedule">
-              <span>برنامه کلاس‌ها</span>
-            </button>
+
             <button type="button" class="admin-nav-btn" data-section="resources">
               <span>منابع آموزشی</span>
+              <span id="nav-badge-resources" class="admin-nav-counter">۴</span>
             </button>
+
             <button type="button" class="admin-nav-btn" data-section="announcements">
               <span>اطلاعیه‌ها</span>
+              <span id="nav-badge-announcements" class="admin-nav-counter">۲</span>
             </button>
+
             <button type="button" class="admin-nav-btn" data-section="tickets">
               <span>تیکت</span>
-              <span id="nav-badge-tickets" class="admin-nav-counter"></span>
+              <span id="nav-badge-tickets" class="admin-nav-counter">۳</span>
             </button>
+
             <button type="button" class="admin-nav-btn" data-section="profile">
               <span>پروفایل</span>
             </button>
+
             <button type="button" class="admin-nav-btn" data-section="settings">
               <span>تنظیمات</span>
             </button>
           </nav>
         </div>
 
-        <!-- دکمه خروج در پایین سایدبار -->
-        <div class="p-4 border-t border-white/10">
+        <!-- دکمه خروج در پایین سایدبار با چیدمان منظم -->
+        <div class="admin-sidebar-footer">
           <button
             type="button"
             id="btn-admin-logout"
-            class="w-full h-10 rounded-xl bg-white/10 hover:bg-white/16 text-white text-xs font-extrabold border-none cursor-pointer transition-colors"
+            class="btn-sidebar-logout"
           >
-            خروج از پنل مدیریت
+            <span>خروج از حساب مدیریت</span>
+            <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+            </svg>
           </button>
         </div>
       </aside>
 
       <!-- ستون اصلی پنل مدیریت -->
       <div class="admin-main-column">
-        <!-- نوار بالایی (Top Bar Contract) -->
+        <!-- نوار بالایی: پیام خوش‌آمدگویی و آیکون زنگوله اطلاعیه‌ها -->
         <header class="admin-topbar">
-          <div class="flex items-center gap-3">
-            <button
-              type="button"
-              id="btn-toggle-mobile-sidebar"
-              class="lg:hidden btn-admin-action"
-              aria-label="باز کردن منو"
-            >
-              منو
-            </button>
-            <div class="flex items-center gap-2 text-xs sm:text-sm">
-              <span class="text-[#6B8BA4] font-semibold">پنل مدیریت</span>
-              <span class="text-[#6B8BA4]" aria-hidden="true">/</span>
-              <span id="admin-breadcrumb-current" class="font-extrabold text-[#10375C]">
-                داشبورد و نمای کلی سامانه
-              </span>
-              <span class="text-[#6B8BA4] hidden md:inline" aria-hidden="true">·</span>
-              <span
-                id="admin-current-url-badge"
-                dir="ltr"
-                class="hidden md:inline text-xs font-bold text-[#0D9488] tabular-nums"
-              >
-                /admin/dashboard
-              </span>
-            </div>
+          <div id="topbar-welcome-text" class="text-[13.5px] font-extrabold text-[#251B15]">
+            روزبه توکلی عزیز، به اسکول میت خوش آمدید
           </div>
 
-          <div class="flex items-center gap-3 shrink-0">
-            <div class="hidden sm:block text-left">
-              <div id="topbar-admin-name" class="text-xs font-extrabold text-[#10375C]">
-                روزبه توکلی
-              </div>
-              <div id="topbar-admin-role" class="text-[11px] text-[#274C6E]">
-                مدیر سامانه و مدرس دوره
-              </div>
-            </div>
-            <button
-              type="button"
-              class="btn-admin-action js-go-section"
-              data-section="announcements"
-            >
-              + ارسال اطلاعیه
-            </button>
-          </div>
+          <button
+            type="button"
+            class="topbar-bell-btn js-go-section"
+            data-section="announcements"
+            aria-label="مشاهده اطلاعیه‌ها"
+            title="اطلاعیه‌ها"
+          >
+            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"
+              />
+            </svg>
+            <span id="topbar-bell-badge" class="topbar-bell-badge">۲</span>
+          </button>
         </header>
 
         <!-- محتوای پویا هر بخش -->
         <main id="admin-main-viewport" class="admin-canvas-scroll"></main>
+      </div>
+    </div>
+
+    <!-- =======================================================================
+         نمای سوم: پنل دانش‌آموز اسکول میت (سایدبار شناور و هماهنگ)
+         ======================================================================= -->
+    <div id="student-workspace-view" class="admin-workspace-shell view-hidden">
+      <!-- سایدبار شناور پنل دانش‌آموز -->
+      <aside id="student-sidebar" class="admin-sidebar" aria-label="منوی پنل دانش‌آموز">
+        <div class="flex flex-col flex-1 min-h-0">
+          <!-- بخش بالایی سایدبار: مشخصات و تصویر پروفایل دانش‌آموز -->
+          <div class="admin-sidebar-profile-top">
+            <div
+              id="student-sidebar-avatar"
+              class="student-avatar-lg student-portrait-lg-1 !w-14 !h-14 !rounded-2xl"
+              role="img"
+              aria-label="تصویر پروفایل دانش‌آموز"
+            ></div>
+            <div class="admin-sidebar-user-meta">
+              <div id="sidebar-student-name" class="admin-sidebar-user-name">
+                امیرحسین رضایی
+              </div>
+              <div id="sidebar-student-role" class="admin-sidebar-user-role">
+                دانش‌آموز کلاس ۹۰۱
+              </div>
+            </div>
+          </div>
+
+          <!-- منوهای ۷گانه پنل دانش‌آموز -->
+          <nav class="admin-nav-list" aria-label="بخش‌های پنل دانش‌آموز">
+            <button type="button" class="student-nav-btn is-active" data-section="dashboard">
+              <span>داشبورد</span>
+            </button>
+
+            <button type="button" class="student-nav-btn" data-section="assignments">
+              <span>تکالیف من</span>
+              <span id="st-badge-assignments" class="admin-nav-counter">۲</span>
+            </button>
+
+            <button type="button" class="student-nav-btn" data-section="grades">
+              <span>نمرات من</span>
+              <span id="st-badge-grades" class="admin-nav-counter">۱</span>
+            </button>
+
+            <button type="button" class="student-nav-btn" data-section="resources">
+              <span>منابع آموزشی</span>
+              <span id="st-badge-resources" class="admin-nav-counter">۳</span>
+            </button>
+
+            <button type="button" class="student-nav-btn" data-section="announcements">
+              <span>اطلاعیه‌ها</span>
+              <span id="st-badge-announcements" class="admin-nav-counter">۲</span>
+            </button>
+
+            <button type="button" class="student-nav-btn" data-section="tickets">
+              <span>تیکت</span>
+              <span id="st-badge-tickets" class="admin-nav-counter">۱</span>
+            </button>
+
+            <button type="button" class="student-nav-btn" data-section="profile">
+              <span>پروفایل</span>
+            </button>
+          </nav>
+        </div>
+
+        <!-- دکمه خروج در پایین سایدبار پنل دانش‌آموز -->
+        <div class="admin-sidebar-footer">
+          <button
+            type="button"
+            id="btn-student-logout"
+            class="btn-sidebar-logout"
+          >
+            <span>خروج از پنل دانش‌آموز</span>
+            <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+            </svg>
+          </button>
+        </div>
+      </aside>
+
+      <!-- ستون اصلی پنل دانش‌آموز -->
+      <div class="admin-main-column">
+        <!-- نوار بالایی پنل دانش‌آموز: پیام خوش‌آمدگویی و زنگوله اطلاعیه‌ها -->
+        <header class="admin-topbar">
+          <div id="student-topbar-welcome" class="text-[13.5px] font-extrabold text-[#251B15]">
+            امیرحسین رضایی عزیز، به اسکول میت خوش آمدید
+          </div>
+
+          <button
+            type="button"
+            class="topbar-bell-btn js-st-go-section"
+            data-section="announcements"
+            aria-label="مشاهده اطلاعیه‌ها"
+            title="اطلاعیه‌ها"
+          >
+            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"
+              />
+            </svg>
+            <span id="student-bell-badge" class="topbar-bell-badge">۲</span>
+          </button>
+        </header>
+
+        <!-- محتوای پویا هر بخش پنل دانش‌آموز -->
+        <main id="student-main-viewport" class="admin-canvas-scroll"></main>
       </div>
     </div>
 
@@ -575,66 +696,7 @@
     </div>
 
     <!-- =======================================================================
-         مودال ۳: مشاهده فایل تکلیف، تصحیح، ثبت نمره و بازخورد
-         ======================================================================= -->
-    <div
-      id="admin-grade-modal"
-      class="scool-modal-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-hidden="true"
-    >
-      <div class="scool-modal-card !max-w-lg" dir="rtl">
-        <h3 class="text-base font-extrabold text-[#10375C] mb-1 m-0">
-          مشاهده فایل، تصحیح و ثبت نمره تکلیف
-        </h3>
-        <div class="text-xs text-[#274C6E] mb-3">
-          دانش‌آموز: <strong id="grade-modal-student"></strong> · <span id="grade-modal-hw-title"></span>
-        </div>
-
-        <div class="p-3.5 rounded-xl bg-[#F4F9FD] border border-[#DCEAF6] mb-4">
-          <div class="flex items-center justify-between text-xs font-bold text-[#10375C] mb-1.5">
-            <span>محتوای فایل ارسالی دانش‌آموز:</span>
-            <span id="grade-modal-filename" class="tabular-nums text-[#0D9488]"></span>
-          </div>
-          <pre
-            id="grade-modal-filecontent"
-            class="text-xs text-[#274C6E] whitespace-pre-wrap leading-relaxed m-0 font-normal"
-          ></pre>
-        </div>
-
-        <form id="form-grade-submission" class="space-y-3">
-          <input type="hidden" id="grade-modal-sub-id" />
-          <div>
-            <label for="grade-modal-score" class="scool-field-label">نمره دانش‌آموز (از ۲۰)</label>
-            <input
-              type="number"
-              id="grade-modal-score"
-              step="0.25"
-              min="0"
-              max="20"
-              class="school-input tabular-nums"
-              required
-            />
-          </div>
-          <div>
-            <label for="grade-modal-feedback" class="scool-field-label">بازخورد تشریحی مدرس</label>
-            <textarea
-              id="grade-modal-feedback"
-              class="school-textarea !min-h-[74px]"
-              required
-            ></textarea>
-          </div>
-          <div class="grid grid-cols-2 gap-2.5 pt-1">
-            <button type="submit" class="btn-admin-primary !h-10">ثبت نمره و بازخورد</button>
-            <button type="button" id="btn-close-grade-modal" class="btn-admin-action !h-10">بستن</button>
-          </div>
-        </form>
-      </div>
-    </div>
-
-    <!-- =======================================================================
-         مودال ۴: مشاهده و ویرایش پروفایل کامل دانش‌آموز
+         مودال ۴: مشاهده و ویرایش پروفایل دانش‌آموز (با تصویر پروفایل و بدون کد ملی و تلفن والدین)
          ======================================================================= -->
     <div
       id="admin-student-modal"
@@ -644,9 +706,35 @@
       aria-hidden="true"
     >
       <div class="scool-modal-card !max-w-lg" dir="rtl">
-        <h3 class="text-base font-extrabold text-[#10375C] mb-3 m-0">
+        <h3 class="text-base font-extrabold text-[#251B15] mb-3 m-0">
           پروفایل و پرونده آموزشی دانش‌آموز
         </h3>
+
+        <!-- تصویر پروفایل دانش‌آموز و امکان بارگذاری عکس جدید -->
+        <div class="flex items-center justify-between gap-3 p-3 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] mb-3.5">
+          <div class="flex items-center gap-3">
+            <div
+              id="student-modal-avatar-box"
+              class="student-avatar-lg student-portrait-lg-0"
+              role="img"
+              aria-label="تصویر پروفایل دانش‌آموز"
+            ></div>
+            <div>
+              <div id="student-modal-header-name" class="text-sm font-black text-[#251B15]">—</div>
+              <div id="student-modal-header-class" class="text-xs font-bold text-[#1B5E5A] mt-0.5">—</div>
+            </div>
+          </div>
+          <div>
+            <label for="student-modal-avatar-upload" class="btn-admin-action !h-8 !text-xs cursor-pointer">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+              <span>تغییر عکس</span>
+            </label>
+            <input type="file" id="student-modal-avatar-upload" accept="image/*" class="hidden" />
+          </div>
+        </div>
 
         <form id="form-edit-student-profile" class="space-y-3">
           <input type="hidden" id="prof-modal-student-id" />
@@ -669,6 +757,7 @@
             <div>
               <label class="scool-field-label">کلاس</label>
               <select id="prof-modal-class" class="school-select">
+                <option value="">— (بدون کلاس)</option>
                 <option value="901">۹۰۱</option>
                 <option value="902">۹۰۲</option>
                 <option value="903">۹۰۳</option>
@@ -684,17 +773,6 @@
             </div>
           </div>
 
-          <div class="grid grid-cols-2 gap-3">
-            <div>
-              <label class="scool-field-label">کد ملی</label>
-              <input type="text" id="prof-modal-national" class="school-input tabular-nums" />
-            </div>
-            <div>
-              <label class="scool-field-label">تلفن والدین</label>
-              <input type="tel" id="prof-modal-parent" class="school-input tabular-nums" />
-            </div>
-          </div>
-
           <div>
             <label class="scool-field-label">یادداشت آموزشی مدرس</label>
             <textarea id="prof-modal-notes" class="school-textarea !min-h-[64px]"></textarea>
@@ -702,8 +780,8 @@
 
           <div class="flex items-center justify-between gap-2 pt-1">
             <button type="submit" class="btn-admin-primary !h-10 flex-1">ذخیره تغییرات پروفایل</button>
-            <button type="button" id="btn-delete-student" class="btn-admin-danger !h-10">حذف دانش‌آموز</button>
-            <button type="button" id="btn-close-student-modal" class="btn-admin-action !h-10">بستن</button>
+            <button type="button" id="btn-delete-student" class="btn-admin-danger !h-10">حذف از کلاس</button>
+            <button type="button" id="btn-close-student-modal" class="btn-admin-action !h-10 js-close-modal">بستن</button>
           </div>
         </form>
       </div>
@@ -720,7 +798,7 @@
       aria-hidden="true"
     >
       <div class="scool-modal-card" dir="rtl">
-        <h3 class="text-base font-extrabold text-[#10375C] mb-3 m-0">
+        <h3 class="text-base font-extrabold text-[#251B15] mb-3 m-0">
           افزودن مستقیم دانش‌آموز جدید
         </h3>
         <form id="form-admin-add-student" class="space-y-3">
@@ -742,6 +820,7 @@
             <div>
               <label class="scool-field-label">کلاس</label>
               <select id="add-st-class" class="school-select">
+                <option value="">— (بدون کلاس)</option>
                 <option value="901">۹۰۱</option>
                 <option value="902">۹۰۲</option>
                 <option value="903">۹۰۳</option>
@@ -750,7 +829,282 @@
           </div>
           <div class="grid grid-cols-2 gap-2.5 pt-1">
             <button type="submit" class="btn-admin-primary !h-10">ثبت و تأیید دانش‌آموز</button>
-            <button type="button" id="btn-close-add-student-modal" class="btn-admin-action !h-10">انصراف</button>
+            <button type="button" id="btn-close-add-student-modal" class="btn-admin-action !h-10 js-close-modal">انصراف</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- =======================================================================
+         مودال ۶: تایید عملیات (Confirmation Modal)
+         ======================================================================= -->
+    <div
+      id="admin-confirm-modal"
+      class="scool-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-hidden="true"
+    >
+      <div class="scool-modal-card !max-w-sm" dir="rtl">
+        <h3 id="confirm-modal-title" class="text-base font-extrabold text-[#251B15] mb-2 m-0">
+          تأیید عملیات
+        </h3>
+        <p id="confirm-modal-message" class="text-xs text-[#6E5D4F] mb-5 leading-relaxed m-0"></p>
+        <div class="grid grid-cols-2 gap-2.5">
+          <button type="button" id="btn-confirm-modal-yes" class="btn-admin-primary !h-10">
+            تأیید و انجام
+          </button>
+          <button type="button" class="btn-admin-action !h-10 js-close-modal">
+            انصراف
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- =======================================================================
+         مودال ۷: بازنشانی رمز عبور دانش‌آموز (Reset Password Modal)
+         ======================================================================= -->
+    <div
+      id="admin-reset-pass-modal"
+      class="scool-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-hidden="true"
+    >
+      <div class="scool-modal-card !max-w-sm" dir="rtl">
+        <h3 class="text-base font-extrabold text-[#251B15] mb-1.5 m-0">
+          بازنشانی رمز عبور دانش‌آموز
+        </h3>
+        <p class="text-xs text-[#6E5D4F] mb-3.5 m-0">
+          تعیین رمز عبور جدید برای: <strong id="reset-pass-student-name" class="text-[#251B15]"></strong>
+        </p>
+        <form id="form-reset-student-pass" class="space-y-3">
+          <input type="hidden" id="reset-pass-student-id" />
+          <div>
+            <label class="scool-field-label">رمز عبور جدید (حداقل ۶ کاراکتر)</label>
+            <input
+              type="text"
+              id="reset-pass-new-value"
+              class="school-input"
+              placeholder="مثال: 123456"
+              value="123456"
+              required
+            />
+          </div>
+          <div class="grid grid-cols-2 gap-2.5 pt-1">
+            <button type="submit" class="btn-admin-primary !h-10">ثبت رمز جدید</button>
+            <button type="button" class="btn-admin-action !h-10 js-close-modal">انصراف</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- =======================================================================
+         مودال ۸: ایجاد یا ویرایش کلاس (Create / Edit Class Modal)
+         ======================================================================= -->
+    <div
+      id="admin-class-form-modal"
+      class="scool-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-hidden="true"
+    >
+      <div class="scool-modal-card !max-w-lg" dir="rtl">
+        <h3 id="class-modal-heading" class="text-base font-extrabold text-[#251B15] mb-3 m-0">
+          ایجاد کلاس جدید
+        </h3>
+        <form id="form-save-class-modal" class="space-y-3">
+          <input type="hidden" id="cls-modal-mode" value="create" />
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="scool-field-label">کد کلاس</label>
+              <input
+                type="text"
+                id="cls-modal-code"
+                class="school-input tabular-nums"
+                placeholder="مثال: ۹۰۴"
+                required
+              />
+            </div>
+            <div>
+              <label class="scool-field-label">ظرفیت کلاس (نفر)</label>
+              <input
+                type="text"
+                id="cls-modal-capacity"
+                class="school-input tabular-nums"
+                value="۳۰"
+                required
+              />
+            </div>
+          </div>
+
+          <div>
+            <label class="scool-field-label">عنوان کلاس</label>
+            <input
+              type="text"
+              id="cls-modal-title"
+              class="school-input"
+              placeholder="مثال: کلاس ۹۰۴ - برنامه‌نویسی"
+              required
+            />
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="scool-field-label">زمان‌بندی جلسات</label>
+              <input
+                type="text"
+                id="cls-modal-schedule"
+                class="school-input"
+                placeholder="شنبه‌ها و دوشنبه‌ها · ساعت ۱۶ تا ۱۷:۳۰"
+                required
+              />
+            </div>
+            <div>
+              <label class="scool-field-label">اتاق یا لینک کلاس</label>
+              <input
+                type="text"
+                id="cls-modal-room"
+                class="school-input"
+                placeholder="اتاق ۳۰۱ / تالار آنلاین"
+                required
+              />
+            </div>
+          </div>
+
+          <div>
+            <label class="scool-field-label">توضیحات کلاس</label>
+            <textarea
+              id="cls-modal-desc"
+              class="school-textarea !min-h-[68px]"
+              required
+            >آموزش طراحی سایت، توسعه فرانت‌اند و پیاده‌سازی پروژه‌های عملی وب.</textarea>
+          </div>
+
+          <div class="grid grid-cols-2 gap-2.5 pt-1">
+            <button type="submit" class="btn-admin-primary !h-10">ذخیره مشخصات کلاس</button>
+            <button type="button" class="btn-admin-action !h-10 js-close-modal">انصراف</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- =======================================================================
+         مودال ۱۳: ارسال اطلاعیه جدید (Announcement Form Modal)
+         ======================================================================= -->
+    <div
+      id="admin-announcement-form-modal"
+      class="scool-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-hidden="true"
+    >
+      <div class="scool-modal-card !max-w-lg" dir="rtl">
+        <h3 class="text-base font-extrabold text-[#251B15] mb-3 m-0">
+          ارسال اطلاعیه جدید
+        </h3>
+        <form id="form-add-announcement" class="space-y-3">
+          <div>
+            <label class="scool-field-label">عنوان اطلاعیه</label>
+            <input
+              type="text"
+              id="ann-title"
+              class="school-input"
+              placeholder="مثلاً: زمان برگزاری جلسه رفع اشکال"
+              required
+            />
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="scool-field-label">گیرندگان اطلاعیه</label>
+              <select id="ann-target" class="school-select" required>
+                <option value="all">هر سه کلاس (۹۰۱، ۹۰۲ و ۹۰۳)</option>
+                <option value="901">فقط کلاس ۹۰۱</option>
+                <option value="902">فقط کلاس ۹۰۲</option>
+                <option value="903">فقط کلاس ۹۰۳</option>
+              </select>
+            </div>
+            <div>
+              <label class="scool-field-label">سطح اهمیت</label>
+              <select id="ann-priority" class="school-select">
+                <option value="عادی">عادی</option>
+                <option value="مهم">مهم</option>
+                <option value="فوری">فوری</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label class="scool-field-label">متن کامل اطلاعیه</label>
+            <textarea
+              id="ann-content"
+              class="school-textarea !min-h-[90px]"
+              placeholder="متن اطلاعیه را بنویسید..."
+              required
+            ></textarea>
+          </div>
+
+          <div class="grid grid-cols-2 gap-2.5 pt-1">
+            <button type="submit" class="btn-admin-primary !h-10">ارسال و انتشار اطلاعیه</button>
+            <button type="button" class="btn-admin-action !h-10 js-close-modal">انصراف</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- =======================================================================
+         مودال ۱۴: ثبت جلسه جدید در دفتر نمره (Gradebook New Session Modal)
+         ======================================================================= -->
+    <div
+      id="admin-gradebook-session-modal"
+      class="scool-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-hidden="true"
+    >
+      <div class="scool-modal-card !max-w-md" dir="rtl">
+        <h3 class="text-base font-extrabold text-[#251B15] mb-3 m-0">
+          ثبت جلسه جدید در دفتر نمره
+        </h3>
+        <form id="form-add-gb-session" class="space-y-3">
+          <div>
+            <label class="scool-field-label">عنوان جلسه</label>
+            <input
+              type="text"
+              id="gb-session-title"
+              class="school-input"
+              placeholder="مثلاً: جلسه چهارم — کلاس ۹۰۱"
+              required
+            />
+          </div>
+
+          <div>
+            <label class="scool-field-label">تاریخ برگزاری</label>
+            <input
+              type="text"
+              id="gb-session-date"
+              class="school-input tabular-nums"
+              placeholder="۱۴۰۵/۰۸/۱۶"
+              value="۱۴۰۵/۰۸/۱۶"
+              required
+            />
+          </div>
+
+          <div>
+            <label class="scool-field-label">مبحث آموزشی جلسه</label>
+            <input
+              type="text"
+              id="gb-session-topic"
+              class="school-input"
+              placeholder="مثلاً: تمرین عملی فرم‌ها و اعتبارسنجی"
+              required
+            />
+          </div>
+
+          <div class="grid grid-cols-2 gap-2.5 pt-1">
+            <button type="submit" class="btn-admin-primary !h-10">ایجاد جلسه</button>
+            <button type="button" class="btn-admin-action !h-10 js-close-modal">انصراف</button>
           </div>
         </form>
       </div>

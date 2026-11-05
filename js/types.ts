@@ -1,18 +1,28 @@
-export type ClassRoomCode = '901' | '902' | '903';
-export type TargetClassScope = '901' | '902' | '903' | 'all';
+export type ClassRoomCode = string;
+export type TargetClassScope = string;
 export type StudentStatus = 'pending' | 'approved' | 'rejected';
+export type AttendanceStatus = 'present' | 'absent' | 'late';
 
 export type AdminSectionId =
   | 'dashboard'
   | 'classes'
   | 'students'
+  | 'gradebook'
   | 'assignments'
-  | 'schedule'
   | 'resources'
   | 'announcements'
   | 'tickets'
   | 'profile'
   | 'settings';
+
+export type StudentSectionId =
+  | 'dashboard'
+  | 'assignments'
+  | 'grades'
+  | 'resources'
+  | 'announcements'
+  | 'tickets'
+  | 'profile';
 
 export interface LoginPayload {
   phone: string;
@@ -33,12 +43,11 @@ export interface StudentRecord {
   firstName: string;
   lastName: string;
   phone: string;
-  classCode: ClassRoomCode;
+  classCode: ClassRoomCode; // '' when removed from class
   status: StudentStatus;
-  nationalCode?: string;
-  parentPhone?: string;
   notes?: string;
   password?: string;
+  avatarUrl?: string;
   createdAt: string;
 }
 
@@ -53,6 +62,26 @@ export interface ClassRoomInfo {
   description: string;
 }
 
+export interface GradebookSession {
+  id: number;
+  classCode: ClassRoomCode;
+  title: string;
+  sessionDate: string;
+  topic: string;
+}
+
+export interface GradebookEntry {
+  id: number;
+  sessionId: number;
+  studentId: number;
+  classCode: ClassRoomCode;
+  attendance: AttendanceStatus;
+  positiveCount: number;
+  negativeCount: number;
+  classScore: number | null;
+  teacherNote: string;
+}
+
 export interface AssignmentItem {
   id: number;
   title: string;
@@ -61,6 +90,7 @@ export interface AssignmentItem {
   dueDate: string;
   maxScore: number;
   attachmentName: string;
+  attachmentDataUrl?: string;
   status: 'active' | 'closed';
   createdAt: string;
 }
@@ -73,21 +103,18 @@ export interface AssignmentSubmission {
   classCode: ClassRoomCode;
   fileName: string;
   fileContent: string;
+  fileDataUrl?: string;
   submittedAt: string;
   score: number | null;
   teacherFeedback: string;
   status: 'pending' | 'graded';
 }
 
-export interface ClassScheduleItem {
-  id: number;
+export interface ResourceViewerLog {
+  studentId: number;
+  studentName: string;
   classCode: ClassRoomCode;
-  dayOfWeek: string;
-  startTime: string;
-  endTime: string;
-  topic: string;
-  sessionType: 'حضوری' | 'آنلاین' | 'آزمون و حل تمرین';
-  locationOrLink: string;
+  viewedAt: string;
 }
 
 export interface EducationalResource {
@@ -96,9 +123,11 @@ export interface EducationalResource {
   category: 'جزوه PDF' | 'فایل تمرین' | 'لینک آموزشی' | 'ویدیو ضبط‌شده';
   classCode: TargetClassScope;
   urlOrFileName: string;
+  fileDataUrl?: string;
   fileSize: string;
   description: string;
   createdAt: string;
+  viewers?: ResourceViewerLog[];
 }
 
 export interface AnnouncementItem {
@@ -116,6 +145,8 @@ export interface TicketMessage {
   senderName: string;
   message: string;
   sentAt: string;
+  attachmentName?: string;
+  attachmentDataUrl?: string;
 }
 
 export interface TicketItem {
@@ -139,6 +170,7 @@ export interface AdminProfile {
   roleTitle: string;
   bio: string;
   password: string;
+  avatarUrl?: string;
 }
 
 export interface SystemSettings {
@@ -160,11 +192,13 @@ export interface ActivityLogItem {
 
 export interface DatabaseState {
   admin: AdminProfile;
+  activeStudentId: number;
   classes: ClassRoomInfo[];
   students: StudentRecord[];
+  gradebookSessions: GradebookSession[];
+  gradebookEntries: GradebookEntry[];
   assignments: AssignmentItem[];
   submissions: AssignmentSubmission[];
-  schedules: ClassScheduleItem[];
   resources: EducationalResource[];
   announcements: AnnouncementItem[];
   tickets: TicketItem[];

@@ -1,8 +1,9 @@
 import $ from 'jquery';
 import { StudentRecord } from './types';
+import { toPersianDigits } from './validation';
 
 /**
- * Show an RTL Persian Toast Notification
+ * Show an RTL Persian Toast Notification (with Persian digits)
  */
 export function showToast(
   title: string,
@@ -14,18 +15,18 @@ export function showToast(
 
   const styles: Record<typeof type, { bg: string; color: string; svg: string }> = {
     success: {
-      bg: '#E6F6F4',
-      color: '#0D9488',
+      bg: '#ECFDF5',
+      color: '#059669',
       svg: '<svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>',
     },
     error: {
-      bg: '#FEE2E2',
-      color: '#DC2626',
+      bg: '#FFF1F2',
+      color: '#E11D48',
       svg: '<svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg>',
     },
     info: {
-      bg: '#EEF7FD',
-      color: '#10375C',
+      bg: '#EEF2FF',
+      color: '#4F46E5',
       svg: '<svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>',
     },
   };
@@ -38,8 +39,8 @@ export function showToast(
         ${conf.svg}
       </div>
       <div class="flex-1 min-w-0">
-        <div class="text-xs font-extrabold text-[#10375C] leading-snug">${title}</div>
-        <div class="text-[11px] text-[#274C6E] mt-0.5 leading-relaxed">${message}</div>
+        <div class="text-xs font-extrabold text-[#1E293B] leading-snug">${toPersianDigits(title)}</div>
+        <div class="text-[11px] text-[#475569] mt-0.5 leading-relaxed">${toPersianDigits(message)}</div>
       </div>
     </div>
   `);
@@ -58,8 +59,8 @@ export function showToast(
  */
 export function openCongratulationModal(student: StudentRecord): void {
   $('#modal-student-fullname').text(`${student.firstName} ${student.lastName}`);
-  $('#modal-student-phone').text(student.phone);
-  $('#modal-student-class').text(`کلاس ${student.classCode}`);
+  $('#modal-student-phone').text(toPersianDigits(student.phone));
+  $('#modal-student-class').text(`کلاس ${toPersianDigits(student.classCode)}`);
   $('#congrats-modal').addClass('is-open').attr('aria-hidden', 'false');
 }
 
