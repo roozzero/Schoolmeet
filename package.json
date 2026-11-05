@@ -1,0 +1,22 @@
+{
+  "name": "scoolmeet-auth",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port=3000 --host=0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --port=3000 --host=0.0.0.0",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "jquery": "^3.7.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.1",
+    "@types/jquery": "^3.5.32",
+    "tailwindcss": "^4.1.1",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0"
+  }
+}

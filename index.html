@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ScoolMeet | اسکول میت</title>
+    <meta
+      name="description"
+      content="پلتفرم آموزشی مدرن اسکول میت — صفحه ورود و ثبت‌نام دانش‌آموزان برای پیگیری کلاس‌ها، ارسال تکالیف و ارتباط مستقیم با مدرس."
+    />
+    <meta property="og:title" content="ScoolMeet | اسکول میت" />
+    <meta
+      property="og:description"
+      content="پلتفرم آموزشی مدرن اسکول میت — صفحه ورود و ثبت‌نام دانش‌آموزان برای پیگیری کلاس‌ها، ارسال تکالیف و ارتباط مستقیم با مدرس."
+    />
+    <meta property="og:type" content="website" />
+
+    <!-- فونت وزیرمتن (Vazirmatn) برای کل پروژه -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800;900&display=swap"
+      rel="stylesheet"
+    />
+
+    <link rel="stylesheet" href="/css/style.css" />
+  </head>
+  <body>
+    <!-- اعلان‌های سامانه -->
+    <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+
+    <!-- ساختار اصلی صفحه بدون اسکرول -->
+    <div class="reference-viewport-shell">
+      <main class="reference-split-container" dir="ltr">
+        <!-- ===================================================================
+             سمت چپ (#EDF7FD): فقط تصویر کلاژ دانش‌آموزان (بدون متن)
+             =================================================================== -->
+        <section
+          class="collage-showcase-half"
+          dir="rtl"
+          aria-label="تصویر دانش‌آموزان اسکول میت"
+        >
+          <div
+            class="student-collage-graphic"
+            role="img"
+            aria-label="دانش‌آموزان اسکول میت"
+          ></div>
+        </section>
+
+        <!-- ===================================================================
+             سمت راست (#FFFFFF): بخش ورود به حساب و ثبت‌نام دانش‌آموز
+             =================================================================== -->
+        <section
+          class="auth-white-half"
+          dir="rtl"
+          aria-label="بخش ورود و ثبت‌نام دانش‌آموز"
+        >
+          <div class="auth-content-column">
+            <!-- لوگوی اسکول میت (بدون زیرمتن) -->
+            <div class="mb-5">
+              <div class="brand-logo-lockup">
+                <div class="brand-school-icon" aria-hidden="true"></div>
+                <div class="flex items-center gap-2">
+                  <span class="text-2xl font-black text-[#10375C] tracking-tight leading-none">
+                    اسکول میت
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <!-- تب‌های دوگانه: فقط ورود به حساب و ثبت‌نام دانش‌آموز -->
+            <div class="mb-5">
+              <div
+                class="mode-tabs-bar"
+                role="tablist"
+                aria-label="انتخاب ورود به حساب یا ثبت‌نام دانش‌آموز"
+              >
+                <button
+                  type="button"
+                  id="tab-btn-login"
+                  class="mode-tab-btn is-active"
+                  role="tab"
+                  aria-selected="true"
+                  aria-controls="panel-login"
+                >
+                  ورود به حساب
+                </button>
+                <button
+                  type="button"
+                  id="tab-btn-register"
+                  class="mode-tab-btn"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="panel-register"
+                >
+                  ثبت‌نام دانش‌آموز
+                </button>
+              </div>
+            </div>
+
+            <!-- ===============================================================
+                 بخش اول: ورود به حساب
+                 =============================================================== -->
+            <div id="panel-login" role="tabpanel" aria-labelledby="tab-btn-login">
+              <h1 class="text-xl font-extrabold text-[#10375C] mb-4 m-0 text-justify">
+                ورود به حساب کاربری
+              </h1>
+
+              <form id="form-login" novalidate>
+                <div class="ice-steps-card space-y-4">
+                  <!-- اینپوت اول: شماره تلفن -->
+                  <div class="scool-input-group">
+                    <label for="login-phone" class="scool-field-label">
+                      شماره تلفن
+                    </label>
+                    <div class="school-input-wrapper">
+                      <input
+                        type="tel"
+                        id="login-phone"
+                        name="phone"
+                        class="school-input"
+                        placeholder="۰۹۱۲۳۴۵۶۷۸۹"
+                        maxlength="11"
+                        autocomplete="tel"
+                        required
+                      />
+                    </div>
+                    <div class="field-error-msg" role="alert"></div>
+                  </div>
+
+                  <!-- اینپوت دوم: رمز عبور + فراموشی رمز عبور در زیر آن -->
+                  <div class="scool-input-group">
+                    <label for="login-password" class="scool-field-label">
+                      رمز عبور
+                    </label>
+                    <div class="school-input-wrapper">
+                      <input
+                        type="password"
+                        id="login-password"
+                        name="password"
+                        class="school-input !pl-9"
+                        placeholder="رمز عبور خود را وارد کنید"
+                        autocomplete="current-password"
+                        required
+                      />
+                      <button
+                        type="button"
+                        class="school-password-toggle"
+                        data-target="#login-password"
+                        aria-label="نمایش رمز عبور"
+                        aria-pressed="false"
+                      >
+                        <svg class="w-4 h-4 icon-eye-closed" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                        </svg>
+                        <svg class="w-4 h-4 icon-eye-open hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                        </svg>
+                      </button>
+                    </div>
+                    <div class="field-error-msg" role="alert"></div>
+
+                    <!-- فراموشی رمز عبور دقیقاً زیر اینپوت رمز عبور -->
+                    <div class="mt-2 flex justify-start">
+                      <button
+                        type="button"
+                        id="btn-forgot-password"
+                        class="text-xs font-bold text-[#10375C] hover:underline bg-transparent border-none p-0 cursor-pointer"
+                      >
+                        فراموشی رمز عبور؟
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- دکمه ورود (بدون متن اضافه در زیر آن) -->
+                <div class="mt-5">
+                  <button type="submit" id="btn-submit-login" class="btn-primary-school">
+                    <span>ورود به حساب</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            <!-- ===============================================================
+                 بخش دوم: ثبت‌نام دانش‌آموز
+                 =============================================================== -->
+            <div
+              id="panel-register"
+              class="hidden"
+              role="tabpanel"
+              aria-labelledby="tab-btn-register"
+            >
+              <h2 class="text-xl font-extrabold text-[#10375C] mb-3.5 m-0 text-justify">
+                ثبت‌نام دانش‌آموز
+              </h2>
+
+              <form id="form-student-register" novalidate>
+                <div class="ice-steps-card space-y-3">
+                  <!-- ردیف اول: نام و نام خانوادگی -->
+                  <div class="grid grid-cols-2 gap-3">
+                    <div class="scool-input-group">
+                      <label for="reg-firstname" class="scool-field-label">
+                        نام
+                      </label>
+                      <div class="school-input-wrapper">
+                        <input
+                          type="text"
+                          id="reg-firstname"
+                          name="firstName"
+                          class="school-input"
+                          placeholder="نام"
+                          required
+                        />
+                      </div>
+                      <div class="field-error-msg" role="alert"></div>
+                    </div>
+
+                    <div class="scool-input-group">
+                      <label for="reg-lastname" class="scool-field-label">
+                        نام خانوادگی
+                      </label>
+                      <div class="school-input-wrapper">
+                        <input
+                          type="text"
+                          id="reg-lastname"
+                          name="lastName"
+                          class="school-input"
+                          placeholder="نام خانوادگی"
+                          required
+                        />
+                      </div>
+                      <div class="field-error-msg" role="alert"></div>
+                    </div>
+                  </div>
+
+                  <!-- ردیف دوم: شماره تلفن و انتخاب کلاس (901 / 902 / 903) -->
+                  <div class="grid grid-cols-2 gap-3">
+                    <div class="scool-input-group">
+                      <label for="reg-phone" class="scool-field-label">
+                        شماره تلفن
+                      </label>
+                      <div class="school-input-wrapper">
+                        <input
+                          type="tel"
+                          id="reg-phone"
+                          name="phone"
+                          class="school-input"
+                          placeholder="۰۹۱۲۳۴۵۶۷۸۹"
+                          maxlength="11"
+                          required
+                        />
+                      </div>
+                      <div class="field-error-msg" role="alert"></div>
+                    </div>
+
+                    <div class="scool-input-group">
+                      <label for="reg-class" class="scool-field-label">
+                        کلاس
+                      </label>
+                      <div class="school-input-wrapper">
+                        <select id="reg-class" name="classCode" class="school-select" required>
+                          <option value="">انتخاب کلاس</option>
+                          <option value="901">۹۰۱</option>
+                          <option value="902">۹۰۲</option>
+                          <option value="903">۹۰۳</option>
+                        </select>
+                      </div>
+                      <div class="field-error-msg" role="alert"></div>
+                    </div>
+                  </div>
+
+                  <!-- ردیف سوم: رمز عبور و تکرار رمز عبور -->
+                  <div class="grid grid-cols-2 gap-3">
+                    <div class="scool-input-group">
+                      <label for="reg-password" class="scool-field-label">
+                        رمز عبور
+                      </label>
+                      <div class="school-input-wrapper">
+                        <input
+                          type="password"
+                          id="reg-password"
+                          name="password"
+                          class="school-input !pl-8"
+                          placeholder="حداقل ۶ کاراکتر"
+                          required
+                        />
+                        <button
+                          type="button"
+                          class="school-password-toggle"
+                          data-target="#reg-password"
+                          aria-label="نمایش رمز عبور"
+                        >
+                          <svg class="w-4 h-4 icon-eye-closed" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                          </svg>
+                          <svg class="w-4 h-4 icon-eye-open hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                          </svg>
+                        </button>
+                      </div>
+                      <div class="field-error-msg" role="alert"></div>
+                    </div>
+
+                    <div class="scool-input-group">
+                      <label for="reg-password-confirm" class="scool-field-label">
+                        تکرار رمز عبور
+                      </label>
+                      <div class="school-input-wrapper">
+                        <input
+                          type="password"
+                          id="reg-password-confirm"
+                          name="passwordConfirmation"
+                          class="school-input !pl-8"
+                          placeholder="تکرار رمز عبور"
+                          required
+                        />
+                        <button
+                          type="button"
+                          class="school-password-toggle"
+                          data-target="#reg-password-confirm"
+                          aria-label="نمایش تکرار رمز عبور"
+                        >
+                          <svg class="w-4 h-4 icon-eye-closed" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                          </svg>
+                          <svg class="w-4 h-4 icon-eye-open hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                          </svg>
+                        </button>
+                      </div>
+                      <div class="field-error-msg" role="alert"></div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- دکمه ایجاد حساب کاربری -->
+                <div class="mt-4">
+                  <button type="submit" id="btn-submit-register" class="btn-primary-school">
+                    <span>ایجاد حساب کاربری</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- =======================================================================
+         مودال پیام تبریک ایجاد حساب کاربری دانش‌آموز
+         ======================================================================= -->
+    <div
+      id="congrats-modal"
+      class="scool-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-hidden="true"
+      aria-labelledby="congrats-modal-title"
+    >
+      <div class="scool-modal-card" dir="rtl">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="w-12 h-12 rounded-2xl bg-[#E6F6F4] text-[#0D9488] flex items-center justify-center shrink-0">
+            <svg class="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.4">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <div>
+            <h3 id="congrats-modal-title" class="text-lg font-extrabold text-[#10375C] m-0">
+              تبریک! حساب شما ایجاد شد
+            </h3>
+            <p class="text-xs text-[#274C6E] mt-1 m-0">
+              حساب کاربری دانش‌آموزی شما با موفقیت در اسکول میت ثبت گردید.
+            </p>
+          </div>
+        </div>
+
+        <div class="ice-steps-card space-y-2.5 text-xs mb-5">
+          <div class="flex items-center justify-between">
+            <span class="text-[#274C6E] font-medium">نام و نام خانوادگی:</span>
+            <span id="modal-student-fullname" class="font-extrabold text-[#10375C]">—</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-[#274C6E] font-medium">شماره تلفن:</span>
+            <span id="modal-student-phone" class="font-extrabold text-[#10375C]">—</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-[#274C6E] font-medium">کلاس انتخاب‌شده:</span>
+            <span id="modal-student-class" class="font-extrabold text-[#0D9488]">—</span>
+          </div>
+        </div>
+
+        <button type="button" id="btn-congrats-go-login" class="btn-primary-school">
+          <span>ورود به حساب کاربری</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- =======================================================================
+         مودال فراموشی رمز عبور
+         ======================================================================= -->
+    <div
+      id="forgot-modal"
+      class="scool-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-hidden="true"
+      aria-labelledby="forgot-modal-title"
+    >
+      <div class="scool-modal-card" dir="rtl">
+        <h3 id="forgot-modal-title" class="text-base font-extrabold text-[#10375C] mb-2 m-0">
+          بازیابی رمز عبور
+        </h3>
+        <p class="text-xs text-[#274C6E] mb-4 leading-relaxed m-0">
+          شماره تلفن همراه ثبت‌شده خود را وارد کنید تا کد بازنشانی رمز عبور برای شما ارسال شود.
+        </p>
+
+        <form id="form-forgot-password" novalidate>
+          <div class="mb-4">
+            <label for="recovery-phone-input" class="scool-field-label">
+              شماره تلفن
+            </label>
+            <input
+              type="tel"
+              id="recovery-phone-input"
+              class="school-input"
+              placeholder="۰۹۱۲۳۴۵۶۷۸۹"
+              maxlength="11"
+              required
+            />
+          </div>
+          <div class="grid grid-cols-2 gap-2.5">
+            <button type="submit" class="btn-primary-school !h-10 text-xs">
+              <span>ارسال کد بازیابی</span>
+            </button>
+            <button
+              type="button"
+              id="btn-close-forgot-modal"
+              class="h-10 rounded-lg border border-[#C6DDF0] bg-white text-[#10375C] text-xs font-bold cursor-pointer"
+            >
+              <span>انصراف</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- اسکریپت اصلی ماژولار -->
+    <script type="module" src="/js/auth.ts"></script>
+  </body>
+</html>

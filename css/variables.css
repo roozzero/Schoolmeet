@@ -1,0 +1,44 @@
+:root {
+  --color-outer-navy: #0D2B49;
+  --color-deep-navy: #10375C;
+  --color-slate-navy: #274C6E;
+  --color-ice-bg: #EDF7FD;
+  --color-box-ice: #EEF7FD;
+  --color-sky-blue: #7DBFE5;
+  --color-border-blue: #C6DDF0;
+  --color-white: #FFFFFF;
+  --color-error: #DC2626;
+  --color-success: #0D9488;
+
+  --font-vazir: 'Vazirmatn', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  font-family: var(--font-vazir);
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+  direction: rtl;
+  font-family: var(--font-vazir);
+  background-color: var(--color-outer-navy);
+  color: var(--color-deep-navy);
+  -webkit-font-smoothing: antialiased;
+}
+
+p,
+label,
+span,
+div {
+  text-align: justify;
+  text-align-last: right;
+}
