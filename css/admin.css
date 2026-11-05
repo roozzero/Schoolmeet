@@ -1,0 +1,306 @@
+/* ============================================================================
+   ScoolMeet | اسکول میت — Admin Panel Workspace Styles (RTL + Vazirmatn)
+   ============================================================================ */
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Full 100vh Non-Page-Scroll Admin Workspace Shell */
+.admin-workspace-shell {
+  width: 100%;
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+  background-color: #F4F8FB;
+  display: flex;
+  direction: rtl;
+}
+
+/* Right Sidebar (260px on desktop) */
+.admin-sidebar {
+  width: 260px;
+  height: 100vh;
+  background-color: var(--color-deep-navy);
+  color: var(--color-white);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  flex-shrink: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  z-index: 40;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (max-width: 1023px) {
+  .admin-sidebar {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    transform: translateX(100%);
+  }
+
+  .admin-sidebar.is-mobile-open {
+    transform: translateX(0);
+  }
+}
+
+.admin-nav-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.admin-nav-btn {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: #C5D8EC;
+  padding: 10px 14px;
+  border-radius: 11px;
+  font-family: var(--font-vazir);
+  font-size: 0.84rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  white-space: nowrap;
+}
+
+.admin-nav-btn:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: var(--color-white);
+}
+
+.admin-nav-btn.is-active {
+  background-color: var(--color-sky-blue);
+  color: var(--color-deep-navy);
+  font-weight: 800;
+}
+
+.admin-nav-counter {
+  font-size: 0.72rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.9;
+}
+
+/* Main Content Area (Top Header + Internal Scrollable Canvas) */
+.admin-main-column {
+  flex: 1;
+  min-width: 0;
+  height: 100vh;
+  max-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.admin-topbar {
+  height: 64px;
+  background-color: var(--color-white);
+  border-bottom: 1px solid #DDEAF5;
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+.admin-canvas-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 22px 24px 32px;
+}
+
+/* Clean Single-Elevation Surface Cards */
+.admin-surface-card {
+  background-color: var(--color-white);
+  border: 1px solid #DCEAF6;
+  border-radius: 16px;
+  padding: 20px;
+}
+
+/* High-Density Data Tables */
+.admin-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid #DCEAF6;
+  border-radius: 14px;
+  background-color: var(--color-white);
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.admin-table th {
+  background-color: #F4F9FD;
+  color: var(--color-deep-navy);
+  font-weight: 800;
+  padding: 12px 14px;
+  border-bottom: 1px solid #DCEAF6;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.admin-table td {
+  padding: 11px 14px;
+  border-bottom: 1px solid #EDF4FA;
+  color: var(--color-slate-navy);
+  vertical-align: middle;
+}
+
+.admin-table tr:last-child td {
+  border-bottom: none;
+}
+
+.admin-table tbody tr:hover {
+  background-color: #F9FCFF;
+}
+
+/* Action Buttons inside Admin */
+.btn-admin-action {
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid #C6DDF0;
+  background-color: var(--color-white);
+  color: var(--color-deep-navy);
+  font-family: var(--font-vazir);
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  white-space: nowrap;
+  transition: all 0.14s ease;
+}
+
+.btn-admin-action:hover {
+  background-color: #EEF7FD;
+  border-color: var(--color-deep-navy);
+}
+
+.btn-admin-primary {
+  height: 38px;
+  padding: 0 16px;
+  border-radius: 9px;
+  border: none;
+  background-color: var(--color-deep-navy);
+  color: var(--color-white);
+  font-family: var(--font-vazir);
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+  transition: background-color 0.15s ease;
+}
+
+.btn-admin-primary:hover {
+  background-color: #174978;
+}
+
+.btn-admin-success {
+  height: 32px;
+  padding: 0 11px;
+  border-radius: 8px;
+  border: 1px solid #0D9488;
+  background-color: #E6F6F4;
+  color: #0F766E;
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn-admin-success:hover {
+  background-color: #0D9488;
+  color: var(--color-white);
+}
+
+.btn-admin-danger {
+  height: 32px;
+  padding: 0 11px;
+  border-radius: 8px;
+  border: 1px solid #FCA5A5;
+  background-color: #FEF2F2;
+  color: #DC2626;
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn-admin-danger:hover {
+  background-color: #DC2626;
+  color: var(--color-white);
+}
+
+/* Segmented Filter Controls */
+.admin-segmented-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background-color: #EEF7FD;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid #D5E8F7;
+}
+
+.admin-seg-btn {
+  border: none;
+  background: transparent;
+  color: var(--color-slate-navy);
+  font-size: 0.76rem;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.14s ease;
+}
+
+.admin-seg-btn.is-active {
+  background-color: var(--color-white);
+  color: var(--color-deep-navy);
+  box-shadow: 0 1px 4px rgba(16, 55, 92, 0.08);
+}
+
+/* Textarea styling */
+.school-textarea {
+  width: 100%;
+  min-height: 84px;
+  padding: 10px 12px;
+  background-color: var(--color-white);
+  border: 1px solid var(--color-border-blue);
+  border-radius: 9px;
+  font-family: var(--font-vazir);
+  font-size: 0.84rem;
+  color: var(--color-deep-navy);
+  outline: none;
+  resize: vertical;
+  text-align: justify;
+  text-align-last: right;
+}
+
+.school-textarea:focus {
+  border-color: var(--color-deep-navy);
+  box-shadow: 0 0 0 3px rgba(125, 191, 229, 0.28);
+}

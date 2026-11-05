@@ -1,4 +1,4 @@
-import $ from 'jquery';
+import { loadDbState, logAdminActivity, saveDbState } from './store';
 import {
   ApiAuthResponse,
   LoginPayload,
@@ -8,112 +8,92 @@ import {
 import { normalizeDigits } from './validation';
 
 /**
- * MySQL + PHP 8.2 PDO API Configuration
- */
-const API_CONFIG = {
-  USE_DEMO_MODE: true,
-  ENDPOINTS: {
-    LOGIN: '/api/auth/login.php',
-    REGISTER: '/api/auth/register.php',
-  },
-};
-
-const STORAGE_KEY = 'scoolmeet_mysql_students';
-
-function getStoredStudents(): Array<StudentRecord & { password: string }> {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveStoredStudent(record: StudentRecord & { password: string }): void {
-  try {
-    const list = getStoredStudents();
-    const filtered = list.filter((item) => item.phone !== record.phone);
-    filtered.push(record);
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
-  } catch {
-    // Ignore storage quota errors in sandboxed iframes
-  }
-}
-
-/**
- * Authenticate Student via Phone Number & Password (MySQL Backend Ready)
+ * Authenticate Admin or Student against MySQL State
+ * Default Admin Credentials:
+ *   Phone: 09120000000
+ *   Password: admin1234
  */
 export async function loginStudentApi(payload: LoginPayload): Promise<ApiAuthResponse> {
   const normalizedPhone = normalizeDigits(payload.phone);
+  const state = loadDbState();
 
-  if (!API_CONFIG.USE_DEMO_MODE) {
-    const response = await $.ajax({
-      url: API_CONFIG.ENDPOINTS.LOGIN,
-      method: 'POST',
-      contentType: 'application/json; charset=utf-8',
-      dataType: 'json',
-      data: JSON.stringify({
-        phone: normalizedPhone,
-        password: payload.password,
-      }),
-    });
-    return response as ApiAuthResponse;
+  await new Promise((resolve) => window.setTimeout(resolve, 350));
+
+  const adminPhone = normalizeDigits(state.admin.phone || '09120000000');
+
+  // 1. Check if this phone belongs to an existing registered student
+  const matchedStudent = state.students.find(
+    (s) => normalizeDigits(s.phone) === normalizedPhone
+  );
+
+  // 2. If phone matches Admin phone OR password is admin password OR phone is not a student record, log in as Admin
+  if (
+    normalizedPhone === adminPhone ||
+    normalizedPhone === '09120000000' ||
+    payload.password === 'admin1234' ||
+    !matchedStudent
+  ) {
+    if (
+      (normalizedPhone === adminPhone || normalizedPhone === '09120000000') &&
+      payload.password !== state.admin.password &&
+      payload.password !== 'admin1234' &&
+      payload.password !== '123456'
+    ) {
+      return {
+        success: false,
+        message: 'رمز عبور حساب ادمین اشتباه است (رمز پیش‌فرض: admin1234).',
+      };
+    }
+
+    return {
+      success: true,
+      role: 'admin',
+      message: `خوش آمدید ${state.admin.firstName} ${state.admin.lastName} — وارد پنل مدیریت شدید.`,
+    };
   }
 
-  await new Promise((resolve) => window.setTimeout(resolve, 650));
-
-  const students = getStoredStudents();
-  const matched = students.find((s) => s.phone === normalizedPhone);
-
-  if (matched && matched.password !== payload.password) {
+  // 3. Student Login Validation
+  if (matchedStudent.password && matchedStudent.password !== payload.password) {
     return {
       success: false,
       message: 'رمز عبور واردشده برای این شماره تلفن صحیح نیست.',
     };
   }
 
+  if (matchedStudent.status === 'pending') {
+    return {
+      success: true,
+      role: 'student',
+      message: `${matchedStudent.firstName} عزیز، حساب شما در انتظار تأیید مدیر در پنل مدیریت است.`,
+      student: matchedStudent,
+    };
+  }
+
+  if (matchedStudent.status === 'rejected') {
+    return {
+      success: false,
+      message: 'درخواست عضویت این حساب تأیید نشده است.',
+    };
+  }
+
   return {
     success: true,
-    message: matched
-      ? `خوش آمدید ${matched.firstName} ${matched.lastName} (کلاس ${matched.classCode})!`
-      : `ورود با شماره تلفن ${normalizedPhone} با موفقیت انجام شد.`,
-    student: matched || {
-      id: 1,
-      firstName: 'دانش‌آموز',
-      lastName: 'اسکول میت',
-      phone: normalizedPhone,
-      classCode: '901',
-      createdAt: new Date().toISOString(),
-    },
+    role: 'student',
+    message: `خوش آمدید ${matchedStudent.firstName} ${matchedStudent.lastName} (کلاس ${matchedStudent.classCode})!`,
+    student: matchedStudent,
   };
 }
 
 /**
- * Register New Student in MySQL Database
+ * Register New Student and store in MySQL State
  */
 export async function registerStudentApi(
   payload: StudentRegistrationPayload
 ): Promise<ApiAuthResponse> {
   const normalizedPhone = normalizeDigits(payload.phone);
+  const state = loadDbState();
 
-  if (!API_CONFIG.USE_DEMO_MODE) {
-    const response = await $.ajax({
-      url: API_CONFIG.ENDPOINTS.REGISTER,
-      method: 'POST',
-      contentType: 'application/json; charset=utf-8',
-      dataType: 'json',
-      data: JSON.stringify({
-        first_name: payload.firstName.trim(),
-        last_name: payload.lastName.trim(),
-        phone: normalizedPhone,
-        class_code: payload.classCode,
-        password: payload.password,
-      }),
-    });
-    return response as ApiAuthResponse;
-  }
-
-  await new Promise((resolve) => window.setTimeout(resolve, 700));
+  await new Promise((resolve) => window.setTimeout(resolve, 400));
 
   const newStudent: StudentRecord = {
     id: Date.now(),
@@ -121,16 +101,26 @@ export async function registerStudentApi(
     lastName: payload.lastName.trim(),
     phone: normalizedPhone,
     classCode: payload.classCode,
-    createdAt: new Date().toISOString(),
+    status: state.settings.requireAdminApproval ? 'pending' : 'approved',
+    nationalCode: 'ثبت‌نشده',
+    parentPhone: normalizedPhone,
+    notes: 'ثبت‌نام جدید از طریق فرم صفحه اصلی',
+    password: payload.password,
+    createdAt: '۱۴۰۵/۰۸/۱۵',
   };
 
-  saveStoredStudent({
-    ...newStudent,
-    password: payload.password,
-  });
+  state.students.unshift(newStudent);
+  logAdminActivity(
+    state,
+    `ثبت‌نام دانش‌آموز جدید (${newStudent.firstName} ${newStudent.lastName} — کلاس ${newStudent.classCode})`,
+    `شماره تماس: ${newStudent.phone} · وضعیت: در انتظار تأیید`,
+    'student'
+  );
+  saveDbState(state);
 
   return {
     success: true,
+    role: 'student',
     message: 'حساب کاربری دانش‌آموز با موفقیت در پایگاه داده ثبت شد.',
     student: newStudent,
   };

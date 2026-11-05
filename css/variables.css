@@ -42,3 +42,8 @@ div {
   text-align: justify;
   text-align-last: right;
 }
+
+.view-hidden {
+  display: none !important;
+}
+
