@@ -7,6 +7,7 @@ export type AppRoutePath =
   | '/admin/classes'
   | '/admin/students'
   | '/admin/gradebook'
+  | '/admin/gradebook/session'
   | '/admin/assignments'
   | '/admin/assignments/create'
   | '/admin/assignments/edit'
@@ -28,6 +29,7 @@ export type AppRoutePath =
   | '/student/resources/detail'
   | '/student/announcements'
   | '/student/tickets'
+  | '/student/tickets/create'
   | '/student/profile';
 
 const ADMIN_SECTIONS: AdminSectionId[] = [
@@ -59,7 +61,8 @@ const ROUTE_TITLES: Record<AppRoutePath, string> = {
   '/admin/dashboard': 'داشبورد مدیریت | اسکول میت',
   '/admin/classes': 'مدیریت کلاس‌ها | اسکول میت',
   '/admin/students': 'مدیریت دانش‌آموزان | اسکول میت',
-  '/admin/gradebook': 'دفتر نمره و حضور و غیاب | اسکول میت',
+  '/admin/gradebook': 'دفتر نمره و جلسات | اسکول میت',
+  '/admin/gradebook/session': 'ثبت حضور و غیاب و نمرات جلسه | اسکول میت',
   '/admin/assignments': 'مدیریت تکالیف | اسکول میت',
   '/admin/assignments/create': 'ایجاد تکلیف جدید | اسکول میت',
   '/admin/assignments/edit': 'ویرایش تکلیف | اسکول میت',
@@ -81,6 +84,7 @@ const ROUTE_TITLES: Record<AppRoutePath, string> = {
   '/student/resources/detail': 'مشاهده و دانلود منبع آموزشی | اسکول میت',
   '/student/announcements': 'اطلاعیه‌های کلاس | اسکول میت',
   '/student/tickets': 'تیکت و ارتباط با مدرس | اسکول میت',
+  '/student/tickets/create': 'ایجاد تیکت جدید | اسکول میت',
   '/student/profile': 'پروفایل دانش‌آموز | اسکول میت',
 };
 

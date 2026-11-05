@@ -18,8 +18,9 @@ let selectedClassTab: ClassRoomCode = '901';
 let studentFilter = 'all';
 let studentSearchQuery = '';
 
-// Gradebook (دفتر نمره) state
-let gradebookClassCode: ClassRoomCode = '901';
+// Gradebook (دفتر نمره) state & dedicated session page
+let gradebookClassCode: string = 'all';
+let gradebookSubView: 'list' | 'session' = 'list';
 let activeGradebookSessionId: number | null = null;
 
 // Assignments state & dedicated sub-pages
@@ -71,7 +72,7 @@ function formatStatusLabel(status: 'pending' | 'approved' | 'rejected'): string 
  * Render Student Profile Photo (Cropped Portrait or Custom Uploaded Avatar)
  */
 function renderStudentAvatarHtml(
-  student: Pick<StudentRecord, 'id' | 'firstName' | 'lastName' | 'avatarUrl'>,
+  student: Pick<StudentRecord, 'id' | 'firstName' | 'lastName' | 'avatarUrl' | 'avatarRemoved'>,
   size: 'sm' | 'lg' = 'sm'
 ): string {
   const portraitIdx = Math.abs(Number(student.id) || 0) % 4;
@@ -83,6 +84,14 @@ function renderStudentAvatarHtml(
 
   if (student.avatarUrl) {
     return `<div class="${baseClass} has-custom-avatar" style="background-image: url('${student.avatarUrl}');" role="img" aria-label="تصویر ${fullName}"></div>`;
+  }
+  if (student.avatarRemoved) {
+    const dimClass = size === 'lg' ? 'student-avatar-lg' : 'student-avatar-sm';
+    return `<div class="${dimClass} bg-[#EADCCA] flex items-center justify-center text-[#5A3A22]" style="background-image: none;" role="img" aria-label="بدون تصویر ${fullName}">
+      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+      </svg>
+    </div>`;
   }
   return `<div class="${baseClass}" role="img" aria-label="تصویر ${fullName}"></div>`;
 }
@@ -230,6 +239,12 @@ export function navigateAdminSection(
       resourceSubView = 'detail';
     } else {
       resourceSubView = 'list';
+    }
+  } else if (sectionId === 'gradebook') {
+    if (subPage === 'session' && activeGradebookSessionId) {
+      gradebookSubView = 'session';
+    } else {
+      gradebookSubView = 'list';
     }
   }
 
@@ -1965,13 +1980,14 @@ function renderAnnouncementsSection($container: JQuery<HTMLElement>, state: Data
         </div>
       </div>
 
-      <!-- لیست اطلاعیه‌ها -->
-      <div class="space-y-3">
+      <!-- لیست اطلاعیه‌ها به همراه دکمه مودال لیست خوانده‌ها برای مدیر -->
+      <div class="space-y-3.5">
         ${
           filteredAnnouncements.length
             ? filteredAnnouncements
-                .map(
-                  (ann) => `
+                .map((ann) => {
+                  const readers = ann.readers || [];
+                  return `
                   <div class="admin-surface-card">
                     <div class="flex items-center justify-between gap-2">
                       <div class="flex items-center gap-2 flex-wrap">
@@ -1984,6 +2000,9 @@ function renderAnnouncementsSection($container: JQuery<HTMLElement>, state: Data
                             : 'bg-[#ECFDF5] text-[#059669]'
                         }">
                           اولویت ${ann.priority}
+                        </span>
+                        <span class="text-[11px] font-extrabold px-2.5 py-0.5 rounded-md bg-[#ECFDF5] text-[#059669] tabular-nums">
+                          خوانده شده توسط ${toPersianDigits(readers.length)} نفر
                         </span>
                       </div>
                       <button
@@ -1998,12 +2017,21 @@ function renderAnnouncementsSection($container: JQuery<HTMLElement>, state: Data
                       </button>
                     </div>
                     <p class="text-xs text-[#6E5D4F] mt-2 m-0 leading-relaxed">${toPersianDigits(ann.content)}</p>
-                    <div class="mt-3 pt-2.5 border-t border-[#E6D8C5] flex items-center justify-between text-[11px] text-[#6E5D4F]">
-                      <span>گیرندگان: <strong class="text-[#5A3A22]">${formatClassLabel(ann.targetClasses)}</strong></span>
-                      <span class="tabular-nums">${toPersianDigits(ann.createdAt)}</span>
+                    <div class="mt-3 pt-2.5 border-t border-[#E6D8C5] flex items-center justify-between gap-2 flex-wrap text-[11px] text-[#6E5D4F]">
+                      <div class="flex items-center gap-3 flex-wrap">
+                        <span>گیرندگان: <strong class="text-[#5A3A22]">${formatClassLabel(ann.targetClasses)}</strong></span>
+                        <span class="tabular-nums">تاریخ انتشار: ${toPersianDigits(ann.createdAt)}</span>
+                      </div>
+                      <button
+                        type="button"
+                        class="btn-admin-action !h-8 !px-3 !text-xs js-open-ann-readers-modal"
+                        data-id="${ann.id}"
+                      >
+                        مشاهده لیست خوانده‌ها (${toPersianDigits(readers.length)} نفر)
+                      </button>
                     </div>
-                  </div>`
-                )
+                  </div>`;
+                })
                 .join('')
             : `<div class="admin-surface-card text-center py-8 text-xs text-[#6E5D4F]">اطلاعیه‌ای مطابق فیلتر یا جستجو یافت نشد.</div>`
         }
@@ -3263,6 +3291,56 @@ export function initAdminPanelEvents(): void {
     });
   });
 
+  // Open Announcement Readers Modal (#admin-announcement-readers-modal)
+  $(document).on('click', '.js-open-ann-readers-modal', function () {
+    const id = Number($(this).attr('data-id'));
+    const state = loadDbState();
+    const ann = state.announcements.find((a) => a.id === id);
+    if (!ann) return;
+
+    const readers = ann.readers || [];
+    $('#ann-readers-modal-title').text(`لیست خوانده‌ها: ${toPersianDigits(ann.title)}`);
+    $('#ann-readers-modal-sub').text(
+      `گیرندگان: ${formatClassLabel(ann.targetClasses)} · تاریخ انتشار: ${toPersianDigits(ann.createdAt)}`
+    );
+    $('#ann-readers-modal-count-badge').text(`${toPersianDigits(readers.length)} نفر`);
+
+    if (readers.length > 0) {
+      const listHtml = readers
+        .map((r) => {
+          const stObj = state.students.find((s) => s.id === r.studentId) || {
+            id: r.studentId,
+            firstName: r.studentName,
+            lastName: '',
+          };
+          return `
+            <div class="flex items-center justify-between gap-3 p-3 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] text-xs">
+              <div class="flex items-center gap-2.5">
+                ${renderStudentAvatarHtml(stObj, 'sm')}
+                <div>
+                  <div class="font-extrabold text-[#251B15]">${toPersianDigits(r.studentName)}</div>
+                  <div class="text-[11px] text-[#1B5E5A] font-bold mt-0.5">کلاس ${toPersianDigits(r.classCode)}</div>
+                </div>
+              </div>
+              <div class="text-[11px] font-bold text-[#6E5D4F] tabular-nums">
+                خوانده در: ${toPersianDigits(r.readAt)}
+              </div>
+            </div>
+          `;
+        })
+        .join('');
+      $('#ann-readers-modal-list').html(listHtml);
+    } else {
+      $('#ann-readers-modal-list').html(`
+        <div class="p-6 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] text-center text-xs text-[#6E5D4F]">
+          هنوز هیچ دانش‌آموزی گزینه «خوانده شد» را برای این اطلاعیه ثبت نکرده است.
+        </div>
+      `);
+    }
+
+    $('#admin-announcement-readers-modal').addClass('is-open').attr('aria-hidden', 'false');
+  });
+
   /* --------------------------------------------------------------------------
      Tickets Section + Downloadable File Attachments
      -------------------------------------------------------------------------- */
@@ -3485,25 +3563,43 @@ export function initAdminPanelEvents(): void {
   });
 
   /* --------------------------------------------------------------------------
-     Gradebook Section (دفتر نمره: حضور و غیاب، نمرات کلاسی، مثبت و منفی)
+     Gradebook Section (دفتر نمره: کارت‌های جلسات + صفحه اختصاصی هر جلسه)
      -------------------------------------------------------------------------- */
   $(document).on('click', '.js-gb-class-tab', function () {
-    gradebookClassCode = String($(this).attr('data-code') || '901');
-    activeGradebookSessionId = null;
+    gradebookClassCode = String($(this).attr('data-code') || 'all');
     renderActiveSection();
   });
 
-  $(document).on('click', '.js-gb-session-tab', function () {
+  // Enter a specific session in a dedicated new page (/admin/gradebook/session)
+  $(document).on('click', '.js-gb-enter-session', function () {
     activeGradebookSessionId = Number($(this).attr('data-id'));
+    gradebookSubView = 'session';
+    updateBrowserUrl('/admin/gradebook/session');
+    renderActiveSection();
+  });
+
+  // Back to Gradebook sessions card list (/admin/gradebook)
+  $(document).on('click', '.js-gb-back-to-sessions', function () {
+    gradebookSubView = 'list';
+    updateBrowserUrl('/admin/gradebook');
     renderActiveSection();
   });
 
   $(document).on('click', '#btn-open-create-gb-session', function () {
     const state = loadDbState();
+    const defaultClass = gradebookClassCode === 'all' ? '901' : gradebookClassCode;
+    const classOptionsHtml = state.classes
+      .map(
+        (c) =>
+          `<option value="${c.code}" ${String(c.code) === String(defaultClass) ? 'selected' : ''}>کلاس ${toPersianDigits(c.code)}</option>`
+      )
+      .join('');
+    $('#gb-session-class').html(classOptionsHtml);
+
     const classSessionsCount = (state.gradebookSessions || []).filter(
-      (s) => String(s.classCode) === String(gradebookClassCode)
+      (s) => String(s.classCode) === String(defaultClass)
     ).length;
-    $('#gb-session-title').val(`جلسه ${toPersianDigits(classSessionsCount + 1)} — کلاس ${toPersianDigits(gradebookClassCode)}`);
+    $('#gb-session-title').val(`جلسه ${toPersianDigits(classSessionsCount + 1)} — کلاس ${toPersianDigits(defaultClass)}`);
     $('#gb-session-date').val('۱۴۰۵/۰۸/۱۶');
     $('#gb-session-topic').val('');
     $('#admin-gradebook-session-modal').addClass('is-open').attr('aria-hidden', 'false');
@@ -3511,6 +3607,7 @@ export function initAdminPanelEvents(): void {
 
   $(document).on('submit', '#form-add-gb-session', function (e) {
     e.preventDefault();
+    const targetClassCode = String($('#gb-session-class').val() || '901');
     const title = String($('#gb-session-title').val() || '').trim();
     const date = String($('#gb-session-date').val() || '').trim();
     const topic = String($('#gb-session-topic').val() || '').trim();
@@ -3523,7 +3620,7 @@ export function initAdminPanelEvents(): void {
     const newSessionId = Date.now();
     state.gradebookSessions.push({
       id: newSessionId,
-      classCode: gradebookClassCode,
+      classCode: targetClassCode,
       title,
       sessionDate: date,
       topic: topic || 'بررسی مباحث عملی و تمرین کلاسی',
@@ -3531,14 +3628,14 @@ export function initAdminPanelEvents(): void {
 
     // Seed default present entries for all approved students in this class
     const classStudents = state.students.filter(
-      (s) => String(s.classCode) === String(gradebookClassCode) && s.status === 'approved'
+      (s) => String(s.classCode) === String(targetClassCode) && s.status === 'approved'
     );
     classStudents.forEach((st, idx) => {
       state.gradebookEntries.push({
         id: newSessionId + idx + 1,
         sessionId: newSessionId,
         studentId: st.id,
-        classCode: gradebookClassCode,
+        classCode: targetClassCode,
         attendance: 'present',
         classScore: null,
         positiveCount: 0,
@@ -3547,17 +3644,20 @@ export function initAdminPanelEvents(): void {
       });
     });
 
-    activeGradebookSessionId = newSessionId;
     logAdminActivity(
       state,
-      `ایجاد جلسه جدید در دفتر نمره کلاس ${toPersianDigits(gradebookClassCode)}`,
+      `ایجاد جلسه جدید در دفتر نمره کلاس ${toPersianDigits(targetClassCode)}`,
       `${title} (${date})`,
       'assignment'
     );
     saveDbState(state);
     $('#admin-gradebook-session-modal').removeClass('is-open').attr('aria-hidden', 'true');
     renderActiveSection();
-    showToast('جلسه جدید ثبت شد', `«${toPersianDigits(title)}» به دفتر نمره کلاس ${toPersianDigits(gradebookClassCode)} اضافه شد.`, 'success');
+    showToast(
+      'جلسه جدید ثبت شد',
+      `«${toPersianDigits(title)}» به دفتر نمره کلاس ${toPersianDigits(targetClassCode)} اضافه شد.`,
+      'success'
+    );
   });
 
   // Helper to get or create a GradebookEntry for (sessionId, studentId)
@@ -3568,14 +3668,15 @@ export function initAdminPanelEvents(): void {
   ): GradebookEntry {
     if (!state.gradebookEntries) state.gradebookEntries = [];
     let entry = state.gradebookEntries.find(
-      (e) => e.sessionId === sessionId && e.studentId === studentId
+      (e) => Number(e.sessionId) === Number(sessionId) && Number(e.studentId) === Number(studentId)
     );
     if (!entry) {
+      const ses = (state.gradebookSessions || []).find((s) => Number(s.id) === Number(sessionId));
       entry = {
         id: Date.now() + Math.floor(Math.random() * 1000),
-        sessionId,
-        studentId,
-        classCode: gradebookClassCode,
+        sessionId: Number(sessionId),
+        studentId: Number(studentId),
+        classCode: ses ? ses.classCode : '901',
         attendance: 'present',
         classScore: null,
         positiveCount: 0,
@@ -3584,61 +3685,45 @@ export function initAdminPanelEvents(): void {
       };
       state.gradebookEntries.push(entry);
     }
+    entry.positiveCount = Number(entry.positiveCount) || 0;
+    entry.negativeCount = Number(entry.negativeCount) || 0;
+    if (entry.attendance === 'absent') {
+      entry.classScore = null;
+      entry.positiveCount = 0;
+      entry.negativeCount = 0;
+    }
     return entry;
   }
 
-  // Toggle Attendance Status (حاضر / تأخیر / غایب)
-  $(document).on('click', '.js-gb-attendance-btn', function () {
-    const sessionId = Number($(this).attr('data-session-id'));
-    const studentId = Number($(this).attr('data-student-id'));
-    const status = String($(this).attr('data-status')) as AttendanceStatus;
+  // Sync current DOM inputs (scores, notes, positive/negative counts) into state before re-rendering
+  function syncGradebookInputsFromDom(state: DatabaseState, sessionId: number): void {
+    $('.js-gb-pos-value').each(function () {
+      const studentId = Number($(this).attr('data-student-id'));
+      const val = Number($(this).attr('data-count'));
+      const entry = ensureGradebookEntry(state, sessionId, studentId);
+      if (entry.attendance === 'absent') {
+        entry.positiveCount = 0;
+      } else if (!isNaN(val)) {
+        entry.positiveCount = Math.max(0, val);
+      }
+    });
 
-    const state = loadDbState();
-    const entry = ensureGradebookEntry(state, sessionId, studentId);
-    entry.attendance = status;
-    saveDbState(state);
-    renderActiveSection();
-  });
-
-  // Adjust Positive Points (+ / -)
-  $(document).on('click', '.js-gb-pos-delta', function () {
-    const sessionId = Number($(this).attr('data-session-id'));
-    const studentId = Number($(this).attr('data-student-id'));
-    const delta = Number($(this).attr('data-delta'));
-
-    const state = loadDbState();
-    const entry = ensureGradebookEntry(state, sessionId, studentId);
-    entry.positiveCount = Math.max(0, (entry.positiveCount || 0) + delta);
-    saveDbState(state);
-    renderActiveSection();
-  });
-
-  // Adjust Negative Points (+ / -)
-  $(document).on('click', '.js-gb-neg-delta', function () {
-    const sessionId = Number($(this).attr('data-session-id'));
-    const studentId = Number($(this).attr('data-student-id'));
-    const delta = Number($(this).attr('data-delta'));
-
-    const state = loadDbState();
-    const entry = ensureGradebookEntry(state, sessionId, studentId);
-    entry.negativeCount = Math.max(0, (entry.negativeCount || 0) + delta);
-    saveDbState(state);
-    renderActiveSection();
-  });
-
-  // Save all scores and teacher notes for the active session
-  $(document).on('click', '#btn-save-gradebook-session', function () {
-    const sessionId = Number($(this).attr('data-session-id'));
-    if (!sessionId) return;
-
-    const state = loadDbState();
-    const session = (state.gradebookSessions || []).find((s) => s.id === sessionId);
+    $('.js-gb-neg-value').each(function () {
+      const studentId = Number($(this).attr('data-student-id'));
+      const val = Number($(this).attr('data-count'));
+      const entry = ensureGradebookEntry(state, sessionId, studentId);
+      if (entry.attendance === 'absent') {
+        entry.negativeCount = 0;
+      } else if (!isNaN(val)) {
+        entry.negativeCount = Math.max(0, val);
+      }
+    });
 
     $('.js-gb-score-input').each(function () {
       const studentId = Number($(this).attr('data-student-id'));
       const rawScore = normalizeDigits(String($(this).val() || '').trim());
       const entry = ensureGradebookEntry(state, sessionId, studentId);
-      if (rawScore === '') {
+      if (entry.attendance === 'absent' || rawScore === '') {
         entry.classScore = null;
       } else {
         const parsed = parseFloat(rawScore);
@@ -3652,10 +3737,93 @@ export function initAdminPanelEvents(): void {
       const entry = ensureGradebookEntry(state, sessionId, studentId);
       entry.teacherNote = note;
     });
+  }
+
+  // Toggle Attendance Status (حاضر / تأخیر / غایب)
+  $(document).on('click', '.js-gb-attendance-btn', function () {
+    const sessionId = Number($(this).attr('data-session-id'));
+    const studentId = Number($(this).attr('data-student-id'));
+    const status = String($(this).attr('data-status')) as AttendanceStatus;
+
+    const state = loadDbState();
+    syncGradebookInputsFromDom(state, sessionId);
+    const entry = ensureGradebookEntry(state, sessionId, studentId);
+    entry.attendance = status;
+    if (status === 'absent') {
+      entry.classScore = null;
+      entry.positiveCount = 0;
+      entry.negativeCount = 0;
+    }
+    saveDbState(state);
+    renderActiveSection();
+  });
+
+  // Adjust Positive Points (+ / -)
+  $(document).on('click', '.js-gb-pos-delta', function () {
+    if ($(this).prop('disabled')) return;
+    const sessionId = Number($(this).attr('data-session-id'));
+    const studentId = Number($(this).attr('data-student-id'));
+    const delta = Number($(this).attr('data-delta'));
+
+    const state = loadDbState();
+    syncGradebookInputsFromDom(state, sessionId);
+    const entry = ensureGradebookEntry(state, sessionId, studentId);
+    if (entry.attendance === 'absent') {
+      showToast('دانش‌آموز غایب است', 'برای دانش‌آموز غایب امکان ثبت امتیاز مثبت یا منفی وجود ندارد.', 'info');
+      return;
+    }
+    entry.positiveCount = Math.max(0, (Number(entry.positiveCount) || 0) + delta);
+    saveDbState(state);
+    renderActiveSection();
+  });
+
+  // Adjust Negative Points (+ / -)
+  $(document).on('click', '.js-gb-neg-delta', function () {
+    if ($(this).prop('disabled')) return;
+    const sessionId = Number($(this).attr('data-session-id'));
+    const studentId = Number($(this).attr('data-student-id'));
+    const delta = Number($(this).attr('data-delta'));
+
+    const state = loadDbState();
+    syncGradebookInputsFromDom(state, sessionId);
+    const entry = ensureGradebookEntry(state, sessionId, studentId);
+    if (entry.attendance === 'absent') {
+      showToast('دانش‌آموز غایب است', 'برای دانش‌آموز غایب امکان ثبت امتیاز مثبت یا منفی وجود ندارد.', 'info');
+      return;
+    }
+    entry.negativeCount = Math.max(0, (Number(entry.negativeCount) || 0) + delta);
+    saveDbState(state);
+    renderActiveSection();
+  });
+
+  // Save all scores, attendance, positive/negative counts and teacher notes for the active session
+  $(document).on('click', '#btn-save-gradebook-session', function () {
+    const sessionId = Number($(this).attr('data-session-id'));
+    if (!sessionId) return;
+
+    const state = loadDbState();
+    const session = (state.gradebookSessions || []).find((s) => Number(s.id) === Number(sessionId));
+
+    syncGradebookInputsFromDom(state, sessionId);
+
+    // Ensure every approved student in this session's class has a persisted entry
+    if (session) {
+      const classStudents = state.students.filter(
+        (st) => String(st.classCode) === String(session.classCode) && st.status === 'approved'
+      );
+      classStudents.forEach((st) => {
+        const en = ensureGradebookEntry(state, sessionId, st.id);
+        if (en.attendance === 'absent') {
+          en.classScore = null;
+          en.positiveCount = 0;
+          en.negativeCount = 0;
+        }
+      });
+    }
 
     logAdminActivity(
       state,
-      `ثبت دفتر نمره و حضور و غیاب کلاس ${toPersianDigits(gradebookClassCode)}`,
+      `ثبت دفتر نمره و حضور و غیاب کلاس ${toPersianDigits(session ? session.classCode : '901')}`,
       session ? `${session.title} (${session.sessionDate})` : 'بروزرسانی نمرات جلسه',
       'assignment'
     );
@@ -3670,49 +3838,35 @@ export function initAdminPanelEvents(): void {
 }
 
 /* ============================================================================
-   دفتر نمره (Gradebook): حضور و غیاب جلسات، نمرات کلاسی و ثبت مثبت و منفی
+   دفتر نمره (Gradebook):
+   1) نمای کارتی جلسات (/admin/gradebook) با دکمه «ورود به جلسه»
+   2) صفحه اختصاصی هر جلسه (/admin/gradebook/session) برای ثبت حضور و غیاب، نمره و مثبت/منفی
    ============================================================================ */
 function renderGradebookSection($container: JQuery<HTMLElement>, state: DatabaseState): void {
-  const sessions = (state.gradebookSessions || []).filter(
-    (s) => String(s.classCode) === String(gradebookClassCode)
-  );
-
-  if (
-    sessions.length > 0 &&
-    (!activeGradebookSessionId || !sessions.some((s) => s.id === activeGradebookSessionId))
-  ) {
-    activeGradebookSessionId = sessions[sessions.length - 1].id;
+  if (gradebookSubView === 'session' && activeGradebookSessionId) {
+    renderGradebookSessionDetailPage($container, state, activeGradebookSessionId);
+    return;
   }
 
-  const activeSession = sessions.find((s) => s.id === activeGradebookSessionId) || null;
-  const classStudents = state.students.filter(
-    (s) => String(s.classCode) === String(gradebookClassCode) && s.status === 'approved'
+  const allSessions = state.gradebookSessions || [];
+  const filteredSessions = allSessions.filter((s) =>
+    gradebookClassCode === 'all' ? true : String(s.classCode) === String(gradebookClassCode)
   );
-
-  const sessionEntries = activeSession
-    ? (state.gradebookEntries || []).filter((e) => e.sessionId === activeSession.id)
-    : [];
-
-  const presentCount = classStudents.filter((st) => {
-    const en = sessionEntries.find((e) => e.studentId === st.id);
-    return !en || en.attendance === 'present';
-  }).length;
-  const lateCount = classStudents.filter((st) => {
-    const en = sessionEntries.find((e) => e.studentId === st.id);
-    return en && en.attendance === 'late';
-  }).length;
-  const absentCount = classStudents.filter((st) => {
-    const en = sessionEntries.find((e) => e.studentId === st.id);
-    return en && en.attendance === 'absent';
-  }).length;
 
   $container.html(`
     <div class="space-y-4">
-      <!-- نوار انتخاب کلاس و افزودن جلسه جدید -->
+      <!-- نوار ابزار دفتر نمره: فیلتر کلاس‌ها و دکمه ثبت جلسه جدید -->
       <div class="admin-surface-card flex flex-wrap items-center justify-between gap-3">
         <div class="flex items-center gap-2 flex-wrap">
-          <span class="text-xs font-extrabold text-[#6E5D4F] ml-1">انتخاب کلاس:</span>
+          <span class="text-xs font-extrabold text-[#6E5D4F] ml-1">فیلتر جلسات بر اساس کلاس:</span>
           <div class="admin-segmented-bar flex-wrap">
+            <button
+              type="button"
+              class="admin-seg-btn js-gb-class-tab ${gradebookClassCode === 'all' ? 'is-active' : ''}"
+              data-code="all"
+            >
+              همه کلاس‌ها (${toPersianDigits(allSessions.length)})
+            </button>
             ${state.classes
               .map(
                 (cls) => `
@@ -3730,276 +3884,437 @@ function renderGradebookSection($container: JQuery<HTMLElement>, state: Database
           </div>
         </div>
 
-        <div class="flex items-center gap-2">
-          <button type="button" id="btn-open-create-gb-session" class="btn-admin-action !h-9">
-            + ثبت جلسه جدید برای کلاس ${toPersianDigits(gradebookClassCode)}
-          </button>
-          ${
-            activeSession
-              ? `<button
-                  type="button"
-                  id="btn-save-gradebook-session"
-                  data-session-id="${activeSession.id}"
-                  class="btn-admin-primary !h-9"
-                >
-                  ذخیره نهایی نمرات و حضور و غیاب جلسه
-                </button>`
-              : ''
-          }
-        </div>
+        <button type="button" id="btn-open-create-gb-session" class="btn-admin-primary !h-9">
+          + ثبت جلسه جدید
+        </button>
       </div>
 
-      <!-- نوار انتخاب جلسات کلاس -->
-      <div class="admin-surface-card !py-3 flex flex-wrap items-center justify-between gap-3">
-        <div class="flex items-center gap-2 flex-wrap">
-          <span class="text-xs font-extrabold text-[#5A3A22]">جلسات ثبت‌شده:</span>
-          ${
-            sessions.length
-              ? sessions
-                  .map(
-                    (ses) => `
-                    <button
-                      type="button"
-                      class="px-3 py-1.5 rounded-xl text-xs font-extrabold border transition cursor-pointer js-gb-session-tab ${
-                        activeSession && activeSession.id === ses.id
-                          ? 'bg-[#5A3A22] text-white border-[#5A3A22] shadow-sm'
-                          : 'bg-[#FDFBF7] text-[#3E3027] border-[#E5DBCB] hover:bg-[#F3ECE0]'
-                      }"
-                      data-id="${ses.id}"
-                    >
-                      <span>${toPersianDigits(ses.title)}</span>
-                      <span class="opacity-80 mr-1 tabular-nums">(${toPersianDigits(ses.sessionDate)})</span>
-                    </button>`
-                  )
-                  .join('')
-              : `<span class="text-xs text-[#6E5D4F]">هنوز جلسه‌ای برای این کلاس ثبت نشده است.</span>`
-          }
-        </div>
-
+      <!-- کارت‌های جلسات دفتر نمره -->
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-stretch">
         ${
-          activeSession
-            ? `<div class="flex items-center gap-2 text-xs tabular-nums">
-                <span class="status-pill status-pill-approved">حاضر: ${toPersianDigits(presentCount)}</span>
-                <span class="status-pill status-pill-pending">تأخیر: ${toPersianDigits(lateCount)}</span>
-                <span class="status-pill status-pill-rejected">غایب: ${toPersianDigits(absentCount)}</span>
-              </div>`
-            : ''
+          filteredSessions.length
+            ? filteredSessions
+                .map((ses) => {
+                  const classStudents = state.students.filter(
+                    (st) => String(st.classCode) === String(ses.classCode) && st.status === 'approved'
+                  );
+                  const allowedIds = new Set(classStudents.map((st) => Number(st.id)));
+                  const entries = (state.gradebookEntries || []).filter(
+                    (e) => Number(e.sessionId) === Number(ses.id) && allowedIds.has(Number(e.studentId))
+                  );
+                  const presentCount = classStudents.filter((st) => {
+                    const en = entries.find((e) => Number(e.studentId) === Number(st.id));
+                    return !en || en.attendance === 'present';
+                  }).length;
+                  const lateCount = classStudents.filter((st) => {
+                    const en = entries.find((e) => Number(e.studentId) === Number(st.id));
+                    return en && en.attendance === 'late';
+                  }).length;
+                  const absentCount = classStudents.filter((st) => {
+                    const en = entries.find((e) => Number(e.studentId) === Number(st.id));
+                    return en && en.attendance === 'absent';
+                  }).length;
+
+                  const totalPos = entries.reduce(
+                    (sum, e) => sum + (e.attendance === 'absent' ? 0 : Number(e.positiveCount) || 0),
+                    0
+                  );
+                  const totalNeg = entries.reduce(
+                    (sum, e) => sum + (e.attendance === 'absent' ? 0 : Number(e.negativeCount) || 0),
+                    0
+                  );
+
+                  return `
+                    <div class="modern-class-card">
+                      <div>
+                        <div class="flex items-center justify-between gap-2">
+                          <span class="text-[11px] font-extrabold text-[#1B5E5A] bg-[#E2EFEA] px-2.5 py-1 rounded-lg">
+                            کلاس ${toPersianDigits(ses.classCode)}
+                          </span>
+                          <span class="text-xs font-bold text-[#6E5D4F] tabular-nums">
+                            ${toPersianDigits(ses.sessionDate)}
+                          </span>
+                        </div>
+
+                        <h3 class="text-sm font-black text-[#251B15] mt-2.5 m-0 leading-snug">
+                          ${toPersianDigits(ses.title)}
+                        </h3>
+                        <p class="text-xs text-[#6E5D4F] mt-1.5 m-0 leading-relaxed">
+                          ${toPersianDigits(ses.topic)}
+                        </p>
+                      </div>
+
+                      <div class="mt-4 pt-3 border-t border-[#E6D8C5] space-y-3">
+                        <div class="flex items-center justify-between text-[11px] tabular-nums">
+                          <div class="flex items-center gap-1.5">
+                            <span class="px-2 py-0.5 rounded-md bg-[#ECFDF5] text-[#059669] font-extrabold">حاضر: ${toPersianDigits(presentCount)}</span>
+                            <span class="px-2 py-0.5 rounded-md bg-[#FFFBEB] text-[#D97706] font-extrabold">تأخیر: ${toPersianDigits(lateCount)}</span>
+                            <span class="px-2 py-0.5 rounded-md bg-[#FFF1F2] text-[#E11D48] font-extrabold">غایب: ${toPersianDigits(absentCount)}</span>
+                          </div>
+                          <div class="flex items-center gap-1 font-extrabold">
+                            <span class="px-2 py-0.5 rounded-md bg-[#ECFDF5] text-[#059669]">مثبت: +${toPersianDigits(totalPos)}</span>
+                            <span class="px-2 py-0.5 rounded-md bg-[#FFF1F2] text-[#E11D48]">منفی: −${toPersianDigits(totalNeg)}</span>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          class="btn-admin-primary w-full !h-9 text-xs js-gb-enter-session"
+                          data-id="${ses.id}"
+                        >
+                          ورود به جلسه
+                        </button>
+                      </div>
+                    </div>
+                  `;
+                })
+                .join('')
+            : `<div class="col-span-full admin-surface-card text-center py-8 text-xs text-[#6E5D4F]">جلسه‌ای برای این کلاس ثبت نشده است.</div>`
         }
       </div>
+    </div>
+  `);
+}
 
-      ${
-        activeSession
-          ? `
-          <!-- مشخصات جلسه فعال -->
-          <div class="admin-surface-card !py-3 bg-[#FDFBF7] flex flex-wrap items-center justify-between gap-2">
-            <div class="text-xs font-bold text-[#251B15]">
-              مبحث جلسه: <strong class="font-black text-[#1B5E5A]">${toPersianDigits(activeSession.topic)}</strong>
-            </div>
-            <div class="text-xs font-bold text-[#6E5D4F] tabular-nums">
-              تاریخ برگزاری: <strong class="text-[#251B15]">${toPersianDigits(activeSession.sessionDate)}</strong>
-            </div>
+/**
+ * صفحه اختصاصی هر جلسه در دفتر نمره (/admin/gradebook/session)
+ */
+function renderGradebookSessionDetailPage(
+  $container: JQuery<HTMLElement>,
+  state: DatabaseState,
+  sessionId: number
+): void {
+  const activeSession = (state.gradebookSessions || []).find((s) => Number(s.id) === Number(sessionId));
+  if (!activeSession) {
+    gradebookSubView = 'list';
+    renderGradebookSection($container, state);
+    return;
+  }
+
+  const classStudents = state.students.filter(
+    (s) => String(s.classCode) === String(activeSession.classCode) && s.status === 'approved'
+  );
+  const allowedIds = new Set(classStudents.map((st) => Number(st.id)));
+  const sessionEntries = (state.gradebookEntries || []).filter(
+    (e) => Number(e.sessionId) === Number(activeSession.id) && allowedIds.has(Number(e.studentId))
+  );
+
+  const presentCount = classStudents.filter((st) => {
+    const en = sessionEntries.find((e) => Number(e.studentId) === Number(st.id));
+    return !en || en.attendance === 'present';
+  }).length;
+  const lateCount = classStudents.filter((st) => {
+    const en = sessionEntries.find((e) => Number(e.studentId) === Number(st.id));
+    return en && en.attendance === 'late';
+  }).length;
+  const absentCount = classStudents.filter((st) => {
+    const en = sessionEntries.find((e) => Number(e.studentId) === Number(st.id));
+    return en && en.attendance === 'absent';
+  }).length;
+
+  const sessionTotalPos = sessionEntries.reduce(
+    (sum, e) => sum + (e.attendance === 'absent' ? 0 : Number(e.positiveCount) || 0),
+    0
+  );
+  const sessionTotalNeg = sessionEntries.reduce(
+    (sum, e) => sum + (e.attendance === 'absent' ? 0 : Number(e.negativeCount) || 0),
+    0
+  );
+
+  $container.html(`
+    <div class="space-y-4">
+      <!-- هدر صفحه اختصاصی جلسه در دفتر نمره -->
+      <div class="admin-surface-card flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="text-xs font-extrabold text-[#1B5E5A] bg-[#E2EFEA] px-2.5 py-1 rounded-lg">
+              کلاس ${toPersianDigits(activeSession.classCode)}
+            </span>
+            <span class="text-xs font-bold text-[#6E5D4F] tabular-nums">
+              تاریخ جلسه: ${toPersianDigits(activeSession.sessionDate)}
+            </span>
           </div>
+          <h2 class="text-base font-black text-[#251B15] mt-2 m-0">
+            ${toPersianDigits(activeSession.title)}
+          </h2>
+          <p class="text-xs text-[#6E5D4F] mt-1 m-0">
+            مبحث آموزشی: <strong class="text-[#251B15]">${toPersianDigits(activeSession.topic)}</strong>
+          </p>
+        </div>
 
-          <!-- جدول دفتر نمره، حضور و غیاب و مثبت / منفی دانش‌آموزان -->
-          <div class="admin-surface-card !p-0 overflow-hidden">
-            <div class="admin-table-wrap !border-0 !rounded-none">
-              <table class="admin-table">
-                <thead>
-                  <tr>
-                    <th>دانش‌آموز</th>
-                    <th>وضعیت حضور و غیاب</th>
-                    <th>امتیاز مثبت (+)</th>
-                    <th>امتیاز منفی (-)</th>
-                    <th>نمره جلسه (از ۲۰)</th>
-                    <th>یادداشت و بازخورد کلاسی</th>
-                    <th>تراز کل جلسات</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${
-                    classStudents.length
-                      ? classStudents
-                          .map((st) => {
-                            const entry = sessionEntries.find((e) => e.studentId === st.id) || {
-                              sessionId: activeSession.id,
-                              studentId: st.id,
-                              attendance: 'present' as AttendanceStatus,
-                              classScore: null,
-                              positiveCount: 0,
-                              negativeCount: 0,
-                              teacherNote: '',
-                            };
+        <div class="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            id="btn-save-gradebook-session"
+            data-session-id="${activeSession.id}"
+            class="btn-admin-primary !h-9"
+          >
+            ذخیره نهایی نمرات و حضور و غیاب جلسه
+          </button>
+          <button type="button" class="btn-admin-action !h-9 js-gb-back-to-sessions">
+            بازگشت به لیست جلسات ←
+          </button>
+        </div>
+      </div>
 
-                            // تراز کل مثبت و منفی دانش‌آموز در تمام جلسات
-                            const allStEntries = (state.gradebookEntries || []).filter(
-                              (e) => e.studentId === st.id
-                            );
-                            const totalPos = allStEntries.reduce((a, b) => a + (b.positiveCount || 0), 0);
-                            const totalNeg = allStEntries.reduce((a, b) => a + (b.negativeCount || 0), 0);
+      <!-- خلاصه آمار حضور و غیاب و مجموع مثبت/منفی این جلسه -->
+      <div class="admin-surface-card !py-3 flex flex-wrap items-center justify-between gap-3">
+        <span class="text-xs font-extrabold text-[#5A3A22]">
+          لیست دانش‌آموزان کلاس ${toPersianDigits(activeSession.classCode)} (${toPersianDigits(classStudents.length)} نفر)
+        </span>
+        <div class="flex items-center gap-2 flex-wrap text-xs tabular-nums">
+          <span class="status-pill status-pill-approved">حاضر: ${toPersianDigits(presentCount)}</span>
+          <span class="status-pill status-pill-pending">تأخیر: ${toPersianDigits(lateCount)}</span>
+          <span class="status-pill status-pill-rejected">غایب: ${toPersianDigits(absentCount)}</span>
+          <span class="px-2.5 py-1 rounded-lg bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0] font-extrabold">
+            مجموع مثبت جلسه: +${toPersianDigits(sessionTotalPos)}
+          </span>
+          <span class="px-2.5 py-1 rounded-lg bg-[#FFF1F2] text-[#E11D48] border border-[#FECDD3] font-extrabold">
+            مجموع منفی جلسه: −${toPersianDigits(sessionTotalNeg)}
+          </span>
+        </div>
+      </div>
 
-                            return `
-                              <tr>
-                                <td>
-                                  <div class="flex items-center gap-2.5">
-                                    ${renderStudentAvatarHtml(st, 'sm')}
-                                    <div>
-                                      <div class="font-extrabold text-[#251B15]">${st.firstName} ${st.lastName}</div>
-                                      <div class="text-[11px] text-[#6E5D4F] tabular-nums">${toPersianDigits(st.phone)}</div>
-                                    </div>
-                                  </div>
-                                </td>
+      <!-- جدول دفتر نمره، حضور و غیاب و مثبت / منفی دانش‌آموزان -->
+      <div class="admin-surface-card !p-0 overflow-hidden">
+        <div class="admin-table-wrap !border-0 !rounded-none">
+          <table class="admin-table">
+            <thead>
+              <tr>
+                <th>دانش‌آموز</th>
+                <th>وضعیت حضور و غیاب</th>
+                <th>امتیاز مثبت (+)</th>
+                <th>امتیاز منفی (-)</th>
+                <th>نمره جلسه (از ۲۰)</th>
+                <th>یادداشت و بازخورد کلاسی</th>
+                <th>تراز کل جلسات</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${
+                classStudents.length
+                  ? classStudents
+                      .map((st) => {
+                        const existingEntry = sessionEntries.find(
+                          (e) => Number(e.studentId) === Number(st.id)
+                        );
+                        const attendance: AttendanceStatus = existingEntry
+                          ? existingEntry.attendance
+                          : 'present';
+                        const isAbsent = attendance === 'absent';
+                        const posCount = isAbsent
+                          ? 0
+                          : Number(existingEntry?.positiveCount) || 0;
+                        const negCount = isAbsent
+                          ? 0
+                          : Number(existingEntry?.negativeCount) || 0;
+                        const classScore = isAbsent
+                          ? null
+                          : existingEntry?.classScore ?? null;
+                        const teacherNote = existingEntry?.teacherNote || '';
 
-                                <!-- دکمه‌های حضور و غیاب -->
-                                <td>
-                                  <div class="inline-flex items-center gap-1 p-1 rounded-xl bg-[#F3ECE0] border border-[#E2D5C1]">
-                                    <button
-                                      type="button"
-                                      class="px-2.5 py-1 rounded-lg text-[11px] font-extrabold cursor-pointer border-none transition js-gb-attendance-btn ${
-                                        entry.attendance === 'present'
-                                          ? 'bg-[#059669] text-white shadow-xs'
-                                          : 'bg-transparent text-[#4E3E30] hover:bg-[#E7DEC8]'
-                                      }"
-                                      data-session-id="${activeSession.id}"
+                        const allStEntries = (state.gradebookEntries || []).filter(
+                          (e) => Number(e.studentId) === Number(st.id) && e.attendance !== 'absent'
+                        );
+                        const totalPos = allStEntries.reduce(
+                          (a, b) => a + (Number(b.positiveCount) || 0),
+                          0
+                        );
+                        const totalNeg = allStEntries.reduce(
+                          (a, b) => a + (Number(b.negativeCount) || 0),
+                          0
+                        );
+
+                        return `
+                          <tr class="${isAbsent ? 'bg-[#FFF9FA]/60' : ''}">
+                            <td>
+                              <div class="flex items-center gap-2.5">
+                                ${renderStudentAvatarHtml(st, 'sm')}
+                                <div>
+                                  <div class="font-extrabold text-[#251B15]">${st.firstName} ${st.lastName}</div>
+                                  <div class="text-[11px] text-[#6E5D4F] tabular-nums">${toPersianDigits(st.phone)}</div>
+                                </div>
+                              </div>
+                            </td>
+
+                            <!-- دکمه‌های حضور و غیاب -->
+                            <td>
+                              <div class="inline-flex items-center gap-1 p-1 rounded-xl bg-[#F3ECE0] border border-[#E2D5C1]">
+                                <button
+                                  type="button"
+                                  class="px-2.5 py-1 rounded-lg text-[11px] font-extrabold cursor-pointer border-none transition js-gb-attendance-btn ${
+                                    attendance === 'present'
+                                      ? 'bg-[#059669] text-white shadow-xs'
+                                      : 'bg-transparent text-[#4E3E30] hover:bg-[#E7DEC8]'
+                                  }"
+                                  data-session-id="${activeSession.id}"
+                                  data-student-id="${st.id}"
+                                  data-status="present"
+                                >
+                                  حاضر
+                                </button>
+                                <button
+                                  type="button"
+                                  class="px-2.5 py-1 rounded-lg text-[11px] font-extrabold cursor-pointer border-none transition js-gb-attendance-btn ${
+                                    attendance === 'late'
+                                      ? 'bg-[#D97706] text-white shadow-xs'
+                                      : 'bg-transparent text-[#4E3E30] hover:bg-[#E7DEC8]'
+                                  }"
+                                  data-session-id="${activeSession.id}"
+                                  data-student-id="${st.id}"
+                                  data-status="late"
+                                >
+                                  تأخیر
+                                </button>
+                                <button
+                                  type="button"
+                                  class="px-2.5 py-1 rounded-lg text-[11px] font-extrabold cursor-pointer border-none transition js-gb-attendance-btn ${
+                                    attendance === 'absent'
+                                      ? 'bg-[#E11D48] text-white shadow-xs'
+                                      : 'bg-transparent text-[#4E3E30] hover:bg-[#E7DEC8]'
+                                  }"
+                                  data-session-id="${activeSession.id}"
+                                  data-student-id="${st.id}"
+                                  data-status="absent"
+                                >
+                                  غایب
+                                </button>
+                              </div>
+                            </td>
+
+                            <!-- امتیاز مثبت (+) سبز -->
+                            <td>
+                              ${
+                                isAbsent
+                                  ? `<span
+                                      class="inline-flex items-center px-2.5 py-1 rounded-lg bg-[#F5EFE6] text-[#9A8B7A] border border-[#E2D5C1] text-[11px] font-bold js-gb-pos-value"
                                       data-student-id="${st.id}"
-                                      data-status="present"
+                                      data-count="0"
                                     >
-                                      حاضر
-                                    </button>
-                                    <button
-                                      type="button"
-                                      class="px-2.5 py-1 rounded-lg text-[11px] font-extrabold cursor-pointer border-none transition js-gb-attendance-btn ${
-                                        entry.attendance === 'late'
-                                          ? 'bg-[#D97706] text-white shadow-xs'
-                                          : 'bg-transparent text-[#4E3E30] hover:bg-[#E7DEC8]'
-                                      }"
-                                      data-session-id="${activeSession.id}"
-                                      data-student-id="${st.id}"
-                                      data-status="late"
-                                    >
-                                      تأخیر
-                                    </button>
-                                    <button
-                                      type="button"
-                                      class="px-2.5 py-1 rounded-lg text-[11px] font-extrabold cursor-pointer border-none transition js-gb-attendance-btn ${
-                                        entry.attendance === 'absent'
-                                          ? 'bg-[#E11D48] text-white shadow-xs'
-                                          : 'bg-transparent text-[#4E3E30] hover:bg-[#E7DEC8]'
-                                      }"
-                                      data-session-id="${activeSession.id}"
-                                      data-student-id="${st.id}"
-                                      data-status="absent"
-                                    >
-                                      غایب
-                                    </button>
-                                  </div>
-                                </td>
+                                      غایب (غیرفعال)
+                                    </span>`
+                                  : `<div class="inline-flex items-center gap-1.5 tabular-nums">
+                                      <button
+                                        type="button"
+                                        class="w-6 h-6 rounded-lg border border-[#D4C3AE] bg-white text-[#251B15] font-black text-xs flex items-center justify-center cursor-pointer hover:bg-[#F3ECE0] js-gb-pos-delta"
+                                        data-session-id="${activeSession.id}"
+                                        data-student-id="${st.id}"
+                                        data-delta="-1"
+                                        title="کاهش مثبت"
+                                      >
+                                        −
+                                      </button>
+                                      <span
+                                        class="min-w-[34px] text-center px-2 py-0.5 rounded-lg bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0] font-black text-xs js-gb-pos-value"
+                                        data-student-id="${st.id}"
+                                        data-count="${posCount}"
+                                      >
+                                        +${toPersianDigits(posCount)}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        class="w-6 h-6 rounded-lg border border-[#A7F3D0] bg-[#ECFDF5] text-[#059669] font-black text-xs flex items-center justify-center cursor-pointer hover:bg-[#059669] hover:text-white js-gb-pos-delta"
+                                        data-session-id="${activeSession.id}"
+                                        data-student-id="${st.id}"
+                                        data-delta="1"
+                                        title="افزودن مثبت"
+                                      >
+                                        +
+                                      </button>
+                                    </div>`
+                              }
+                            </td>
 
-                                <!-- امتیاز مثبت (+) -->
-                                <td>
-                                  <div class="inline-flex items-center gap-1.5 tabular-nums">
-                                    <button
-                                      type="button"
-                                      class="w-6 h-6 rounded-lg border border-[#D4C3AE] bg-white text-[#251B15] font-black text-xs flex items-center justify-center cursor-pointer hover:bg-[#F3ECE0] js-gb-pos-delta"
-                                      data-session-id="${activeSession.id}"
+                            <!-- امتیاز منفی (-) قرمز -->
+                            <td>
+                              ${
+                                isAbsent
+                                  ? `<span
+                                      class="inline-flex items-center px-2.5 py-1 rounded-lg bg-[#F5EFE6] text-[#9A8B7A] border border-[#E2D5C1] text-[11px] font-bold js-gb-neg-value"
                                       data-student-id="${st.id}"
-                                      data-delta="-1"
-                                      title="کاهش مثبت"
+                                      data-count="0"
                                     >
-                                      −
-                                    </button>
-                                    <span class="min-w-[34px] text-center px-2 py-0.5 rounded-lg bg-[#E6F6F4] text-[#059669] font-black text-xs">
-                                      +${toPersianDigits(entry.positiveCount || 0)}
-                                    </span>
-                                    <button
-                                      type="button"
-                                      class="w-6 h-6 rounded-lg border border-[#A7F3D0] bg-[#E6F6F4] text-[#059669] font-black text-xs flex items-center justify-center cursor-pointer hover:bg-[#059669] hover:text-white js-gb-pos-delta"
-                                      data-session-id="${activeSession.id}"
-                                      data-student-id="${st.id}"
-                                      data-delta="1"
-                                      title="افزودن مثبت"
-                                    >
-                                      +
-                                    </button>
-                                  </div>
-                                </td>
+                                      غایب (غیرفعال)
+                                    </span>`
+                                  : `<div class="inline-flex items-center gap-1.5 tabular-nums">
+                                      <button
+                                        type="button"
+                                        class="w-6 h-6 rounded-lg border border-[#D4C3AE] bg-white text-[#251B15] font-black text-xs flex items-center justify-center cursor-pointer hover:bg-[#F3ECE0] js-gb-neg-delta"
+                                        data-session-id="${activeSession.id}"
+                                        data-student-id="${st.id}"
+                                        data-delta="-1"
+                                        title="کاهش منفی"
+                                      >
+                                        −
+                                      </button>
+                                      <span
+                                        class="min-w-[34px] text-center px-2 py-0.5 rounded-lg bg-[#FFF1F2] text-[#E11D48] border border-[#FECDD3] font-black text-xs js-gb-neg-value"
+                                        data-student-id="${st.id}"
+                                        data-count="${negCount}"
+                                      >
+                                        −${toPersianDigits(negCount)}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        class="w-6 h-6 rounded-lg border border-[#FECDD3] bg-[#FFF1F2] text-[#E11D48] font-black text-xs flex items-center justify-center cursor-pointer hover:bg-[#E11D48] hover:text-white js-gb-neg-delta"
+                                        data-session-id="${activeSession.id}"
+                                        data-student-id="${st.id}"
+                                        data-delta="1"
+                                        title="ثبت منفی"
+                                      >
+                                        +
+                                      </button>
+                                    </div>`
+                              }
+                            </td>
 
-                                <!-- امتیاز منفی (-) -->
-                                <td>
-                                  <div class="inline-flex items-center gap-1.5 tabular-nums">
-                                    <button
-                                      type="button"
-                                      class="w-6 h-6 rounded-lg border border-[#D4C3AE] bg-white text-[#251B15] font-black text-xs flex items-center justify-center cursor-pointer hover:bg-[#F3ECE0] js-gb-neg-delta"
-                                      data-session-id="${activeSession.id}"
-                                      data-student-id="${st.id}"
-                                      data-delta="-1"
-                                      title="کاهش منفی"
-                                    >
-                                      −
-                                    </button>
-                                    <span class="min-w-[34px] text-center px-2 py-0.5 rounded-lg bg-[#FFE4E6] text-[#E11D48] font-black text-xs">
-                                      −${toPersianDigits(entry.negativeCount || 0)}
-                                    </span>
-                                    <button
-                                      type="button"
-                                      class="w-6 h-6 rounded-lg border border-[#FECDD3] bg-[#FFE4E6] text-[#E11D48] font-black text-xs flex items-center justify-center cursor-pointer hover:bg-[#E11D48] hover:text-white js-gb-neg-delta"
-                                      data-session-id="${activeSession.id}"
-                                      data-student-id="${st.id}"
-                                      data-delta="1"
-                                      title="ثبت منفی"
-                                    >
-                                      +
-                                    </button>
-                                  </div>
-                                </td>
+                            <!-- نمره کلاسی جلسه -->
+                            <td>
+                              <input
+                                type="text"
+                                inputmode="decimal"
+                                class="school-input !h-8 !w-24 text-center text-xs font-extrabold tabular-nums js-gb-score-input ${
+                                  isAbsent ? '!bg-[#F3ECE0] !text-[#9A8B7A] cursor-not-allowed opacity-65' : ''
+                                }"
+                                data-student-id="${st.id}"
+                                placeholder="${isAbsent ? 'غایب' : 'از ۲۰'}"
+                                value="${
+                                  !isAbsent && classScore !== null && classScore !== undefined
+                                    ? toPersianDigits(classScore)
+                                    : ''
+                                }"
+                                ${isAbsent ? 'disabled' : ''}
+                              />
+                            </td>
 
-                                <!-- نمره کلاسی جلسه -->
-                                <td>
-                                  <input
-                                    type="text"
-                                    inputmode="decimal"
-                                    class="school-input !h-8 !w-20 text-center text-xs font-extrabold tabular-nums js-gb-score-input"
-                                    data-student-id="${st.id}"
-                                    placeholder="از ۲۰"
-                                    value="${
-                                      entry.classScore !== null && entry.classScore !== undefined
-                                        ? toPersianDigits(entry.classScore)
-                                        : ''
-                                    }"
-                                  />
-                                </td>
+                            <!-- یادداشت کلاسی -->
+                            <td>
+                              <input
+                                type="text"
+                                class="school-input !h-8 !w-48 text-xs js-gb-note-input"
+                                data-student-id="${st.id}"
+                                placeholder="یادداشت عملکرد در این جلسه..."
+                                value="${toPersianDigits(teacherNote)}"
+                              />
+                            </td>
 
-                                <!-- یادداشت کلاسی -->
-                                <td>
-                                  <input
-                                    type="text"
-                                    class="school-input !h-8 !w-48 text-xs js-gb-note-input"
-                                    data-student-id="${st.id}"
-                                    placeholder="یادداشت عملکرد در این جلسه..."
-                                    value="${toPersianDigits(entry.teacherNote || '')}"
-                                  />
-                                </td>
-
-                                <!-- تراز کل مثبت و منفی در کل ترم -->
-                                <td>
-                                  <div class="flex items-center gap-1.5 text-[11px] font-extrabold tabular-nums">
-                                    <span class="text-[#059669]">+${toPersianDigits(totalPos)}</span>
-                                    <span class="text-[#C5B49E]">/</span>
-                                    <span class="text-[#E11D48]">−${toPersianDigits(totalNeg)}</span>
-                                  </div>
-                                </td>
-                              </tr>
-                            `;
-                          })
-                          .join('')
-                      : `<tr><td colspan="7" class="text-center py-8 text-xs text-[#6E5D4F]">دانش‌آموز تأییدشده‌ای در کلاس ${toPersianDigits(gradebookClassCode)} یافت نشد.</td></tr>`
-                  }
-                </tbody>
-              </table>
-            </div>
-          </div>
-          `
-          : `<div class="admin-surface-card text-center py-8 text-xs text-[#6E5D4F]">لطفاً یک جلسه را انتخاب کنید یا دکمه «ثبت جلسه جدید» را بزنید.</div>`
-      }
+                            <!-- تراز کل مثبت و منفی در کل ترم -->
+                            <td>
+                              <div class="flex items-center gap-1.5 text-[11px] font-extrabold tabular-nums">
+                                <span class="px-2 py-0.5 rounded-md bg-[#ECFDF5] text-[#059669]">+${toPersianDigits(totalPos)}</span>
+                                <span class="px-2 py-0.5 rounded-md bg-[#FFF1F2] text-[#E11D48]">−${toPersianDigits(totalNeg)}</span>
+                              </div>
+                            </td>
+                          </tr>
+                        `;
+                      })
+                      .join('')
+                  : `<tr><td colspan="7" class="text-center py-8 text-xs text-[#6E5D4F]">دانش‌آموز تأییدشده‌ای در کلاس ${toPersianDigits(activeSession.classCode)} یافت نشد.</td></tr>`
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   `);
 }

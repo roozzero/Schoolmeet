@@ -22,9 +22,12 @@ let studentResCategoryFilter = 'all';
 let studentResSearchQuery = '';
 
 let studentAnnSearchQuery = '';
+let studentTicketSubView: 'list' | 'create' = 'list';
 let activeStudentTicketId: number | null = null;
 let pendingStudentTicketFileName = '';
 let pendingStudentTicketFileDataUrl = '';
+let pendingNewTicketFileName = '';
+let pendingNewTicketFileDataUrl = '';
 
 function getActiveStudent(state: DatabaseState): StudentRecord {
   const found = state.students.find((s) => s.id === state.activeStudentId);
@@ -101,38 +104,64 @@ function syncStudentChrome(state: DatabaseState): void {
     ? `دانش‌آموز کلاس ${toPersianDigits(student.classCode)}`
     : 'دانش‌آموز (بدون کلاس)';
 
-  $('#student-sidebar-name').text(fullName);
-  $('#student-sidebar-role').text(classLabel);
+  $('#sidebar-student-name, #student-sidebar-name').text(fullName);
+  $('#sidebar-student-role, #student-sidebar-role').text(classLabel);
   $('#student-topbar-welcome').text(`${fullName} عزیز، به اسکول میت خوش آمدید`);
 
   const portraitIdx = Math.abs(Number(student.id) || 0) % 4;
   const $avatar = $('#student-sidebar-avatar');
-  $avatar
-    .removeClass('student-portrait-0 student-portrait-1 student-portrait-2 student-portrait-3 has-custom-avatar')
-    .addClass(`student-portrait-${portraitIdx}`);
+  $avatar.removeClass(
+    'student-portrait-0 student-portrait-1 student-portrait-2 student-portrait-3 student-portrait-lg-0 student-portrait-lg-1 student-portrait-lg-2 student-portrait-lg-3 has-custom-avatar'
+  );
   if (student.avatarUrl) {
-    $avatar.addClass('has-custom-avatar').css('background-image', `url('${student.avatarUrl}')`);
+    $avatar
+      .addClass('has-custom-avatar')
+      .css('background-image', `url('${student.avatarUrl}')`)
+      .html('');
+  } else if (student.avatarRemoved) {
+    $avatar
+      .css('background-image', 'none')
+      .addClass('bg-[#EADCCA] flex items-center justify-center text-[#5A3A22]')
+      .html(
+        `<svg class="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>`
+      );
   } else {
-    $avatar.css('background-image', '');
+    $avatar
+      .addClass(`student-portrait-lg-${portraitIdx}`)
+      .css('background-image', '')
+      .html('');
   }
 
   const myAssignments = state.assignments.filter(
     (a) => a.classCode === 'all' || a.classCode === student.classCode
   );
+  const myGrades = state.gradebookEntries.filter((e) => e.studentId === student.id);
   const myResources = state.resources.filter(
     (r) => r.classCode === 'all' || r.classCode === student.classCode
   );
   const myAnnouncements = state.announcements.filter(
     (an) => an.targetClasses === 'all' || an.targetClasses === student.classCode
   );
+  const myUnreadAnnouncements = myAnnouncements.filter(
+    (an) => !(an.readers || []).some((r) => r.studentId === student.id)
+  );
   const myTickets = state.tickets.filter((t) => t.studentId === student.id);
 
-  $('#st-nav-badge-assignments').text(toPersianDigits(myAssignments.length));
-  $('#st-nav-badge-resources').text(toPersianDigits(myResources.length));
-  $('#st-nav-badge-announcements').text(toPersianDigits(myAnnouncements.length));
-  $('#st-nav-badge-tickets').text(toPersianDigits(myTickets.length));
-  $('#student-topbar-bell-badge').text(
-    myAnnouncements.length > 0 ? toPersianDigits(myAnnouncements.length) : ''
+  $('#st-badge-assignments, #st-nav-badge-assignments').text(
+    toPersianDigits(myAssignments.length)
+  );
+  $('#st-badge-grades').text(toPersianDigits(myGrades.length));
+  $('#st-badge-resources, #st-nav-badge-resources').text(
+    toPersianDigits(myResources.length)
+  );
+  $('#st-badge-announcements, #st-nav-badge-announcements').text(
+    myUnreadAnnouncements.length > 0 ? toPersianDigits(myUnreadAnnouncements.length) : ''
+  );
+  $('#st-badge-tickets, #st-nav-badge-tickets').text(
+    toPersianDigits(myTickets.length)
+  );
+  $('#student-bell-badge, #student-topbar-bell-badge').text(
+    myUnreadAnnouncements.length > 0 ? toPersianDigits(myUnreadAnnouncements.length) : ''
   );
 }
 
@@ -150,6 +179,8 @@ export function navigateStudentSection(
     studentHwSubView = subPage === 'detail' && activeStudentHwId ? 'detail' : 'list';
   } else if (sectionId === 'resources') {
     studentResSubView = subPage === 'detail' && activeStudentResId ? 'detail' : 'list';
+  } else if (sectionId === 'tickets') {
+    studentTicketSubView = subPage === 'create' ? 'create' : 'list';
   }
 
   $('.student-nav-btn').removeClass('is-active');
@@ -631,22 +662,22 @@ function renderStudentAssignmentDetailPage(
 }
 
 /* ============================================================================
-   3. نمرات من: نمرات و بازخوردهای تکالیف + کارنامه دفتر نمره و حضور و غیاب جلسات
+   3. نمرات من: بصورت کارت با دکمه جزئیات (مودال)، مثبت‌ها سبز و منفی‌ها قرمز
+      (بخش نمرات و بازخورد تکالیف طبق درخواست کاملاً حذف شده است)
    ============================================================================ */
 function renderStudentGrades($container: JQuery<HTMLElement>, state: DatabaseState): void {
   const student = getActiveStudent(state);
-  const mySubmissions = state.submissions.filter((s) => s.studentId === student.id);
   const myEntries = state.gradebookEntries.filter((e) => e.studentId === student.id);
 
-  const totalPositives = myEntries.reduce((sum, e) => sum + e.positiveCount, 0);
-  const totalNegatives = myEntries.reduce((sum, e) => sum + e.negativeCount, 0);
+  const totalPositives = myEntries.reduce((sum, e) => sum + (e.positiveCount || 0), 0);
+  const totalNegatives = myEntries.reduce((sum, e) => sum + (e.negativeCount || 0), 0);
   const presentCount = myEntries.filter((e) => e.attendance === 'present').length;
   const lateCount = myEntries.filter((e) => e.attendance === 'late').length;
   const absentCount = myEntries.filter((e) => e.attendance === 'absent').length;
 
   $container.html(`
     <div class="space-y-5">
-      <!-- خلاصه وضعیت دفتر نمره و امتیازات کلاسی -->
+      <!-- خلاصه وضعیت دفتر نمره و امتیازات کلاسی (مثبت سبز و منفی قرمز) -->
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div class="admin-surface-card flex items-center justify-between">
           <div>
@@ -658,120 +689,96 @@ function renderStudentGrades($container: JQuery<HTMLElement>, state: DatabaseSta
           <span class="px-3 py-1 rounded-xl bg-[#ECFDF5] text-[#059669] text-xs font-extrabold">حضور و غیاب</span>
         </div>
 
-        <div class="admin-surface-card flex items-center justify-between">
+        <div class="admin-surface-card flex items-center justify-between border-[#A7F3D0] bg-[#F8FEFC]">
           <div>
-            <div class="text-xs font-bold text-[#6E5D4F]">امتیازات مثبت کلاسی</div>
+            <div class="text-xs font-bold text-[#047857]">مجموع امتیازات مثبت کلاسی</div>
             <div class="text-base font-black text-[#059669] mt-1 tabular-nums">
               +${toPersianDigits(totalPositives)} مثبت
             </div>
           </div>
-          <span class="px-3 py-1 rounded-xl bg-[#ECFDF5] text-[#059669] text-xs font-extrabold">تشویقی (+)</span>
+          <span class="px-3 py-1 rounded-xl bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0] text-xs font-extrabold">مثبت (+)</span>
         </div>
 
-        <div class="admin-surface-card flex items-center justify-between">
+        <div class="admin-surface-card flex items-center justify-between border-[#FECDD3] bg-[#FFF9FA]">
           <div>
-            <div class="text-xs font-bold text-[#6E5D4F]">امتیازات منفی ثبت‌شده</div>
+            <div class="text-xs font-bold text-[#BE123C]">مجموع امتیازات منفی ثبت‌شده</div>
             <div class="text-base font-black text-[#E11D48] mt-1 tabular-nums">
-              -${toPersianDigits(totalNegatives)} منفی
+              −${toPersianDigits(totalNegatives)} منفی
             </div>
           </div>
-          <span class="px-3 py-1 rounded-xl bg-[#FFF1F2] text-[#E11D48] text-xs font-extrabold">منفی (-)</span>
+          <span class="px-3 py-1 rounded-xl bg-[#FFF1F2] text-[#E11D48] border border-[#FECDD3] text-xs font-extrabold">منفی (−)</span>
         </div>
       </div>
 
-      <!-- جدول نمرات و بازخوردهای تکالیف -->
-      <div class="admin-surface-card">
-        <h3 class="text-sm font-extrabold text-[#251B15] mb-3.5 m-0">
-          نمرات و بازخوردهای تکالیف ارسالی
-        </h3>
-        <div class="admin-table-wrap">
-          <table class="admin-table">
-            <thead>
-              <tr>
-                <th>عنوان تکلیف</th>
-                <th>فایل ارسالی</th>
-                <th>تاریخ ارسال</th>
-                <th>نمره کسب‌شده</th>
-                <th>بازخورد تشریحی مدرس</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${
-                mySubmissions.length
-                  ? mySubmissions
-                      .map((sub) => {
-                        const hw = state.assignments.find((a) => a.id === sub.assignmentId);
-                        return `
-                          <tr>
-                            <td class="font-extrabold text-[#251B15]">${toPersianDigits(hw ? hw.title : 'تکلیف کلاسی')}</td>
-                            <td class="tabular-nums text-xs text-[#5A3A22] font-bold">${toPersianDigits(sub.fileName)}</td>
-                            <td class="tabular-nums text-xs">${toPersianDigits(sub.submittedAt)}</td>
-                            <td class="tabular-nums font-extrabold">
-                              ${
-                                sub.score !== null
-                                  ? `<span class="text-[#059669]">${toPersianDigits(sub.score)} از ${toPersianDigits(hw ? hw.maxScore : 20)}</span>`
-                                  : `<span class="text-[#D97706]">در انتظار تصحیح</span>`
-                              }
-                            </td>
-                            <td class="text-xs text-[#3E3027]">
-                              ${toPersianDigits(sub.teacherFeedback || 'پس از بررسی مدرس ثبت خواهد شد.')}
-                            </td>
-                          </tr>
-                        `;
-                      })
-                      .join('')
-                  : `<tr><td colspan="5" class="text-center py-6">هنوز تکلیفی ارسال نکرده‌اید.</td></tr>`
-              }
-            </tbody>
-          </table>
+      <!-- کارت‌های نمرات و عملکرد جلسات کلاسی -->
+      <div>
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-extrabold text-[#251B15] m-0">
+            کارت‌های نمرات و عملکرد جلسات کلاس (${toPersianDigits(myEntries.length)} جلسه)
+          </h3>
+          <span class="text-xs font-bold text-[#6E5D4F]">
+            برای مشاهده جزئیات کامل هر جلسه روی دکمه «مشاهده جزئیات» کلیک کنید
+          </span>
         </div>
-      </div>
 
-      <!-- جدول دفتر نمره کلاسی (حضور و غیاب، مثبت و منفی و نمره جلسات) -->
-      <div class="admin-surface-card">
-        <h3 class="text-sm font-extrabold text-[#251B15] mb-3.5 m-0">
-          کارنامه دفتر نمره کلاسی و حضور و غیاب جلسات
-        </h3>
-        <div class="admin-table-wrap">
-          <table class="admin-table">
-            <thead>
-              <tr>
-                <th>عنوان جلسه</th>
-                <th>تاریخ جلسه</th>
-                <th>وضعیت حضور</th>
-                <th>مثبت (+)</th>
-                <th>منفی (-)</th>
-                <th>نمره جلسه</th>
-                <th>یادداشت مدرس</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${
-                myEntries.length
-                  ? myEntries
-                      .map((entry) => {
-                        const session = state.gradebookSessions.find((s) => s.id === entry.sessionId);
-                        return `
-                          <tr>
-                            <td class="font-extrabold text-[#251B15]">
-                              ${toPersianDigits(session ? session.title : 'جلسه آموزشی')}
-                            </td>
-                            <td class="tabular-nums text-xs">${toPersianDigits(session ? session.sessionDate : '—')}</td>
-                            <td>${formatAttendanceBadge(entry.attendance)}</td>
-                            <td class="tabular-nums font-extrabold text-[#059669]">+${toPersianDigits(entry.positiveCount)}</td>
-                            <td class="tabular-nums font-extrabold text-[#E11D48]">-${toPersianDigits(entry.negativeCount)}</td>
-                            <td class="tabular-nums font-extrabold text-[#251B15]">
-                              ${entry.classScore !== null ? `${toPersianDigits(entry.classScore)} از ۲۰` : '—'}
-                            </td>
-                            <td class="text-xs text-[#6E5D4F]">${toPersianDigits(entry.teacherNote || '—')}</td>
-                          </tr>
-                        `;
-                      })
-                      .join('')
-                  : `<tr><td colspan="7" class="text-center py-6">رکوردی در دفتر نمره برای شما ثبت نشده است.</td></tr>`
-              }
-            </tbody>
-          </table>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-stretch">
+          ${
+            myEntries.length
+              ? myEntries
+                  .map((entry) => {
+                    const session = state.gradebookSessions.find((s) => s.id === entry.sessionId);
+                    return `
+                      <div class="modern-class-card">
+                        <div>
+                          <div class="flex items-center justify-between gap-2">
+                            ${formatAttendanceBadge(entry.attendance)}
+                            <span class="text-[11px] font-bold text-[#6E5D4F] tabular-nums">
+                              ${toPersianDigits(session ? session.sessionDate : '—')}
+                            </span>
+                          </div>
+
+                          <h4 class="text-sm font-black text-[#251B15] mt-2.5 m-0 leading-snug">
+                            ${toPersianDigits(session ? session.title : 'جلسه آموزشی کلاس')}
+                          </h4>
+                          <p class="text-xs text-[#6E5D4F] mt-1.5 m-0 leading-relaxed">
+                            ${toPersianDigits(session ? session.topic : 'بررسی مباحث و تمرین‌های کلاسی')}
+                          </p>
+                        </div>
+
+                        <div class="mt-4 pt-3 border-t border-[#E6D8C5] space-y-3">
+                          <!-- نمره جلسه و بج‌های سبز مثبت و قرمز منفی -->
+                          <div class="flex items-center justify-between gap-2 flex-wrap tabular-nums">
+                            <span class="text-xs font-bold text-[#251B15]">
+                              نمره جلسه:
+                              <strong class="font-black text-[#1B5E5A]">
+                                ${entry.classScore !== null ? `${toPersianDigits(entry.classScore)} از ۲۰` : 'ثبت نشده'}
+                              </strong>
+                            </span>
+
+                            <div class="flex items-center gap-1.5">
+                              <span class="px-2.5 py-0.5 rounded-lg bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0] text-xs font-black">
+                                مثبت: +${toPersianDigits(entry.positiveCount || 0)}
+                              </span>
+                              <span class="px-2.5 py-0.5 rounded-lg bg-[#FFF1F2] text-[#E11D48] border border-[#FECDD3] text-xs font-black">
+                                منفی: −${toPersianDigits(entry.negativeCount || 0)}
+                              </span>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            class="btn-admin-primary w-full !h-9 text-xs js-st-open-grade-modal"
+                            data-entry-id="${entry.id}"
+                          >
+                            مشاهده جزئیات
+                          </button>
+                        </div>
+                      </div>
+                    `;
+                  })
+                  .join('')
+              : `<div class="col-span-full admin-surface-card text-center py-8 text-xs text-[#6E5D4F]">هنوز نمره یا جلسه‌ای در دفتر نمره برای شما ثبت نشده است.</div>`
+          }
         </div>
       </div>
     </div>
@@ -963,6 +970,9 @@ function renderStudentResourceDetailPage(
 /* ============================================================================
    5. اطلاعیه‌ها در پنل دانش‌آموز
    ============================================================================ */
+/* ============================================================================
+   5. اطلاعیه‌ها در پنل دانش‌آموز (با دکمه «خوانده شد» و کاهش بج اطلاعیه)
+   ============================================================================ */
 function renderStudentAnnouncements($container: JQuery<HTMLElement>, state: DatabaseState): void {
   const student = getActiveStudent(state);
   const normalizedQuery = normalizeDigits(studentAnnSearchQuery.trim()).toLowerCase();
@@ -976,12 +986,21 @@ function renderStudentAnnouncements($container: JQuery<HTMLElement>, state: Data
     return inClass && matchesQuery;
   });
 
+  const unreadCount = list.filter(
+    (ann) => !(ann.readers || []).some((r) => r.studentId === student.id)
+  ).length;
+
   $container.html(`
     <div class="space-y-4">
       <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap">
-        <h2 class="text-sm font-extrabold text-[#251B15] m-0">
-          اطلاعیه‌های کلاس ${toPersianDigits(student.classCode || 'من')} (${toPersianDigits(list.length)})
-        </h2>
+        <div>
+          <h2 class="text-sm font-extrabold text-[#251B15] m-0">
+            اطلاعیه‌های کلاس ${toPersianDigits(student.classCode || 'من')} (${toPersianDigits(list.length)})
+          </h2>
+          <p class="text-xs text-[#6E5D4F] mt-1 m-0">
+            اطلاعیه‌های خوانده‌نشده: <strong class="text-[#059669]">${toPersianDigits(unreadCount)} مورد</strong> — با زدن دکمه «خوانده شد»، وضعیت مطالعه شما برای مدیر نیز ثبت می‌شود.
+          </p>
+        </div>
         <input
           type="search"
           id="st-announcement-search"
@@ -995,27 +1014,59 @@ function renderStudentAnnouncements($container: JQuery<HTMLElement>, state: Data
         ${
           list.length
             ? list
-                .map(
-                  (ann) => `
-                  <div class="admin-surface-card">
-                    <div class="flex items-center justify-between gap-2 flex-wrap">
-                      <div class="flex items-center gap-2">
-                        <span class="text-sm font-black text-[#251B15]">${toPersianDigits(ann.title)}</span>
-                        <span class="text-[11px] font-bold px-2 py-0.5 rounded-md ${
-                          ann.priority === 'فوری'
-                            ? 'bg-[#FFF1F2] text-[#E11D48]'
-                            : ann.priority === 'مهم'
-                            ? 'bg-[#FFFBEB] text-[#D97706]'
-                            : 'bg-[#ECFDF5] text-[#059669]'
-                        }">
-                          ${ann.priority}
-                        </span>
+                .map((ann) => {
+                  const readLog = (ann.readers || []).find((r) => r.studentId === student.id);
+                  return `
+                    <div class="admin-surface-card ${readLog ? 'opacity-95' : 'border-[#5A3A22]'}">
+                      <div class="flex items-center justify-between gap-2 flex-wrap">
+                        <div class="flex items-center gap-2 flex-wrap">
+                          <span class="text-sm font-black text-[#251B15]">${toPersianDigits(ann.title)}</span>
+                          <span class="text-[11px] font-bold px-2 py-0.5 rounded-md ${
+                            ann.priority === 'فوری'
+                              ? 'bg-[#FFF1F2] text-[#E11D48]'
+                              : ann.priority === 'مهم'
+                              ? 'bg-[#FFFBEB] text-[#D97706]'
+                              : 'bg-[#ECFDF5] text-[#059669]'
+                          }">
+                            ${ann.priority}
+                          </span>
+                          ${
+                            !readLog
+                              ? `<span class="text-[11px] font-extrabold px-2 py-0.5 rounded-md bg-[#FFFBEB] text-[#D97706]">جدید (خوانده نشده)</span>`
+                              : ''
+                          }
+                        </div>
+                        <span class="text-xs text-[#6E5D4F] tabular-nums">${toPersianDigits(ann.createdAt)}</span>
                       </div>
-                      <span class="text-xs text-[#6E5D4F] tabular-nums">${toPersianDigits(ann.createdAt)}</span>
-                    </div>
-                    <p class="text-xs text-[#3E3027] mt-2 m-0 leading-relaxed">${toPersianDigits(ann.content)}</p>
-                  </div>`
-                )
+                      <p class="text-xs text-[#3E3027] mt-2 m-0 leading-relaxed">${toPersianDigits(ann.content)}</p>
+
+                      <div class="mt-3 pt-2.5 border-t border-[#E6D8C5] flex items-center justify-between gap-2 flex-wrap">
+                        <span class="text-[11px] text-[#6E5D4F]">
+                          مخاطب: <strong class="text-[#5A3A22]">${ann.targetClasses === 'all' ? 'همه کلاس‌ها' : `کلاس ${toPersianDigits(ann.targetClasses)}`}</strong>
+                        </span>
+
+                        ${
+                          readLog
+                            ? `<span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0] text-xs font-extrabold tabular-nums">
+                                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                                  <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                                </svg>
+                                <span>خوانده شده (${toPersianDigits(readLog.readAt)})</span>
+                              </span>`
+                            : `<button
+                                type="button"
+                                class="btn-admin-primary !h-8 !px-3.5 !text-xs js-st-mark-ann-read"
+                                data-id="${ann.id}"
+                              >
+                                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.3">
+                                  <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                                </svg>
+                                <span>خوانده شد</span>
+                              </button>`
+                        }
+                      </div>
+                    </div>`;
+                })
                 .join('')
             : `<div class="admin-surface-card text-center py-8 text-xs text-[#6E5D4F]">اطلاعیه‌ای یافت نشد.</div>`
         }
@@ -1025,10 +1076,18 @@ function renderStudentAnnouncements($container: JQuery<HTMLElement>, state: Data
 }
 
 /* ============================================================================
-   6. تیکت دانش‌آموز: ثبت تیکت جدید، ارسال پیام با فایل ضمیمه و دانلود فایل‌های مدرس
+   6. تیکت دانش‌آموز:
+      - صفحه لیست و گفت‌وگوی تیکت‌ها (/student/tickets) + دکمه ایجاد تیکت در صفحه جدید
+      - صفحه اختصاصی ایجاد تیکت جدید به همراه ارسال فایل (/student/tickets/create)
    ============================================================================ */
 function renderStudentTickets($container: JQuery<HTMLElement>, state: DatabaseState): void {
   const student = getActiveStudent(state);
+
+  if (studentTicketSubView === 'create') {
+    renderStudentCreateTicketPage($container, student);
+    return;
+  }
+
   const myTickets = state.tickets.filter((t) => t.studentId === student.id);
 
   if (!activeStudentTicketId && myTickets.length > 0) {
@@ -1040,43 +1099,27 @@ function renderStudentTickets($container: JQuery<HTMLElement>, state: DatabaseSt
 
   $container.html(`
     <div class="space-y-4">
-      <!-- فرم ایجاد تیکت جدید به مدرس -->
-      <div class="admin-surface-card">
-        <h3 class="text-sm font-extrabold text-[#251B15] mb-3 m-0">ثبت تیکت یا سوال جدید برای مدرس</h3>
-        <form id="form-student-new-ticket" class="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
-          <div class="md:col-span-5">
-            <label class="scool-field-label">موضوع تیکت</label>
-            <input
-              type="text"
-              id="st-new-ticket-subject"
-              class="school-input !h-9 text-xs"
-              placeholder="مثلاً: سوال در مورد پروژه طراحی وب"
-              required
-            />
-          </div>
-          <div class="md:col-span-5">
-            <label class="scool-field-label">متن پیام</label>
-            <input
-              type="text"
-              id="st-new-ticket-msg"
-              class="school-input !h-9 text-xs"
-              placeholder="سوال یا درخواست خود را بنویسید..."
-              required
-            />
-          </div>
-          <div class="md:col-span-2">
-            <button type="submit" class="btn-admin-primary !h-9 w-full text-xs">
-              + ثبت تیکت جدید
-            </button>
-          </div>
-        </form>
+      <!-- نوار بالایی تیکت‌های دانش‌آموز و دکمه باز کردن صفحه ایجاد تیکت جدید -->
+      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h2 class="text-sm font-extrabold text-[#251B15] m-0">
+            تیکت‌ها و پشتیبانی آموزشی (${toPersianDigits(myTickets.length)} تیکت)
+          </h2>
+          <p class="text-xs text-[#6E5D4F] mt-1 m-0">
+            سوالات درسی یا فایل‌های خود را از طریق تیکت برای مدرس ارسال نمایید.
+          </p>
+        </div>
+
+        <button type="button" id="btn-st-open-create-ticket" class="btn-admin-primary !h-9">
+          + ایجاد تیکت جدید
+        </button>
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
         <!-- لیست تیکت‌های من -->
         <div class="lg:col-span-5 admin-surface-card">
           <h3 class="text-sm font-extrabold text-[#251B15] mb-3 m-0">
-            تیکت‌های من (${toPersianDigits(myTickets.length)})
+            لیست تیکت‌های من (${toPersianDigits(myTickets.length)})
           </h3>
           <div class="space-y-2.5">
             ${
@@ -1184,28 +1227,127 @@ function renderStudentTickets($container: JQuery<HTMLElement>, state: DatabaseSt
   `);
 }
 
+/**
+ * صفحه اختصاصی ایجاد تیکت جدید در پنل دانش‌آموز (/student/tickets/create) به همراه پیوست فایل
+ */
+function renderStudentCreateTicketPage(
+  $container: JQuery<HTMLElement>,
+  student: StudentRecord
+): void {
+  $container.html(`
+    <div class="space-y-4">
+      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h2 class="text-base font-black text-[#251B15] m-0">
+            صفحه ایجاد و ارسال تیکت جدید به مدرس
+          </h2>
+          <p class="text-xs text-[#6E5D4F] mt-1 m-0">
+            سوال درسی، درخواست راهنمایی یا فایل تمرین خود را در این صفحه ثبت و ارسال کنید.
+          </p>
+        </div>
+
+        <button type="button" class="btn-admin-action js-st-back-to-tickets">
+          بازگشت به لیست تیکت‌ها ←
+        </button>
+      </div>
+
+      <div class="admin-surface-card">
+        <form id="form-student-new-ticket" class="space-y-4">
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div class="md:col-span-2">
+              <label class="scool-field-label">موضوع تیکت</label>
+              <input
+                type="text"
+                id="st-new-ticket-subject"
+                class="school-input"
+                placeholder="مثلاً: سوال در مورد چیدمان پروژه طراحی وب"
+                required
+              />
+            </div>
+
+            <div>
+              <label class="scool-field-label">درجه اهمیت</label>
+              <select id="st-new-ticket-priority" class="school-select">
+                <option value="عادی">عادی</option>
+                <option value="مهم">مهم</option>
+                <option value="فوری">فوری</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label class="scool-field-label">متن کامل پیام / سوال شما</label>
+            <textarea
+              id="st-new-ticket-msg"
+              class="school-textarea !min-h-[120px]"
+              placeholder="شرح کامل سوال یا توضیحات خود را برای مدرس بنویسید..."
+              required
+            ></textarea>
+          </div>
+
+          <div class="p-3.5 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] flex items-center justify-between gap-3 flex-wrap">
+            <div class="flex items-center gap-2.5">
+              <label for="st-new-ticket-file" class="btn-admin-action cursor-pointer">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                </svg>
+                <span>انتخاب فایل ضمیمه (اختیاری)</span>
+              </label>
+              <input type="file" id="st-new-ticket-file" class="hidden" />
+              <span id="st-new-ticket-file-name" class="text-xs font-bold text-[#1B5E5A]">
+                ${
+                  pendingNewTicketFileName
+                    ? `فایل انتخاب‌شده: ${toPersianDigits(pendingNewTicketFileName)}`
+                    : 'فایلی انتخاب نشده است'
+                }
+              </span>
+            </div>
+
+            <span class="text-[11px] text-[#6E5D4F]">
+              فرستنده: ${student.firstName} ${student.lastName} (کلاس ${toPersianDigits(student.classCode || '۹۰۱')})
+            </span>
+          </div>
+
+          <div class="flex items-center justify-end gap-2.5 pt-2 border-t border-[#E6D8C5]">
+            <button type="button" class="btn-admin-action !h-10 js-st-back-to-tickets">
+              انصراف و بازگشت
+            </button>
+            <button type="submit" class="btn-admin-primary !h-10">
+              ثبت و ارسال نهایی تیکت
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `);
+}
+
 /* ============================================================================
-   7. پروفایل دانش‌آموز: تصویر پروفایل، مشخصات فردی و تغییر رمز عبور
+   7. پروفایل دانش‌آموز: تصویر پروفایل (با امکان تغییر و حذف عکس)، مشخصات فردی و تغییر رمز عبور
    ============================================================================ */
 function renderStudentProfile($container: JQuery<HTMLElement>, state: DatabaseState): void {
   const student = getActiveStudent(state);
   const portraitIdx = Math.abs(Number(student.id) || 0) % 4;
-  const customStyle = student.avatarUrl
-    ? `style="background-image: url('${student.avatarUrl}');"`
-    : '';
-  const customClass = student.avatarUrl ? 'has-custom-avatar' : '';
+
+  let avatarBoxHtml = '';
+  if (student.avatarUrl) {
+    avatarBoxHtml = `<div class="student-avatar-lg has-custom-avatar" style="background-image: url('${student.avatarUrl}');" role="img" aria-label="تصویر پروفایل دانش‌آموز"></div>`;
+  } else if (student.avatarRemoved) {
+    avatarBoxHtml = `<div class="student-avatar-lg bg-[#EADCCA] flex items-center justify-center text-[#5A3A22]" style="background-image: none;" role="img" aria-label="بدون تصویر پروفایل">
+      <svg class="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+      </svg>
+    </div>`;
+  } else {
+    avatarBoxHtml = `<div class="student-avatar-lg student-portrait-lg-${portraitIdx}" role="img" aria-label="تصویر پروفایل دانش‌آموز"></div>`;
+  }
 
   $container.html(`
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
       <div class="lg:col-span-7 admin-surface-card">
         <div class="flex items-center justify-between gap-4 pb-5 mb-5 border-b border-[#E6D8C5] flex-wrap">
           <div class="flex items-center gap-4">
-            <div
-              class="student-avatar-lg student-portrait-lg-${portraitIdx} ${customClass}"
-              ${customStyle}
-              role="img"
-              aria-label="تصویر پروفایل دانش‌آموز"
-            ></div>
+            ${avatarBoxHtml}
             <div>
               <h3 class="text-base font-black text-[#251B15] m-0">
                 ${student.firstName} ${student.lastName}
@@ -1219,11 +1361,19 @@ function renderStudentProfile($container: JQuery<HTMLElement>, state: DatabaseSt
             </div>
           </div>
 
-          <div>
+          <div class="flex items-center gap-2 flex-wrap">
             <label for="st-prof-avatar-upload" class="btn-admin-action cursor-pointer">
               <span>تغییر تصویر پروفایل</span>
             </label>
             <input type="file" id="st-prof-avatar-upload" accept="image/*" class="hidden" />
+
+            <button
+              type="button"
+              id="btn-st-delete-avatar"
+              class="btn-admin-danger !h-9 !px-3 text-xs"
+            >
+              حذف عکس پروفایل
+            </button>
           </div>
         </div>
 
@@ -1380,6 +1530,64 @@ export function initStudentPanelEvents(): void {
     showToast('تکلیف ارسال شد', 'پاسخ و فایل تکلیف شما با موفقیت برای مدرس ارسال گردید.', 'success');
   });
 
+  // Student Grades Detail Modal
+  $(document).on('click', '.js-st-open-grade-modal', function () {
+    const entryId = Number($(this).attr('data-entry-id'));
+    const state = loadDbState();
+    const entry = state.gradebookEntries.find((e) => e.id === entryId);
+    if (!entry) return;
+    const session = state.gradebookSessions.find((s) => s.id === entry.sessionId);
+
+    $('#st-grade-modal-title').text(
+      toPersianDigits(session ? session.title : 'جزئیات نمره و عملکرد جلسه')
+    );
+    $('#st-grade-modal-date').text(
+      `تاریخ برگزاری: ${toPersianDigits(session ? session.sessionDate : '—')} · کلاس ${toPersianDigits(entry.classCode)}`
+    );
+    $('#st-grade-modal-attendance').html(formatAttendanceBadge(entry.attendance));
+
+    $('#st-grade-modal-body').html(`
+      <div class="p-3.5 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] space-y-2">
+        <div class="text-xs font-extrabold text-[#5A3A22]">مبحث آموزشی جلسه:</div>
+        <div class="text-xs text-[#251B15] leading-relaxed">
+          ${toPersianDigits(session ? session.topic : 'بررسی مباحث و تمرین‌های کلاسی')}
+        </div>
+      </div>
+
+      <div class="grid grid-cols-3 gap-3 tabular-nums">
+        <div class="p-3 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] text-center">
+          <div class="text-[11px] font-bold text-[#6E5D4F]">نمره کلاسی جلسه</div>
+          <div class="text-sm font-black text-[#251B15] mt-1">
+            ${entry.classScore !== null ? `${toPersianDigits(entry.classScore)} از ۲۰` : 'ثبت نشده'}
+          </div>
+        </div>
+
+        <div class="p-3 rounded-xl bg-[#ECFDF5] border border-[#A7F3D0] text-center">
+          <div class="text-[11px] font-bold text-[#047857]">امتیاز مثبت</div>
+          <div class="text-sm font-black text-[#059669] mt-1">
+            +${toPersianDigits(entry.positiveCount || 0)}
+          </div>
+        </div>
+
+        <div class="p-3 rounded-xl bg-[#FFF1F2] border border-[#FECDD3] text-center">
+          <div class="text-[11px] font-bold text-[#BE123C]">امتیاز منفی</div>
+          <div class="text-sm font-black text-[#E11D48] mt-1">
+            −${toPersianDigits(entry.negativeCount || 0)}
+          </div>
+        </div>
+      </div>
+
+      <div class="p-3.5 rounded-xl bg-[#F3ECE0] border border-[#DFD2C0] space-y-1.5">
+        <div class="text-xs font-extrabold text-[#5A3A22]">یادداشت و بازخورد مدرس در این جلسه:</div>
+        <p class="text-xs text-[#251B15] m-0 leading-relaxed">
+          ${toPersianDigits(entry.teacherNote || 'یادداشتی برای این جلسه ثبت نشده است.')}
+        </p>
+      </div>
+    `);
+
+    $('#student-grade-detail-modal').addClass('is-open').attr('aria-hidden', 'false');
+  });
+
   // Student Resources Filter, Search, Detail & Download
   $(document).on('click', '.js-st-res-filter', function () {
     studentResCategoryFilter = String($(this).attr('data-filter') || 'all');
@@ -1418,13 +1626,73 @@ export function initStudentPanelEvents(): void {
     );
   });
 
-  // Student Announcements Search
+  // Student Announcements Search & Mark Read
   $(document).on('input', '#st-announcement-search', function () {
     studentAnnSearchQuery = String($(this).val() || '');
     renderActiveStudentSection('#st-announcement-search');
   });
 
-  // Student Tickets
+  $(document).on('click', '.js-st-mark-ann-read', function () {
+    const annId = Number($(this).attr('data-id'));
+    const state = loadDbState();
+    const student = getActiveStudent(state);
+    const ann = state.announcements.find((a) => a.id === annId);
+    if (!ann) return;
+
+    if (!ann.readers) {
+      ann.readers = [];
+    }
+    const alreadyRead = ann.readers.some((r) => r.studentId === student.id);
+    if (!alreadyRead) {
+      ann.readers.push({
+        studentId: student.id,
+        studentName: `${student.firstName} ${student.lastName}`,
+        classCode: student.classCode || '901',
+        readAt: '۱۴۰۵/۰۸/۱۵ · هم‌اکنون',
+      });
+      saveDbState(state);
+    }
+
+    renderActiveStudentSection();
+    showToast(
+      'اطلاعیه خوانده شد',
+      'وضعیت مطالعه اطلاعیه ثبت گردید و از شمارنده اطلاعیه‌های جدید کسر شد.',
+      'success'
+    );
+  });
+
+  // Student Tickets: Open Create Page, Back to List, File Upload & Submit
+  $(document).on('click', '#btn-st-open-create-ticket', function () {
+    pendingNewTicketFileName = '';
+    pendingNewTicketFileDataUrl = '';
+    studentTicketSubView = 'create';
+    updateBrowserUrl('/student/tickets/create');
+    renderActiveStudentSection();
+  });
+
+  $(document).on('click', '.js-st-back-to-tickets', function () {
+    studentTicketSubView = 'list';
+    updateBrowserUrl('/student/tickets');
+    renderActiveStudentSection();
+  });
+
+  $(document).on('change', '#st-new-ticket-file', function (this: HTMLInputElement) {
+    const file = this.files && this.files[0];
+    if (!file) {
+      pendingNewTicketFileName = '';
+      pendingNewTicketFileDataUrl = '';
+      $('#st-new-ticket-file-name').text('فایلی انتخاب نشده است');
+      return;
+    }
+    pendingNewTicketFileName = file.name;
+    $('#st-new-ticket-file-name').text(`فایل انتخاب‌شده: ${toPersianDigits(file.name)}`);
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      pendingNewTicketFileDataUrl = String(ev.target?.result || '');
+    };
+    reader.readAsDataURL(file);
+  });
+
   $(document).on('click', '.js-st-select-ticket', function () {
     activeStudentTicketId = Number($(this).attr('data-id'));
     pendingStudentTicketFileName = '';
@@ -1435,6 +1703,10 @@ export function initStudentPanelEvents(): void {
   $(document).on('submit', '#form-student-new-ticket', function (e) {
     e.preventDefault();
     const subject = String($('#st-new-ticket-subject').val() || '').trim();
+    const priority = (String($('#st-new-ticket-priority').val() || 'عادی') as
+      | 'عادی'
+      | 'مهم'
+      | 'فوری');
     const msg = String($('#st-new-ticket-msg').val() || '').trim();
     if (!subject || !msg) return;
 
@@ -1449,7 +1721,7 @@ export function initStudentPanelEvents(): void {
       studentPhone: student.phone,
       classCode: student.classCode || '901',
       subject,
-      priority: 'عادی',
+      priority,
       status: 'در انتظار پاسخ',
       createdAt: '۱۴۰۵/۰۸/۱۵ · هم‌اکنون',
       messages: [
@@ -1459,14 +1731,26 @@ export function initStudentPanelEvents(): void {
           senderName: `${student.firstName} ${student.lastName}`,
           message: msg,
           sentAt: '۱۴۰۵/۰۸/۱۵ · هم‌اکنون',
+          attachmentName: pendingNewTicketFileName || undefined,
+          attachmentDataUrl: pendingNewTicketFileDataUrl || undefined,
         },
       ],
     });
 
+    logAdminActivity(
+      state,
+      `ثبت تیکت جدید توسط ${student.firstName} ${student.lastName}`,
+      `موضوع: ${subject}`,
+      'ticket'
+    );
+    pendingNewTicketFileName = '';
+    pendingNewTicketFileDataUrl = '';
     activeStudentTicketId = newTicketId;
+    studentTicketSubView = 'list';
     saveDbState(state);
+    updateBrowserUrl('/student/tickets');
     renderActiveStudentSection();
-    showToast('تیکت ثبت شد', 'سوال شما برای مدرس ارسال گردید.', 'success');
+    showToast('تیکت ارسال شد', 'تیکت جدید شما با موفقیت برای مدرس ثبت گردید.', 'success');
   });
 
   $(document).on('change', '#st-ticket-reply-file', function (this: HTMLInputElement) {
@@ -1520,7 +1804,7 @@ export function initStudentPanelEvents(): void {
     triggerStudentFileDownload(msg.attachmentName, msg.attachmentDataUrl, msg.message);
   });
 
-  // Student Profile Save & Avatar Upload
+  // Student Profile Save, Avatar Upload & Delete Avatar
   $(document).on('change', '#st-prof-avatar-upload', function (this: HTMLInputElement) {
     const file = this.files && this.files[0];
     if (!file) return;
@@ -1531,11 +1815,22 @@ export function initStudentPanelEvents(): void {
       const state = loadDbState();
       const student = getActiveStudent(state);
       student.avatarUrl = dataUrl;
+      student.avatarRemoved = false;
       saveDbState(state);
       renderActiveStudentSection();
       showToast('تصویر پروفایل ذخیره شد', 'عکس جدید پروفایل شما ثبت گردید.', 'success');
     };
     reader.readAsDataURL(file);
+  });
+
+  $(document).on('click', '#btn-st-delete-avatar', function () {
+    const state = loadDbState();
+    const student = getActiveStudent(state);
+    student.avatarUrl = '';
+    student.avatarRemoved = true;
+    saveDbState(state);
+    renderActiveStudentSection();
+    showToast('تصویر پروفایل حذف شد', 'عکس پروفایل شما با موفقیت حذف گردید.', 'info');
   });
 
   $(document).on('submit', '#form-student-profile-save', function (e) {

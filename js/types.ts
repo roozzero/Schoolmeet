@@ -48,6 +48,7 @@ export interface StudentRecord {
   notes?: string;
   password?: string;
   avatarUrl?: string;
+  avatarRemoved?: boolean;
   createdAt: string;
 }
 
@@ -130,6 +131,13 @@ export interface EducationalResource {
   viewers?: ResourceViewerLog[];
 }
 
+export interface AnnouncementReaderLog {
+  studentId: number;
+  studentName: string;
+  classCode: ClassRoomCode;
+  readAt: string;
+}
+
 export interface AnnouncementItem {
   id: number;
   title: string;
@@ -137,6 +145,7 @@ export interface AnnouncementItem {
   targetClasses: TargetClassScope;
   priority: 'عادی' | 'مهم' | 'فوری';
   createdAt: string;
+  readers?: AnnouncementReaderLog[];
 }
 
 export interface TicketMessage {

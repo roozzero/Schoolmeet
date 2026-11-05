@@ -1068,6 +1068,28 @@
           ثبت جلسه جدید در دفتر نمره
         </h3>
         <form id="form-add-gb-session" class="space-y-3">
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="scool-field-label">کلاس</label>
+              <select id="gb-session-class" class="school-select" required>
+                <option value="901">کلاس ۹۰۱</option>
+                <option value="902">کلاس ۹۰۲</option>
+                <option value="903">کلاس ۹۰۳</option>
+              </select>
+            </div>
+            <div>
+              <label class="scool-field-label">تاریخ برگزاری</label>
+              <input
+                type="text"
+                id="gb-session-date"
+                class="school-input tabular-nums"
+                placeholder="۱۴۰۵/۰۸/۱۶"
+                value="۱۴۰۵/۰۸/۱۶"
+                required
+              />
+            </div>
+          </div>
+
           <div>
             <label class="scool-field-label">عنوان جلسه</label>
             <input
@@ -1075,18 +1097,6 @@
               id="gb-session-title"
               class="school-input"
               placeholder="مثلاً: جلسه چهارم — کلاس ۹۰۱"
-              required
-            />
-          </div>
-
-          <div>
-            <label class="scool-field-label">تاریخ برگزاری</label>
-            <input
-              type="text"
-              id="gb-session-date"
-              class="school-input tabular-nums"
-              placeholder="۱۴۰۵/۰۸/۱۶"
-              value="۱۴۰۵/۰۸/۱۶"
               required
             />
           </div>
@@ -1107,6 +1117,77 @@
             <button type="button" class="btn-admin-action !h-10 js-close-modal">انصراف</button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <!-- =======================================================================
+         مودال ۱۵: جزئیات نمره و وضعیت جلسه در پنل دانش‌آموز (Student Grade Detail Modal)
+         ======================================================================= -->
+    <div
+      id="student-grade-detail-modal"
+      class="scool-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-hidden="true"
+    >
+      <div class="scool-modal-card !max-w-lg" dir="rtl">
+        <div class="flex items-center justify-between gap-3 pb-3 mb-3.5 border-b border-[#E6D8C5]">
+          <div>
+            <h3 id="st-grade-modal-title" class="text-base font-black text-[#251B15] m-0">
+              جزئیات نمره و عملکرد جلسه
+            </h3>
+            <p id="st-grade-modal-date" class="text-xs font-bold text-[#6E5D4F] mt-1 m-0 tabular-nums">
+              —
+            </p>
+          </div>
+          <div id="st-grade-modal-attendance"></div>
+        </div>
+
+        <div id="st-grade-modal-body" class="space-y-3.5 text-xs"></div>
+
+        <div class="mt-4 pt-3 border-t border-[#E6D8C5] flex justify-end">
+          <button type="button" class="btn-admin-primary !h-10 px-6 js-close-modal">
+            بستن پنجره
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- =======================================================================
+         مودال ۱۶: لیست خوانده‌های اطلاعیه در پنل مدیر (Announcement Readers Modal)
+         ======================================================================= -->
+    <div
+      id="admin-announcement-readers-modal"
+      class="scool-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-hidden="true"
+    >
+      <div class="scool-modal-card !max-w-lg" dir="rtl">
+        <div class="flex items-center justify-between gap-3 pb-3 mb-3.5 border-b border-[#E6D8C5]">
+          <div>
+            <h3 id="ann-readers-modal-title" class="text-base font-black text-[#251B15] m-0">
+              لیست خوانده‌های اطلاعیه
+            </h3>
+            <p id="ann-readers-modal-sub" class="text-xs font-bold text-[#6E5D4F] mt-1 m-0 tabular-nums">
+              —
+            </p>
+          </div>
+          <span
+            id="ann-readers-modal-count-badge"
+            class="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0] tabular-nums"
+          >
+            ۰ نفر
+          </span>
+        </div>
+
+        <div id="ann-readers-modal-list" class="space-y-2.5 max-h-80 overflow-y-auto pr-0.5"></div>
+
+        <div class="mt-4 pt-3 border-t border-[#E6D8C5] flex justify-end">
+          <button type="button" class="btn-admin-primary !h-10 px-6 js-close-modal">
+            بستن پنجره
+          </button>
+        </div>
       </div>
     </div>
 

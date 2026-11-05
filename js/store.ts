@@ -1,6 +1,6 @@
 import { DatabaseState } from './types';
 
-export const DB_STORAGE_KEY = 'scoolmeet_mysql_full_state_v5';
+export const DB_STORAGE_KEY = 'scoolmeet_mysql_full_state_v7';
 
 /**
  * Default Seed State mirroring the MySQL Database (database/schema.sql)
@@ -205,17 +205,6 @@ const INITIAL_DB_STATE: DatabaseState = {
       teacherNote: 'کدنویسی بسیار تمیز در کارگاه کلاسی.',
     },
     {
-      id: 9103,
-      sessionId: 9001,
-      studentId: 107,
-      classCode: '901',
-      attendance: 'late',
-      positiveCount: 1,
-      negativeCount: 1,
-      classScore: 17.5,
-      teacherNote: 'ورود با ۱۰ دقیقه تأخیر؛ تمرین کلاسی را کامل انجام داد.',
-    },
-    {
       id: 9104,
       sessionId: 9002,
       studentId: 101,
@@ -244,9 +233,9 @@ const INITIAL_DB_STATE: DatabaseState = {
       classCode: '901',
       attendance: 'present',
       positiveCount: 2,
-      negativeCount: 0,
+      negativeCount: 1,
       classScore: 19.75,
-      teacherNote: 'حل سریع چالش اعتبارسنجی فرم.',
+      teacherNote: 'حل سریع چالش اعتبارسنجی فرم؛ یک مورد تأخیر در ارسال تمرین کلاسی.',
     },
     {
       id: 9107,
@@ -469,6 +458,20 @@ const INITIAL_DB_STATE: DatabaseState = {
       targetClasses: 'all',
       priority: 'مهم',
       createdAt: '۱۴۰۵/۰۸/۱۲ · ۱۰:۳۰',
+      readers: [
+        {
+          studentId: 102,
+          studentName: 'سارا محمدی',
+          classCode: '901',
+          readAt: '۱۴۰۵/۰۸/۱۲ · ۱۴:۲۰',
+        },
+        {
+          studentId: 103,
+          studentName: 'محمدمهدی کریمی',
+          classCode: '902',
+          readAt: '۱۴۰۵/۰۸/۱۲ · ۱۶:۱۰',
+        },
+      ],
     },
     {
       id: 602,
@@ -478,6 +481,14 @@ const INITIAL_DB_STATE: DatabaseState = {
       targetClasses: '901',
       priority: 'عادی',
       createdAt: '۱۴۰۵/۰۸/۱۳ · ۱۷:۱۵',
+      readers: [
+        {
+          studentId: 102,
+          studentName: 'سارا محمدی',
+          classCode: '901',
+          readAt: '۱۴۰۵/۰۸/۱۳ · ۱۸:۴۵',
+        },
+      ],
     },
   ],
   tickets: [
