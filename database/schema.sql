@@ -67,19 +67,22 @@ CREATE TABLE IF NOT EXISTS `students` (
   `first_name` VARCHAR(100) NOT NULL,
   `last_name` VARCHAR(100) NOT NULL,
   `phone` VARCHAR(15) NOT NULL,
-  `class_code` ENUM('901', '902', '903') NOT NULL,
+  `email` VARCHAR(150) NULL DEFAULT '',
+  `class_code` VARCHAR(20) NOT NULL DEFAULT '',
   `status` ENUM('pending', 'approved', 'rejected') NOT NULL DEFAULT 'pending',
   `national_code` VARCHAR(20) NULL,
   `parent_phone` VARCHAR(15) NULL,
   `notes` TEXT NULL,
+  `bio` TEXT NULL,
+  `avatar_url` LONGTEXT NULL,
+  `avatar_removed` TINYINT(1) NOT NULL DEFAULT 0,
   `password_hash` VARCHAR(255) NOT NULL,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `idx_students_phone` (`phone`),
   KEY `idx_students_class` (`class_code`),
-  KEY `idx_students_status` (`status`),
-  CONSTRAINT `fk_students_class` FOREIGN KEY (`class_code`) REFERENCES `classes` (`code`) ON UPDATE CASCADE
+  KEY `idx_students_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_persian_ci;
 
 -- 4. جدول تکالیف (Assignments)

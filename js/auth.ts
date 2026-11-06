@@ -9,7 +9,12 @@ import {
   showToast,
 } from './modal';
 import { parseCurrentLocation, updateBrowserUrl } from './router';
-import { loadDbState, saveDbState } from './store';
+import {
+  loadDbState,
+  saveDbState,
+  setActiveUserRole,
+  syncStateFromBackend,
+} from './store';
 import { initStudentPanelEvents, navigateStudentSection } from './student';
 import { AdminSectionId, StudentSectionId } from './types';
 import {
@@ -55,10 +60,12 @@ function enterAdminWorkspace(
   updateHistory = true,
   subPage?: string
 ): void {
+  setActiveUserRole('admin');
   $('#public-auth-view').addClass('view-hidden');
   $('#student-workspace-view').addClass('view-hidden');
   $('#admin-workspace-view').removeClass('view-hidden');
   navigateAdminSection(section, updateHistory, subPage);
+  void syncStateFromBackend();
 }
 
 /**
@@ -69,10 +76,12 @@ function enterStudentWorkspace(
   updateHistory = true,
   subPage?: string
 ): void {
+  setActiveUserRole('student');
   $('#public-auth-view').addClass('view-hidden');
   $('#admin-workspace-view').addClass('view-hidden');
   $('#student-workspace-view').removeClass('view-hidden');
   navigateStudentSection(section, updateHistory, subPage);
+  void syncStateFromBackend();
 }
 
 /**

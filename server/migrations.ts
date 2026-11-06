@@ -277,6 +277,42 @@ const MIGRATIONS: Migration[] = [
       );
     },
   },
+  {
+    name: '005_student_email_bio_and_security',
+    up: async (conn: PoolConnection) => {
+      // 1. Add email and bio columns to students if missing
+      const [studentCols] = await conn.query<RowDataPacket[]>(
+        `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'students' AND COLUMN_NAME IN ('email', 'bio')`
+      );
+      const existingCols = new Set(studentCols.map((r) => String(r.COLUMN_NAME)));
+      if (!existingCols.has('email')) {
+        await conn.query(
+          `ALTER TABLE \`students\` ADD COLUMN \`email\` VARCHAR(150) NULL DEFAULT '' AFTER \`phone\``
+        );
+      }
+      if (!existingCols.has('bio')) {
+        await conn.query(
+          `ALTER TABLE \`students\` ADD COLUMN \`bio\` TEXT NULL AFTER \`notes\``
+        );
+      }
+
+      // 2. Ensure assignments.status supports 'active' and 'closed'
+      const [hwCols] = await conn.query<RowDataPacket[]>(
+        `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'assignments' AND COLUMN_NAME = 'status'`
+      );
+      if (hwCols.length === 0) {
+        await conn.query(
+          `ALTER TABLE \`assignments\` ADD COLUMN \`status\` VARCHAR(20) NOT NULL DEFAULT 'active' AFTER \`attachment_name\``
+        );
+      } else {
+        await conn.query(
+          `ALTER TABLE \`assignments\` MODIFY COLUMN \`status\` VARCHAR(20) NOT NULL DEFAULT 'active'`
+        );
+      }
+    },
+  },
 ];
 
 /**

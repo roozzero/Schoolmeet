@@ -1,6 +1,8 @@
 import $ from 'jquery';
 import {
   adminCreateStudentApi,
+  adminRemoveStudentAvatarApi,
+  adminSetAssignmentStatusApi,
   adminUpdateStudentApi,
   changeAdminPasswordApi,
   updateAdminProfileApi,
@@ -8,12 +10,13 @@ import {
 import { showToast } from './modal';
 import { AppRoutePath, updateBrowserUrl } from './router';
 import {
+  getAuthoritativeNowMs,
   loadDbState,
   logAdminActivity,
   onDbStateSynced,
   persistDbState,
   resetDbState,
-  saveDbState,
+  setActiveUserRole,
   uploadFileWithProgress,
 } from './store';
 import {
@@ -25,7 +28,12 @@ import {
   StudentRecord,
   TargetClassScope,
 } from './types';
-import { normalizeDigits, toPersianDigits } from './validation';
+import {
+  getAssignmentLockState,
+  isValidEmail,
+  normalizeDigits,
+  toPersianDigits,
+} from './validation';
 
 let activeSection: AdminSectionId = 'dashboard';
 let selectedClassTab: ClassRoomCode = '901';
@@ -159,31 +167,25 @@ function renderAdminUploadProgressWidget(
 }
 
 /**
- * Render Student Profile Photo (Cropped Portrait or Custom Uploaded Avatar)
+ * Render Student Profile Photo (Default Account Icon or Custom Uploaded Avatar)
  */
 function renderStudentAvatarHtml(
   student: Pick<StudentRecord, 'id' | 'firstName' | 'lastName' | 'avatarUrl' | 'avatarRemoved'>,
   size: 'sm' | 'lg' = 'sm'
 ): string {
-  const portraitIdx = Math.abs(Number(student.id) || 0) % 4;
-  const fullName = `${student.firstName} ${student.lastName}`;
-  const baseClass =
-    size === 'lg'
-      ? `student-avatar-lg student-portrait-lg-${portraitIdx}`
-      : `student-avatar-sm student-portrait-${portraitIdx}`;
+  const fullName = `${student.firstName || ''} ${student.lastName || ''}`.trim() || 'دانش‌آموز';
+  const dimClass = size === 'lg' ? 'student-avatar-lg' : 'student-avatar-sm';
+  const iconSizeClass = size === 'lg' ? 'w-6 h-6' : 'w-4 h-4';
 
   if (student.avatarUrl && !student.avatarRemoved) {
-    return `<div class="${baseClass} has-custom-avatar" style="background-image: url('${student.avatarUrl}');" role="img" aria-label="تصویر ${fullName}"></div>`;
+    return `<div class="${dimClass} has-custom-avatar" style="background-image: url('${student.avatarUrl}');" role="img" aria-label="تصویر ${fullName}"></div>`;
   }
-  if (student.avatarRemoved) {
-    const dimClass = size === 'lg' ? 'student-avatar-lg' : 'student-avatar-sm';
-    return `<div class="${dimClass} bg-[#EADCCA] flex items-center justify-center text-[#5A3A22]" style="background-image: none;" role="img" aria-label="بدون تصویر ${fullName}">
-      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-      </svg>
-    </div>`;
-  }
-  return `<div class="${baseClass}" role="img" aria-label="تصویر ${fullName}"></div>`;
+
+  return `<div class="${dimClass} bg-[#EADCCA] flex items-center justify-center text-[#5A3A22]" style="background-image: none;" role="img" aria-label="آیکون پیش‌فرض ${fullName}">
+    <svg class="${iconSizeClass}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+    </svg>
+  </div>`;
 }
 
 /**
@@ -1112,14 +1114,23 @@ function renderAssignmentsSection($container: JQuery<HTMLElement>, state: Databa
                   const hwSubs = state.submissions.filter((sub) => sub.assignmentId === hw.id);
                   const submittedCount = hwSubs.length;
                   const notSubmittedCount = Math.max(0, targetStudents.length - submittedCount);
+                  const lockInfo = getAssignmentLockState(hw, getAuthoritativeNowMs());
+                  const statusBadgeHtml = lockInfo.isClosedByAdmin
+                    ? `<span class="text-[11px] font-extrabold px-2.5 py-0.5 rounded-lg bg-[#FFF1F2] text-[#E11D48] border border-[#FECDD3]">بسته شده</span>`
+                    : lockInfo.isDeadlineExpired
+                    ? `<span class="text-[11px] font-extrabold px-2.5 py-0.5 rounded-lg bg-[#FFFBEB] text-[#D97706] border border-[#FDE68A]">مهلت گذشته</span>`
+                    : `<span class="text-[11px] font-extrabold px-2.5 py-0.5 rounded-lg bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0]">فعال</span>`;
 
                   return `
                     <div class="modern-class-card">
                       <div>
-                        <div class="flex items-start justify-between gap-2">
-                          <span class="text-xs font-extrabold text-[#1B5E5A] bg-[#E2EFEA] px-2.5 py-1 rounded-lg">
-                            ${formatClassLabel(hw.classCode)}
-                          </span>
+                        <div class="flex items-start justify-between gap-2 flex-wrap">
+                          <div class="flex items-center gap-1.5 flex-wrap">
+                            <span class="text-xs font-extrabold text-[#1B5E5A] bg-[#E2EFEA] px-2.5 py-1 rounded-lg">
+                              ${formatClassLabel(hw.classCode)}
+                            </span>
+                            ${statusBadgeHtml}
+                          </div>
                           <div class="flex items-center gap-1">
                             <button
                               type="button"
@@ -1167,13 +1178,27 @@ function renderAssignmentsSection($container: JQuery<HTMLElement>, state: Databa
                           </span>
                         </div>
 
-                        <button
-                          type="button"
-                          class="btn-admin-primary w-full !h-9 text-xs js-view-assignment-detail"
-                          data-id="${hw.id}"
-                        >
-                          مشاهده جزئیات در صفحه جدید
-                        </button>
+                        <div class="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            class="btn-admin-primary !h-9 !px-2 text-xs js-view-assignment-detail"
+                            data-id="${hw.id}"
+                          >
+                            مشاهده جزئیات
+                          </button>
+                          <button
+                            type="button"
+                            class="${
+                              hw.status === 'closed'
+                                ? 'btn-admin-success'
+                                : 'btn-admin-danger'
+                            } !h-9 !px-2 text-xs js-toggle-assignment-status"
+                            data-id="${hw.id}"
+                            data-status="${hw.status === 'closed' ? 'active' : 'closed'}"
+                          >
+                            ${hw.status === 'closed' ? 'بازگشایی تکلیف' : 'بستن تکلیف'}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   `;
@@ -1391,15 +1416,23 @@ function renderAssignmentDetailPage(
         .join('')
     : `<tr><td colspan="6" class="text-center py-6">دانش‌آموزی در این کلاس یافت نشد.</td></tr>`;
 
+  const lockInfo = getAssignmentLockState(hw, getAuthoritativeNowMs());
+  const detailStatusBadgeHtml = lockInfo.isClosedByAdmin
+    ? `<span class="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-[#FFF1F2] text-[#E11D48] border border-[#FECDD3]">بسته شده توسط مدرس</span>`
+    : lockInfo.isDeadlineExpired
+    ? `<span class="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-[#FFFBEB] text-[#D97706] border border-[#FDE68A]">مهلت تحویل به پایان رسیده</span>`
+    : `<span class="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0]">فعال (در حال دریافت پاسخ)</span>`;
+
   $container.html(`
     <div class="space-y-4">
       <!-- هدر صفحه جزئیات تکلیف -->
       <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap">
         <div>
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-2 flex-wrap">
             <span class="text-xs font-extrabold text-[#1B5E5A] bg-[#E2EFEA] px-2.5 py-1 rounded-lg">
               ${formatClassLabel(hw.classCode)}
             </span>
+            ${detailStatusBadgeHtml}
             <h2 class="text-base font-black text-[#251B15] m-0">
               ${toPersianDigits(hw.title)}
             </h2>
@@ -1409,7 +1442,17 @@ function renderAssignmentDetailPage(
           </p>
         </div>
 
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            class="${
+              hw.status === 'closed' ? 'btn-admin-success' : 'btn-admin-danger'
+            } !h-9 js-toggle-assignment-status"
+            data-id="${hw.id}"
+            data-status="${hw.status === 'closed' ? 'active' : 'closed'}"
+          >
+            ${hw.status === 'closed' ? 'بازگشایی مجدد تکلیف' : 'بستن تکلیف (پایان دریافت)'}
+          </button>
           <button
             type="button"
             class="btn-admin-action js-edit-assignment"
@@ -1522,9 +1565,25 @@ function renderAssignmentSubmissionPage(
           </div>
         </div>
 
-        <button type="button" class="btn-admin-action js-back-to-assignment-detail">
-          بازگشت به جزئیات تکلیف ←
-        </button>
+        <div class="flex items-center gap-2 flex-wrap">
+          ${
+            hw
+              ? `<button
+                  type="button"
+                  class="${
+                    hw.status === 'closed' ? 'btn-admin-success' : 'btn-admin-danger'
+                  } !h-9 js-toggle-assignment-status"
+                  data-id="${hw.id}"
+                  data-status="${hw.status === 'closed' ? 'active' : 'closed'}"
+                >
+                  ${hw.status === 'closed' ? 'بازگشایی تکلیف' : 'بستن تکلیف'}
+                </button>`
+              : ''
+          }
+          <button type="button" class="btn-admin-action js-back-to-assignment-detail">
+            بازگشت به جزئیات تکلیف ←
+          </button>
+        </div>
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
@@ -2528,8 +2587,42 @@ function renderSettingsSection($container: JQuery<HTMLElement>, state: DatabaseS
 }
 
 /* ============================================================================
-   Student Profile Modal with Student Avatar Preview & Upload
+   Student Profile Modal with Student Avatar Preview, Upload & Removal
    ============================================================================ */
+function updateStudentModalAvatarPreview(st: StudentRecord): void {
+  const $avatarBox = $('#student-modal-avatar-box');
+  const $removeBtn = $('#btn-admin-remove-student-avatar');
+  const hasCustomAvatar = Boolean(st.avatarUrl && !st.avatarRemoved);
+
+  $avatarBox.removeClass(
+    'student-portrait-lg-0 student-portrait-lg-1 student-portrait-lg-2 student-portrait-lg-3 has-custom-avatar'
+  );
+
+  if (hasCustomAvatar) {
+    $avatarBox
+      .addClass('has-custom-avatar')
+      .css('background-image', `url('${st.avatarUrl}')`)
+      .html('');
+    $removeBtn
+      .prop('disabled', false)
+      .removeClass('opacity-50 cursor-not-allowed')
+      .text('حذف عکس پروفایل');
+  } else {
+    $avatarBox
+      .addClass('bg-[#EADCCA] flex items-center justify-center text-[#5A3A22]')
+      .css('background-image', 'none')
+      .html(`
+        <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+        </svg>
+      `);
+    $removeBtn
+      .prop('disabled', true)
+      .addClass('opacity-50 cursor-not-allowed')
+      .text('عکس پیش‌فرض فعال است');
+  }
+}
+
 function openStudentProfileModal(studentId: number): void {
   const state = loadDbState();
   const st = state.students.find((s) => s.id === studentId);
@@ -2541,6 +2634,8 @@ function openStudentProfileModal(studentId: number): void {
   $('#prof-modal-firstname').val(st.firstName);
   $('#prof-modal-lastname').val(st.lastName);
   $('#prof-modal-phone').val(toPersianDigits(st.phone));
+  $('#prof-modal-email').val(st.email || '');
+  $('#prof-modal-bio').val(toPersianDigits(st.bio || ''));
   $('#prof-modal-class').val(st.classCode || '');
   $('#prof-modal-status').val(st.status);
   $('#prof-modal-notes').val(toPersianDigits(st.notes || ''));
@@ -2551,17 +2646,7 @@ function openStudentProfileModal(studentId: number): void {
     st.classCode ? `کلاس ${toPersianDigits(st.classCode)}` : 'بدون کلاس (—)'
   );
 
-  const portraitIdx = Math.abs(Number(st.id) || 0) % 4;
-  const $avatarBox = $('#student-modal-avatar-box');
-  $avatarBox
-    .removeClass('student-portrait-lg-0 student-portrait-lg-1 student-portrait-lg-2 student-portrait-lg-3 has-custom-avatar')
-    .addClass(`student-portrait-lg-${portraitIdx}`);
-
-  if (st.avatarUrl) {
-    $avatarBox.addClass('has-custom-avatar').css('background-image', `url('${st.avatarUrl}')`);
-  } else {
-    $avatarBox.css('background-image', '');
-  }
+  updateStudentModalAvatarPreview(st);
 
   $('#admin-student-modal').addClass('is-open').attr('aria-hidden', 'false');
 }
@@ -2627,6 +2712,7 @@ export function initAdminPanelEvents(): void {
 
   // Logout from Admin Panel back to Auth View (/login)
   $('#btn-admin-logout').on('click', () => {
+    setActiveUserRole('');
     $('#admin-workspace-view').addClass('view-hidden');
     $('#public-auth-view').removeClass('view-hidden');
     updateBrowserUrl('/login');
@@ -2913,10 +2999,8 @@ export function initAdminPanelEvents(): void {
         st.avatarUrl = cacheBustedUrl;
         st.avatarRemoved = false;
         await persistDbState(state);
+        updateStudentModalAvatarPreview(st);
       }
-      $('#student-modal-avatar-box')
-        .addClass('has-custom-avatar')
-        .css('background-image', `url('${cacheBustedUrl}')`);
       renderActiveSection();
       showToast(
         'عکس دانش‌آموز بروزرسانی شد',
@@ -2927,6 +3011,49 @@ export function initAdminPanelEvents(): void {
       showToast('خطا در آپلود تصویر', err instanceof Error ? err.message : 'خطا در آپلود فایل', 'error');
     } finally {
       this.value = '';
+    }
+  });
+
+  // Remove student custom profile photo by Administrator (#btn-admin-remove-student-avatar)
+  $(document).on('click', '#btn-admin-remove-student-avatar', async function () {
+    const $btn = $(this);
+    if ($btn.prop('disabled')) return;
+    const studentId = Number($('#prof-modal-student-id').val());
+    if (!studentId) return;
+
+    const state = loadDbState();
+    const st = state.students.find((s) => s.id === studentId);
+    if (!st || (!st.avatarUrl && st.avatarRemoved)) return;
+
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال حذف...');
+    try {
+      const res = await adminRemoveStudentAvatarApi(studentId);
+      if (!res.success) {
+        showToast('خطا در حذف تصویر پروفایل', res.message || 'حذف تصویر پروفایل انجام نشد.', 'error');
+        $btn.prop('disabled', false).text(origText);
+        return;
+      }
+
+      st.avatarUrl = undefined;
+      st.avatarRemoved = true;
+      logAdminActivity(
+        state,
+        `حذف تصویر پروفایل دانش‌آموز (${st.firstName} ${st.lastName})`,
+        'بازگشت به آیکون پیش‌فرض حساب دانش‌آموز',
+        'student'
+      );
+      await persistDbState(state);
+      updateStudentModalAvatarPreview(st);
+      renderActiveSection();
+      showToast(
+        'عکس پروفایل حذف شد',
+        `تصویر پروفایل ${st.firstName} ${st.lastName} حذف شد و به آیکون پیش‌فرض تغییر یافت.`,
+        'info'
+      );
+    } catch (err) {
+      showToast('خطا در حذف تصویر', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+      $btn.prop('disabled', false).text(origText);
     }
   });
 
@@ -3040,12 +3167,24 @@ export function initAdminPanelEvents(): void {
     const firstName = String($('#prof-modal-firstname').val() || '').trim();
     const lastName = String($('#prof-modal-lastname').val() || '').trim();
     const phone = normalizeDigits(String($('#prof-modal-phone').val() || ''));
+    const email = String($('#prof-modal-email').val() || '').trim();
+    const bio = String($('#prof-modal-bio').val() || '').trim();
     const classCode = String($('#prof-modal-class').val() || '');
     const status = String($('#prof-modal-status').val()) as typeof st.status;
     const notes = String($('#prof-modal-notes').val() || '').trim();
 
     if (!firstName || !lastName || phone.length < 10) {
       showToast('اطلاعات نامعتبر', 'لطفاً نام، نام خانوادگی و شماره موبایل معتبر وارد کنید.', 'error');
+      return;
+    }
+
+    if (!isValidEmail(email)) {
+      showToast('ایمیل نامعتبر', 'لطفاً یک آدرس ایمیل معتبر وارد کنید یا فیلد ایمیل را خالی بگذارید.', 'error');
+      return;
+    }
+
+    if (bio.length > 500) {
+      showToast('بیوگرافی طولانی است', 'متن بیوگرافی نمی‌تواند بیشتر از ۵۰۰ کاراکتر باشد.', 'error');
       return;
     }
 
@@ -3056,6 +3195,8 @@ export function initAdminPanelEvents(): void {
         firstName,
         lastName,
         phone,
+        email,
+        bio,
         classCode,
         status,
         notes,
@@ -3068,6 +3209,8 @@ export function initAdminPanelEvents(): void {
       st.firstName = firstName;
       st.lastName = lastName;
       st.phone = phone;
+      st.email = email;
+      st.bio = bio;
       st.classCode = classCode;
       st.status = status;
       st.notes = notes;
@@ -3373,6 +3516,60 @@ export function initAdminPanelEvents(): void {
         }
       },
     });
+  });
+
+  // Close or Reopen an Assignment (.js-toggle-assignment-status)
+  $(document).on('click', '.js-toggle-assignment-status', async function () {
+    const $btn = $(this);
+    if ($btn.prop('disabled')) return;
+
+    const id = Number($btn.attr('data-id'));
+    const nextStatus =
+      String($btn.attr('data-status') || 'closed') === 'active' ? 'active' : 'closed';
+
+    const state = loadDbState();
+    const hw = state.assignments.find((a) => a.id === id);
+    if (!hw) return;
+
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال ثبت...');
+    try {
+      const res = await adminSetAssignmentStatusApi(id, nextStatus);
+      if (!res.success) {
+        showToast('خطا در تغییر وضعیت تکلیف', res.message || 'تغییر وضعیت تکلیف انجام نشد.', 'error');
+        return;
+      }
+
+      hw.status = nextStatus;
+      hw.closedAt =
+        nextStatus === 'closed'
+          ? new Date().toLocaleDateString('fa-IR')
+          : undefined;
+
+      logAdminActivity(
+        state,
+        `${nextStatus === 'closed' ? 'بستن تکلیف' : 'بازگشایی تکلیف'}: ${hw.title}`,
+        nextStatus === 'closed'
+          ? 'مهلت ارسال پاسخ برای دانش‌آموزان بسته شد'
+          : 'دریافت پاسخ دانش‌آموزان مجدداً فعال شد',
+        'assignment'
+      );
+      await persistDbState(state);
+      renderActiveSection();
+      showToast(
+        nextStatus === 'closed' ? 'تکلیف بسته شد' : 'تکلیف بازگشایی شد',
+        res.message,
+        nextStatus === 'closed' ? 'info' : 'success'
+      );
+    } catch (err) {
+      showToast(
+        'خطا در تغییر وضعیت تکلیف',
+        err instanceof Error ? err.message : 'خطا در ارتباط با سرور',
+        'error'
+      );
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 
   // Navigate to Assignment Detail Page (/admin/assignments/detail)
@@ -4508,7 +4705,7 @@ export function initAdminPanelEvents(): void {
   }
 
   // Toggle Attendance Status (حاضر / تأخیر / غایب)
-  $(document).on('click', '.js-gb-attendance-btn', function () {
+  $(document).on('click', '.js-gb-attendance-btn', async function () {
     const sessionId = Number($(this).attr('data-session-id'));
     const studentId = Number($(this).attr('data-student-id'));
     const status = String($(this).attr('data-status')) as AttendanceStatus;
@@ -4522,12 +4719,16 @@ export function initAdminPanelEvents(): void {
       entry.positiveCount = 0;
       entry.negativeCount = 0;
     }
-    saveDbState(state);
     renderActiveSection();
+    try {
+      await persistDbState(state);
+    } catch (err) {
+      showToast('خطا در ذخیره حضور و غیاب', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+    }
   });
 
   // Adjust Positive Points (+ / -)
-  $(document).on('click', '.js-gb-pos-delta', function () {
+  $(document).on('click', '.js-gb-pos-delta', async function () {
     if ($(this).prop('disabled')) return;
     const sessionId = Number($(this).attr('data-session-id'));
     const studentId = Number($(this).attr('data-student-id'));
@@ -4541,12 +4742,16 @@ export function initAdminPanelEvents(): void {
       return;
     }
     entry.positiveCount = Math.max(0, (Number(entry.positiveCount) || 0) + delta);
-    saveDbState(state);
     renderActiveSection();
+    try {
+      await persistDbState(state);
+    } catch (err) {
+      showToast('خطا در ثبت امتیاز مثبت', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+    }
   });
 
   // Adjust Negative Points (+ / -)
-  $(document).on('click', '.js-gb-neg-delta', function () {
+  $(document).on('click', '.js-gb-neg-delta', async function () {
     if ($(this).prop('disabled')) return;
     const sessionId = Number($(this).attr('data-session-id'));
     const studentId = Number($(this).attr('data-student-id'));
@@ -4560,8 +4765,12 @@ export function initAdminPanelEvents(): void {
       return;
     }
     entry.negativeCount = Math.max(0, (Number(entry.negativeCount) || 0) + delta);
-    saveDbState(state);
     renderActiveSection();
+    try {
+      await persistDbState(state);
+    } catch (err) {
+      showToast('خطا در ثبت امتیاز منفی', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+    }
   });
 
   // Save all scores, attendance, positive/negative counts and teacher notes for the active session

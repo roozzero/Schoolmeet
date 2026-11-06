@@ -77,6 +77,76 @@ let backendSyncInitialized = false;
 let memoryState: DatabaseState | null = null;
 const stateListeners: Array<() => void> = [];
 
+const ACTIVE_STUDENT_KEY = 'scoolmeet_active_student_id';
+const ACTIVE_ROLE_KEY = 'scoolmeet_active_user_role';
+let serverClockOffsetMs = 0;
+
+export function getAuthoritativeNowMs(): number {
+  return Date.now() + serverClockOffsetMs;
+}
+
+export function setActiveUserRole(role: 'admin' | 'student' | ''): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (role) {
+      window.sessionStorage.setItem(ACTIVE_ROLE_KEY, role);
+    } else {
+      window.sessionStorage.removeItem(ACTIVE_ROLE_KEY);
+    }
+  } catch {
+    // Ignore storage issues
+  }
+}
+
+export function getActiveUserRole(): 'admin' | 'student' | '' {
+  if (typeof window === 'undefined') return '';
+  try {
+    const val = window.sessionStorage.getItem(ACTIVE_ROLE_KEY);
+    if (val === 'admin' || val === 'student') return val;
+  } catch {
+    // Ignore
+  }
+  if (typeof document !== 'undefined') {
+    if (
+      !document
+        .getElementById('student-workspace-view')
+        ?.classList.contains('view-hidden')
+    ) {
+      return 'student';
+    }
+    if (
+      !document
+        .getElementById('admin-workspace-view')
+        ?.classList.contains('view-hidden')
+    ) {
+      return 'admin';
+    }
+  }
+  return '';
+}
+
+export function setActiveStudentSessionId(studentId: number): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (studentId > 0) {
+      window.localStorage.setItem(ACTIVE_STUDENT_KEY, String(studentId));
+    } else {
+      window.localStorage.removeItem(ACTIVE_STUDENT_KEY);
+    }
+  } catch {
+    // Ignore
+  }
+}
+
+export function getActiveStudentSessionId(): number {
+  if (typeof window === 'undefined') return 0;
+  try {
+    return Number(window.localStorage.getItem(ACTIVE_STUDENT_KEY) || 0) || 0;
+  } catch {
+    return 0;
+  }
+}
+
 /**
  * Subscribe to backend state synchronization events so active Admin/Student views
  * automatically re-render as soon as MySQL state arrives without needing page reloads.
@@ -101,6 +171,9 @@ function notifyStateListeners(): void {
  */
 function writeLocalStorageSafe(state: DatabaseState): void {
   if (typeof window === 'undefined') return;
+  if (state.activeStudentId > 0) {
+    setActiveStudentSessionId(state.activeStudentId);
+  }
   try {
     window.localStorage.setItem(DB_STORAGE_KEY, JSON.stringify(state));
   } catch {
@@ -151,13 +224,21 @@ export async function syncStateFromBackend(): Promise<DatabaseState> {
     if (!res.ok) return current;
     const json = (await res.json()) as {
       success?: boolean;
+      serverNowMs?: number;
       data?: Partial<DatabaseState>;
     };
+    if (typeof json.serverNowMs === 'number' && json.serverNowMs > 0) {
+      serverClockOffsetMs = json.serverNowMs - Date.now();
+    }
     if (json.success && json.data) {
+      const sessionStId = getActiveStudentSessionId();
       const merged: DatabaseState = {
         ...current,
         ...json.data,
-        activeStudentId: current.activeStudentId || Number(json.data.activeStudentId || 0),
+        activeStudentId:
+          sessionStId ||
+          current.activeStudentId ||
+          Number(json.data.activeStudentId || 0),
         admin: {
           ...current.admin,
           ...(json.data.admin || {}),
@@ -173,6 +254,27 @@ export async function syncStateFromBackend(): Promise<DatabaseState> {
         students: Array.isArray(json.data.students)
           ? json.data.students
           : current.students,
+        assignments: Array.isArray(json.data.assignments)
+          ? json.data.assignments
+          : current.assignments,
+        submissions: Array.isArray(json.data.submissions)
+          ? json.data.submissions
+          : current.submissions,
+        resources: Array.isArray(json.data.resources)
+          ? json.data.resources
+          : current.resources,
+        announcements: Array.isArray(json.data.announcements)
+          ? json.data.announcements
+          : current.announcements,
+        tickets: Array.isArray(json.data.tickets)
+          ? json.data.tickets
+          : current.tickets,
+        gradebookSessions: Array.isArray(json.data.gradebookSessions)
+          ? json.data.gradebookSessions
+          : current.gradebookSessions,
+        gradebookEntries: Array.isArray(json.data.gradebookEntries)
+          ? json.data.gradebookEntries
+          : current.gradebookEntries,
       };
       memoryState = merged;
       writeLocalStorageSafe(merged);
@@ -191,6 +293,10 @@ export function loadDbState(): DatabaseState {
     void syncStateFromBackend();
   }
   if (memoryState) {
+    const sessionStId = getActiveStudentSessionId();
+    if (sessionStId && !memoryState.activeStudentId) {
+      memoryState.activeStudentId = sessionStId;
+    }
     return memoryState;
   }
   try {
@@ -200,6 +306,7 @@ export function loadDbState(): DatabaseState {
         : null;
     if (!raw) {
       const fresh = JSON.parse(JSON.stringify(INITIAL_DB_STATE)) as DatabaseState;
+      fresh.activeStudentId = getActiveStudentSessionId();
       memoryState = fresh;
       writeLocalStorageSafe(fresh);
       return fresh;
@@ -208,6 +315,8 @@ export function loadDbState(): DatabaseState {
     const hydrated: DatabaseState = {
       ...INITIAL_DB_STATE,
       ...parsed,
+      activeStudentId:
+        getActiveStudentSessionId() || Number(parsed.activeStudentId || 0),
       admin: {
         ...INITIAL_DB_STATE.admin,
         ...(parsed.admin || {}),
@@ -229,7 +338,8 @@ export function loadDbState(): DatabaseState {
 
 /**
  * Awaited persistence to Node.js + MySQL backend (`POST /api/state`).
- * Updates in-memory cache + localStorage and returns whether MySQL save genuinely succeeded.
+ * Throws an Error if the backend rejects the operation or fails to save to MySQL,
+ * ensuring callers never display false success messages.
  */
 export async function persistDbState(
   state: DatabaseState
@@ -241,44 +351,56 @@ export async function persistDbState(
     return { success: true, message: 'ذخیره شد.' };
   }
 
+  const role = getActiveUserRole();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+  if (role) {
+    headers['X-User-Role'] = role;
+  }
+
+  let res: Response;
   try {
-    const res = await fetch(`${API_BASE_URL}/state`, {
+    res = await fetch(`${API_BASE_URL}/state`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
+      headers,
       body: JSON.stringify(state),
     });
-    const json = (await res.json()) as {
-      success?: boolean;
-      message?: string;
-      students?: StudentRecord[];
-    };
-
-    if (!res.ok || !json.success) {
-      return {
-        success: false,
-        message: json.message || 'خطا در ذخیره‌سازی اطلاعات در پایگاه داده MySQL.',
-      };
-    }
-
-    if (Array.isArray(json.students)) {
-      state.students = json.students;
-      memoryState = state;
-      writeLocalStorageSafe(state);
-    }
-
-    return {
-      success: true,
-      message: json.message || 'اطلاعات در پایگاه داده MySQL ذخیره شد.',
-    };
   } catch {
-    return {
-      success: false,
-      message: 'خطا در برقراری ارتباط با سرور Node.js و پایگاه داده MySQL.',
-    };
+    throw new Error('خطا در برقراری ارتباط با سرور Node.js و پایگاه داده MySQL.');
   }
+
+  const json = (await res.json().catch(() => ({}))) as {
+    success?: boolean;
+    serverNowMs?: number;
+    message?: string;
+    students?: StudentRecord[];
+  };
+
+  if (typeof json.serverNowMs === 'number' && json.serverNowMs > 0) {
+    serverClockOffsetMs = json.serverNowMs - Date.now();
+  }
+
+  if (!res.ok || !json.success) {
+    // Re-sync from backend so optimistic in-memory mutations are rolled back
+    await syncStateFromBackend();
+    throw new Error(
+      json.message || 'خطا در ذخیره‌سازی اطلاعات در پایگاه داده MySQL.'
+    );
+  }
+
+  if (Array.isArray(json.students)) {
+    state.students = json.students;
+    memoryState = state;
+    writeLocalStorageSafe(state);
+  }
+
+  notifyStateListeners();
+  return {
+    success: true,
+    message: json.message || 'اطلاعات در پایگاه داده MySQL ذخیره شد.',
+  };
 }
 
 /**
@@ -286,7 +408,9 @@ export async function persistDbState(
  * Prefer `await persistDbState(state)` for all interactive user operations.
  */
 export function saveDbState(state: DatabaseState): void {
-  void persistDbState(state);
+  void persistDbState(state).catch(() => {
+    // Handled by syncStateFromBackend rollback
+  });
 }
 
 export function resetDbState(): void {

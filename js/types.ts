@@ -43,6 +43,8 @@ export interface StudentRecord {
   firstName: string;
   lastName: string;
   phone: string;
+  email?: string;
+  bio?: string;
   classCode: ClassRoomCode; // '' when removed from class
   status: StudentStatus;
   notes?: string;
@@ -93,6 +95,7 @@ export interface AssignmentItem {
   attachmentName: string;
   attachmentDataUrl?: string;
   status: 'active' | 'closed';
+  closedAt?: string;
   createdAt: string;
 }
 

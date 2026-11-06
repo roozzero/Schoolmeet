@@ -122,6 +122,199 @@ async function writeExtendedState(stateObj: Record<string, unknown>): Promise<vo
 }
 
 /**
+ * Helper: Validate email format when non-empty (max 150 chars)
+ */
+function isValidEmailServer(email: string): boolean {
+  const trimmed = String(email || '').trim();
+  if (!trimmed) return true;
+  if (trimmed.length > 150) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimmed);
+}
+
+/**
+ * Helper: Convert Jalali (Solar Hijri) date to Gregorian date on the server
+ */
+function jalaliToGregorianServer(
+  jy: number,
+  jm: number,
+  jd: number
+): { gy: number; gm: number; gd: number } {
+  const jyAdj = jy - (jy > 979 ? 979 : 0);
+  let days =
+    365 * jyAdj +
+    Math.floor(jyAdj / 33) * 8 +
+    Math.floor(((jyAdj % 33) + 3) / 4) +
+    78 +
+    jd +
+    (jm < 7 ? (jm - 1) * 31 : (jm - 7) * 30 + 186);
+  let gy = (jy > 979 ? 1600 : 621) + 400 * Math.floor(days / 146097);
+  days %= 146097;
+  if (days > 36524) {
+    gy += 100 * Math.floor(--days / 36524);
+    days %= 36524;
+    if (days >= 365) days++;
+  }
+  gy += 4 * Math.floor(days / 1461);
+  days %= 1461;
+  if (days > 365) {
+    gy += Math.floor((days - 1) / 365);
+    days = (days - 1) % 365;
+  }
+  let gd = days + 1;
+  const monthDays = [
+    0,
+    31,
+    (gy % 4 === 0 && gy % 100 !== 0) || gy % 400 === 0 ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ];
+  let gm = 0;
+  for (gm = 0; gm < 13 && gd > monthDays[gm]; gm++) {
+    gd -= monthDays[gm];
+  }
+  return { gy, gm, gd };
+}
+
+/**
+ * Helper: Parse assignment dueDate (Persian Jalali or Gregorian) into Unix ms in Asia/Tehran (+03:30)
+ */
+export function parseAssignmentDeadlineMsServer(dueDateStr: string): number | null {
+  const ascii = normalizeDigitsServer(dueDateStr);
+  if (!ascii) return null;
+
+  const dateMatch = ascii.match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if (!dateMatch) {
+    const direct = Date.parse(ascii);
+    return Number.isNaN(direct) ? null : direct;
+  }
+
+  const rawYear = Number(dateMatch[1]);
+  const rawMonth = Number(dateMatch[2]);
+  const rawDay = Number(dateMatch[3]);
+  if (rawMonth < 1 || rawMonth > 12 || rawDay < 1 || rawDay > 31) {
+    return null;
+  }
+
+  const afterDate = ascii.slice((dateMatch.index || 0) + dateMatch[0].length);
+  const timeMatch = afterDate.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  const hour = timeMatch ? Math.min(23, Math.max(0, Number(timeMatch[1]))) : 23;
+  const minute = timeMatch ? Math.min(59, Math.max(0, Number(timeMatch[2]))) : 59;
+  const second = timeMatch && timeMatch[3] ? Math.min(59, Math.max(0, Number(timeMatch[3]))) : 59;
+
+  let gy = rawYear;
+  let gm = rawMonth;
+  let gd = rawDay;
+
+  if (rawYear >= 1300 && rawYear <= 1600) {
+    const greg = jalaliToGregorianServer(rawYear, rawMonth, rawDay);
+    gy = greg.gy;
+    gm = greg.gm;
+    gd = greg.gd;
+  }
+
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const isoTehran = `${gy}-${pad(gm)}-${pad(gd)}T${pad(hour)}:${pad(minute)}:${pad(second)}+03:30`;
+  const parsed = Date.parse(isoTehran);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+export function isAssignmentExpiredServer(
+  dueDateStr: string,
+  nowMs: number = Date.now()
+): boolean {
+  const deadlineMs = parseAssignmentDeadlineMsServer(dueDateStr);
+  return deadlineMs !== null && nowMs > deadlineMs;
+}
+
+/**
+ * Helper: Safely delete an uploaded physical file from /uploads only when it is inside UPLOADS_DIR
+ * and is not referenced by any other student, admin, or extended state record.
+ */
+async function safeDeleteUploadedFileIfUnreferenced(
+  oldUrl: string | null | undefined,
+  excludeStudentId?: number
+): Promise<boolean> {
+  if (!oldUrl || typeof oldUrl !== 'string') return false;
+  const cleanPath = oldUrl.split('?')[0].trim();
+  if (!cleanPath.startsWith('/uploads/')) return false;
+
+  const baseName = path.basename(cleanPath);
+  if (!baseName || baseName.startsWith('.') || cleanPath !== `/uploads/${baseName}`) {
+    return false;
+  }
+
+  const fullPath = path.resolve(UPLOADS_DIR, baseName);
+  if (!fullPath.startsWith(UPLOADS_DIR) || !fs.existsSync(fullPath)) {
+    return false;
+  }
+
+  try {
+    const likePattern = `%/uploads/${baseName}%`;
+    const [otherStudents] = await pool.query<RowDataPacket[]>(
+      excludeStudentId
+        ? 'SELECT id FROM students WHERE id <> ? AND avatar_url LIKE ? LIMIT 1'
+        : 'SELECT id FROM students WHERE avatar_url LIKE ? LIMIT 1',
+      excludeStudentId ? [excludeStudentId, likePattern] : [likePattern]
+    );
+    if (otherStudents.length > 0) return false;
+
+    const [otherAdmins] = await pool.query<RowDataPacket[]>(
+      'SELECT id FROM admins WHERE avatar_url LIKE ? LIMIT 1',
+      [likePattern]
+    );
+    if (otherAdmins.length > 0) return false;
+
+    const extState = await readExtendedState();
+    const extJson = JSON.stringify({
+      assignments: extState.assignments || [],
+      submissions: extState.submissions || [],
+      resources: extState.resources || [],
+      tickets: extState.tickets || [],
+    });
+    if (extJson.includes(`/uploads/${baseName}`)) {
+      return false;
+    }
+
+    fs.unlinkSync(fullPath);
+    return true;
+  } catch (err) {
+    console.warn('[Safe File Cleanup Warning]:', err);
+    return false;
+  }
+}
+
+/**
+ * Helper: Synchronize a single updated/created student record inside `app_extended_state`
+ */
+async function syncStudentIntoExtendedState(studentObj: Record<string, unknown>): Promise<void> {
+  try {
+    const extState = await readExtendedState();
+    if (!extState || Object.keys(extState).length === 0) return;
+    const list = Array.isArray(extState.students)
+      ? ([...extState.students] as Record<string, unknown>[])
+      : [];
+    const idx = list.findIndex((s) => Number(s.id) === Number(studentObj.id));
+    if (idx >= 0) {
+      list[idx] = { ...list[idx], ...studentObj };
+    } else {
+      list.unshift(studentObj);
+    }
+    extState.students = list;
+    await writeExtendedState(extState);
+  } catch {
+    // Ignore if extended state is not initialized yet
+  }
+}
+
+/**
  * 0. Binary File Upload Endpoint (Supports >1MB up to 100MB with real XHR progress)
  * POST /api/upload
  */
@@ -366,10 +559,15 @@ async function handleLogin(req: Request, res: Response): Promise<void> {
       firstName: String(student.first_name),
       lastName: String(student.last_name),
       phone: String(student.phone),
+      email: String(student.email || ''),
+      bio: String(student.bio || ''),
       classCode: String(student.class_code ?? ''),
       status: (student.status as 'pending' | 'approved' | 'rejected') || 'pending',
       notes: String(student.notes || ''),
-      avatarUrl: student.avatar_url ? String(student.avatar_url) : undefined,
+      avatarUrl:
+        student.avatar_removed || !student.avatar_url
+          ? undefined
+          : String(student.avatar_url),
       avatarRemoved: Boolean(student.avatar_removed),
       createdAt: student.created_at
         ? new Date(student.created_at).toLocaleDateString('fa-IR')
@@ -447,8 +645,8 @@ async function handleRegister(req: Request, res: Response): Promise<void> {
     const notes = 'ثبت‌نام جدید از طریق فرم صفحه اصلی';
 
     const [result] = await pool.query<ResultSetHeader>(
-      `INSERT INTO students (first_name, last_name, phone, class_code, status, notes, password_hash)
-       VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
+      `INSERT INTO students (first_name, last_name, phone, email, class_code, status, notes, bio, avatar_url, avatar_removed, password_hash)
+       VALUES (?, ?, ?, '', ?, 'pending', ?, '', NULL, 0, ?)`,
       [firstName, lastName, phone, classCode, notes, passwordHash]
     );
 
@@ -457,6 +655,8 @@ async function handleRegister(req: Request, res: Response): Promise<void> {
       firstName,
       lastName,
       phone,
+      email: '',
+      bio: '',
       classCode,
       status: 'pending' as const,
       notes,
@@ -464,6 +664,8 @@ async function handleRegister(req: Request, res: Response): Promise<void> {
       avatarRemoved: false,
       createdAt: new Date().toLocaleDateString('fa-IR'),
     };
+
+    await syncStudentIntoExtendedState(newStudent);
 
     res.status(201).json({
       success: true,
@@ -491,6 +693,10 @@ app.put('/api/student/profile', async (req: Request, res: Response): Promise<voi
   const studentId = Number(req.body?.id ?? req.body?.studentId ?? 0);
   const firstName = String(req.body?.firstName ?? '').trim();
   const lastName = String(req.body?.lastName ?? '').trim();
+  const rawEmail =
+    req.body?.email !== undefined ? String(req.body.email ?? '').trim() : undefined;
+  const rawBio =
+    req.body?.bio !== undefined ? String(req.body.bio ?? '').trim() : undefined;
   const avatarUrl =
     req.body?.avatarUrl !== undefined ? String(req.body.avatarUrl || '') : undefined;
   const avatarRemoved =
@@ -500,6 +706,22 @@ app.put('/api/student/profile', async (req: Request, res: Response): Promise<voi
     res.status(422).json({
       success: false,
       message: 'نام و نام خانوادگی باید حداقل ۲ کاراکتر باشند.',
+    });
+    return;
+  }
+
+  if (rawEmail !== undefined && !isValidEmailServer(rawEmail)) {
+    res.status(422).json({
+      success: false,
+      message: 'فرمت آدرس ایمیل واردشده معتبر نیست.',
+    });
+    return;
+  }
+
+  if (rawBio !== undefined && rawBio.length > 500) {
+    res.status(422).json({
+      success: false,
+      message: 'متن بیوگرافی نمی‌تواند بیشتر از ۵۰۰ کاراکتر باشد.',
     });
     return;
   }
@@ -530,31 +752,39 @@ app.put('/api/student/profile', async (req: Request, res: Response): Promise<voi
       return;
     }
 
-    const nextAvatarUrl =
-      avatarUrl !== undefined
-        ? avatarUrl || null
-        : existing.avatar_url
-        ? String(existing.avatar_url)
-        : null;
+    const oldAvatarUrl = existing.avatar_url ? String(existing.avatar_url) : null;
+    const nextEmail = rawEmail !== undefined ? rawEmail : String(existing.email || '');
+    const nextBio = rawBio !== undefined ? rawBio : String(existing.bio || '');
     const nextAvatarRemoved =
       avatarRemoved !== undefined
         ? avatarRemoved
           ? 1
           : 0
         : Number(existing.avatar_removed || 0);
+    const nextAvatarUrl = nextAvatarRemoved
+      ? null
+      : avatarUrl !== undefined
+      ? avatarUrl || null
+      : oldAvatarUrl;
 
     await pool.query(
       `UPDATE students
-       SET first_name = ?, last_name = ?, avatar_url = ?, avatar_removed = ?
+       SET first_name = ?, last_name = ?, email = ?, bio = ?, avatar_url = ?, avatar_removed = ?
        WHERE id = ?`,
-      [firstName, lastName, nextAvatarUrl, nextAvatarRemoved, studentId]
+      [firstName, lastName, nextEmail, nextBio, nextAvatarUrl, nextAvatarRemoved, studentId]
     );
+
+    if (oldAvatarUrl && oldAvatarUrl !== nextAvatarUrl) {
+      await safeDeleteUploadedFileIfUnreferenced(oldAvatarUrl, studentId);
+    }
 
     const updatedStudent = {
       id: Number(existing.id),
       firstName,
       lastName,
       phone: String(existing.phone), // Immutable
+      email: nextEmail,
+      bio: nextBio,
       classCode: String(existing.class_code ?? ''),
       status: (existing.status as 'pending' | 'approved' | 'rejected') || 'pending',
       notes: String(existing.notes || ''),
@@ -564,6 +794,8 @@ app.put('/api/student/profile', async (req: Request, res: Response): Promise<voi
         ? new Date(existing.created_at).toLocaleDateString('fa-IR')
         : '',
     };
+
+    await syncStudentIntoExtendedState(updatedStudent);
 
     res.json({
       success: true,
@@ -758,9 +990,19 @@ app.post('/api/admin/password', async (req: Request, res: Response): Promise<voi
 });
 
 app.post('/api/admin/students', async (req: Request, res: Response): Promise<void> => {
+  if (String(req.headers['x-user-role'] || '') === 'student') {
+    res.status(403).json({
+      success: false,
+      message: 'فقط مدیر سامانه مجاز به ایجاد دانش‌آموز جدید است.',
+    });
+    return;
+  }
+
   const firstName = String(req.body?.firstName ?? '').trim();
   const lastName = String(req.body?.lastName ?? '').trim();
   const phone = normalizeDigitsServer(String(req.body?.phone ?? ''));
+  const email = String(req.body?.email ?? '').trim();
+  const bio = String(req.body?.bio ?? '').trim();
   const classCode = normalizeDigitsServer(String(req.body?.classCode ?? ''));
   const status = ['pending', 'approved', 'rejected'].includes(String(req.body?.status))
     ? (String(req.body.status) as 'pending' | 'approved' | 'rejected')
@@ -777,6 +1019,22 @@ app.post('/api/admin/students', async (req: Request, res: Response): Promise<voi
     res.status(422).json({
       success: false,
       message: 'اطلاعات دانش‌آموز نامعتبر است (نام، شماره همراه ۱۱ رقمی و رمز حداقل ۶ کاراکتر الزامی است).',
+    });
+    return;
+  }
+
+  if (!isValidEmailServer(email)) {
+    res.status(422).json({
+      success: false,
+      message: 'فرمت آدرس ایمیل دانش‌آموز معتبر نیست.',
+    });
+    return;
+  }
+
+  if (bio.length > 500) {
+    res.status(422).json({
+      success: false,
+      message: 'متن بیوگرافی دانش‌آموز نمی‌تواند بیشتر از ۵۰۰ کاراکتر باشد.',
     });
     return;
   }
@@ -800,9 +1058,9 @@ app.post('/api/admin/students', async (req: Request, res: Response): Promise<voi
 
     const passwordHash = await bcrypt.hash(password, 12);
     const [result] = await pool.query<ResultSetHeader>(
-      `INSERT INTO students (first_name, last_name, phone, class_code, status, notes, password_hash)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [firstName, lastName, phone, classCode, status, notes, passwordHash]
+      `INSERT INTO students (first_name, last_name, phone, email, class_code, status, notes, bio, avatar_url, avatar_removed, password_hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?)`,
+      [firstName, lastName, phone, email, classCode, status, notes, bio, passwordHash]
     );
 
     const createdStudent = {
@@ -810,6 +1068,8 @@ app.post('/api/admin/students', async (req: Request, res: Response): Promise<voi
       firstName,
       lastName,
       phone,
+      email,
+      bio,
       classCode,
       status,
       notes,
@@ -817,6 +1077,8 @@ app.post('/api/admin/students', async (req: Request, res: Response): Promise<voi
       avatarRemoved: false,
       createdAt: new Date().toLocaleDateString('fa-IR'),
     };
+
+    await syncStudentIntoExtendedState(createdStudent);
 
     res.status(201).json({
       success: true,
@@ -833,6 +1095,14 @@ app.post('/api/admin/students', async (req: Request, res: Response): Promise<voi
 });
 
 app.put('/api/admin/students/:id', async (req: Request, res: Response): Promise<void> => {
+  if (String(req.headers['x-user-role'] || '') === 'student') {
+    res.status(403).json({
+      success: false,
+      message: 'فقط مدیر سامانه مجاز به ویرایش اطلاعات مدیریتی دانش‌آموز است.',
+    });
+    return;
+  }
+
   const studentId = Number(req.params.id || 0);
   if (!studentId) {
     res.status(400).json({ success: false, message: 'شناسه دانش‌آموز نامعتبر است.' });
@@ -865,6 +1135,14 @@ app.put('/api/admin/students/:id', async (req: Request, res: Response): Promise<
       req.body?.phone !== undefined
         ? normalizeDigitsServer(String(req.body.phone))
         : String(existing.phone);
+    const email =
+      req.body?.email !== undefined
+        ? String(req.body.email).trim()
+        : String(existing.email || '');
+    const bio =
+      req.body?.bio !== undefined
+        ? String(req.body.bio).trim()
+        : String(existing.bio || '');
     const classCode =
       req.body?.classCode !== undefined
         ? normalizeDigitsServer(String(req.body.classCode))
@@ -878,25 +1156,42 @@ app.put('/api/admin/students/:id', async (req: Request, res: Response): Promise<
       req.body?.notes !== undefined
         ? String(req.body.notes).trim()
         : String(existing.notes || '');
-    const nextAvatarUrl =
-      req.body?.avatarUrl !== undefined
-        ? req.body.avatarUrl
-          ? String(req.body.avatarUrl)
-          : null
-        : existing.avatar_url
-        ? String(existing.avatar_url)
-        : null;
+
+    const oldAvatarUrl = existing.avatar_url ? String(existing.avatar_url) : null;
     const nextAvatarRemoved =
       req.body?.avatarRemoved !== undefined
         ? req.body.avatarRemoved
           ? 1
           : 0
         : Number(existing.avatar_removed || 0);
+    const nextAvatarUrl = nextAvatarRemoved
+      ? null
+      : req.body?.avatarUrl !== undefined
+      ? req.body.avatarUrl
+        ? String(req.body.avatarUrl)
+        : null
+      : oldAvatarUrl;
 
     if (firstName.length < 2 || lastName.length < 2 || !/^09\d{9}$/.test(phone)) {
       res.status(422).json({
         success: false,
         message: 'نام، نام خانوادگی یا شماره موبایل دانش‌آموز معتبر نیست.',
+      });
+      return;
+    }
+
+    if (!isValidEmailServer(email)) {
+      res.status(422).json({
+        success: false,
+        message: 'فرمت آدرس ایمیل دانش‌آموز معتبر نیست.',
+      });
+      return;
+    }
+
+    if (bio.length > 500) {
+      res.status(422).json({
+        success: false,
+        message: 'متن بیوگرافی نمی‌تواند بیشتر از ۵۰۰ کاراکتر باشد.',
       });
       return;
     }
@@ -925,15 +1220,17 @@ app.put('/api/admin/students/:id', async (req: Request, res: Response): Promise<
       const passwordHash = await bcrypt.hash(rawPassword, 12);
       await pool.query(
         `UPDATE students
-         SET first_name = ?, last_name = ?, phone = ?, class_code = ?, status = ?, notes = ?, avatar_url = ?, avatar_removed = ?, password_hash = ?
+         SET first_name = ?, last_name = ?, phone = ?, email = ?, class_code = ?, status = ?, notes = ?, bio = ?, avatar_url = ?, avatar_removed = ?, password_hash = ?
          WHERE id = ?`,
         [
           firstName,
           lastName,
           phone,
+          email,
           classCode,
           status,
           notes,
+          bio,
           nextAvatarUrl,
           nextAvatarRemoved,
           passwordHash,
@@ -943,15 +1240,17 @@ app.put('/api/admin/students/:id', async (req: Request, res: Response): Promise<
     } else {
       await pool.query(
         `UPDATE students
-         SET first_name = ?, last_name = ?, phone = ?, class_code = ?, status = ?, notes = ?, avatar_url = ?, avatar_removed = ?
+         SET first_name = ?, last_name = ?, phone = ?, email = ?, class_code = ?, status = ?, notes = ?, bio = ?, avatar_url = ?, avatar_removed = ?
          WHERE id = ?`,
         [
           firstName,
           lastName,
           phone,
+          email,
           classCode,
           status,
           notes,
+          bio,
           nextAvatarUrl,
           nextAvatarRemoved,
           studentId,
@@ -959,11 +1258,17 @@ app.put('/api/admin/students/:id', async (req: Request, res: Response): Promise<
       );
     }
 
+    if (oldAvatarUrl && oldAvatarUrl !== nextAvatarUrl) {
+      await safeDeleteUploadedFileIfUnreferenced(oldAvatarUrl, studentId);
+    }
+
     const updatedStudent = {
       id: studentId,
       firstName,
       lastName,
       phone,
+      email,
+      bio,
       classCode,
       status,
       notes,
@@ -973,6 +1278,8 @@ app.put('/api/admin/students/:id', async (req: Request, res: Response): Promise<
         ? new Date(existing.created_at).toLocaleDateString('fa-IR')
         : '',
     };
+
+    await syncStudentIntoExtendedState(updatedStudent);
 
     res.json({
       success: true,
@@ -989,18 +1296,479 @@ app.put('/api/admin/students/:id', async (req: Request, res: Response): Promise<
 });
 
 /**
+ * 5B. Admin Remove Student Profile Picture Endpoint (DELETE /api/admin/students/:id/avatar)
+ * Reverts student's profile picture to the default account icon, updates MySQL, and safely deletes unreferenced physical file.
+ */
+app.delete('/api/admin/students/:id/avatar', async (req: Request, res: Response): Promise<void> => {
+  if (String(req.headers['x-user-role'] || '') === 'student') {
+    res.status(403).json({
+      success: false,
+      message: 'فقط مدیر سامانه مجاز به حذف تصویر پروفایل دانش‌آموز است.',
+    });
+    return;
+  }
+
+  const studentId = Number(req.params.id || 0);
+  if (!studentId) {
+    res.status(400).json({ success: false, message: 'شناسه دانش‌آموز نامعتبر است.' });
+    return;
+  }
+
+  try {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM students WHERE id = ? LIMIT 1',
+      [studentId]
+    );
+    if (rows.length === 0) {
+      res.status(404).json({
+        success: false,
+        message: 'دانش‌آموز مورد نظر در پایگاه داده یافت نشد.',
+      });
+      return;
+    }
+
+    const existing = rows[0];
+    const oldAvatarUrl = existing.avatar_url ? String(existing.avatar_url) : null;
+
+    await pool.query(
+      'UPDATE students SET avatar_url = NULL, avatar_removed = 1 WHERE id = ?',
+      [studentId]
+    );
+
+    const fileDeleted = await safeDeleteUploadedFileIfUnreferenced(oldAvatarUrl, studentId);
+
+    const updatedStudent = {
+      id: studentId,
+      firstName: String(existing.first_name),
+      lastName: String(existing.last_name),
+      phone: String(existing.phone),
+      email: String(existing.email || ''),
+      bio: String(existing.bio || ''),
+      classCode: String(existing.class_code ?? ''),
+      status: (existing.status as 'pending' | 'approved' | 'rejected') || 'pending',
+      notes: String(existing.notes || ''),
+      avatarUrl: undefined,
+      avatarRemoved: true,
+      createdAt: existing.created_at
+        ? new Date(existing.created_at).toLocaleDateString('fa-IR')
+        : '',
+    };
+
+    await syncStudentIntoExtendedState(updatedStudent);
+
+    res.json({
+      success: true,
+      fileDeleted,
+      message: 'تصویر پروفایل دانش‌آموز حذف شد و آیکون پیش‌فرض حساب جایگزین گردید.',
+      student: updatedStudent,
+    });
+  } catch (err: unknown) {
+    console.error('[Admin Delete Student Avatar Error]:', err);
+    res.status(500).json({
+      success: false,
+      message: 'خطا در حذف تصویر پروفایل دانش‌آموز.',
+    });
+  }
+});
+
+/**
+ * 5C. Admin Close / Reopen Assignment Endpoint (POST /api/admin/assignments/:id/status)
+ */
+app.post('/api/admin/assignments/:id/status', async (req: Request, res: Response): Promise<void> => {
+  if (String(req.headers['x-user-role'] || '') === 'student') {
+    res.status(403).json({
+      success: false,
+      message: 'فقط مدیر یا مدرس مجاز به بستن یا بازگشایی تکلیف است.',
+    });
+    return;
+  }
+
+  const assignmentId = Number(req.params.id || 0);
+  const nextStatus = String(req.body?.status || 'closed') === 'active' ? 'active' : 'closed';
+
+  if (!assignmentId) {
+    res.status(400).json({ success: false, message: 'شناسه تکلیف نامعتبر است.' });
+    return;
+  }
+
+  try {
+    const extState = await readExtendedState();
+    const assignmentsList = Array.isArray(extState.assignments)
+      ? ([...extState.assignments] as Record<string, unknown>[])
+      : [];
+    const targetIdx = assignmentsList.findIndex((a) => Number(a.id) === assignmentId);
+
+    const [relRows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM assignments WHERE id = ? LIMIT 1',
+      [assignmentId]
+    );
+
+    if (targetIdx < 0 && relRows.length === 0) {
+      res.status(404).json({
+        success: false,
+        message: 'تکلیف مورد نظر در پایگاه داده یافت نشد.',
+      });
+      return;
+    }
+
+    await pool.query('UPDATE assignments SET status = ? WHERE id = ?', [
+      nextStatus,
+      assignmentId,
+    ]);
+
+    let updatedHw: Record<string, unknown> | undefined;
+    if (targetIdx >= 0) {
+      assignmentsList[targetIdx] = {
+        ...assignmentsList[targetIdx],
+        status: nextStatus,
+        closedAt:
+          nextStatus === 'closed'
+            ? new Date().toLocaleDateString('fa-IR')
+            : undefined,
+      };
+      updatedHw = assignmentsList[targetIdx];
+      extState.assignments = assignmentsList;
+      await writeExtendedState(extState);
+    } else if (relRows.length > 0) {
+      updatedHw = {
+        id: assignmentId,
+        title: String(relRows[0].title || ''),
+        description: String(relRows[0].description || ''),
+        classCode: String(relRows[0].class_code || 'all'),
+        dueDate: String(relRows[0].due_date || ''),
+        maxScore: Number(relRows[0].max_score || 20),
+        attachmentName: String(relRows[0].attachment_name || ''),
+        status: nextStatus,
+      };
+    }
+
+    res.json({
+      success: true,
+      status: nextStatus,
+      assignment: updatedHw,
+      message:
+        nextStatus === 'closed'
+          ? 'تکلیف با موفقیت بسته شد و ارسال یا ویرایش پاسخ برای دانش‌آموزان غیرفعال گردید.'
+          : 'تکلیف مجدداً برای دریافت پاسخ دانش‌آموزان فعال شد.',
+    });
+  } catch (err: unknown) {
+    console.error('[Admin Assignment Status Error]:', err);
+    res.status(500).json({
+      success: false,
+      message: 'خطا در تغییر وضعیت تکلیف در پایگاه داده.',
+    });
+  }
+});
+
+/**
+ * 5D. Student Submit / Edit Assignment Endpoint (POST /api/student/assignments/:id/submit)
+ * Strictly enforces:
+ *   1) Assignment exists
+ *   2) Assignment is NOT closed by administrator (status !== 'closed')
+ *   3) Assignment deadline has NOT passed relative to server time
+ *   4) Existing submission has NOT already been graded
+ */
+app.post('/api/student/assignments/:id/submit', async (req: Request, res: Response): Promise<void> => {
+  const assignmentId = Number(req.params.id || 0);
+  const studentId = Number(req.body?.studentId ?? req.body?.student_id ?? 0);
+  const fileName = String(req.body?.fileName ?? '').trim();
+  const fileContent = String(req.body?.fileContent ?? '').trim();
+  const fileDataUrl = req.body?.fileDataUrl ? String(req.body.fileDataUrl) : undefined;
+  const submittedAt =
+    String(req.body?.submittedAt || '').trim() ||
+    `${new Date().toLocaleDateString('fa-IR')} · هم‌اکنون`;
+
+  if (!assignmentId || !studentId || (!fileName && !fileContent)) {
+    res.status(422).json({
+      success: false,
+      message: 'اطلاعات ارسالی تکلیف ناقص است.',
+    });
+    return;
+  }
+
+  try {
+    const [stRows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM students WHERE id = ? LIMIT 1',
+      [studentId]
+    );
+    if (stRows.length === 0) {
+      res.status(404).json({
+        success: false,
+        message: 'حساب دانش‌آموز در پایگاه داده یافت نشد.',
+      });
+      return;
+    }
+    const studentRow = stRows[0];
+
+    const extState = await readExtendedState();
+    const assignmentsList = Array.isArray(extState.assignments)
+      ? (extState.assignments as Record<string, unknown>[])
+      : [];
+    const extHw = assignmentsList.find((a) => Number(a.id) === assignmentId);
+
+    const [relHwRows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM assignments WHERE id = ? LIMIT 1',
+      [assignmentId]
+    );
+    const relHw = relHwRows[0];
+
+    if (!extHw && !relHw) {
+      res.status(404).json({
+        success: false,
+        message: 'تکلیف مورد نظر در پایگاه داده یافت نشد.',
+      });
+      return;
+    }
+
+    const hwStatus = String(extHw?.status || relHw?.status || 'active');
+    const hwDueDate = String(extHw?.dueDate || relHw?.due_date || '');
+    const hwTitle = String(extHw?.title || relHw?.title || 'تکلیف');
+
+    // Backend Enforcement #1: Closed by Administrator
+    if (hwStatus === 'closed') {
+      res.status(403).json({
+        success: false,
+        code: 'ASSIGNMENT_CLOSED',
+        message:
+          'این تکلیف توسط مدرس بسته شده است و امکان ارسال یا ویرایش پاسخ وجود ندارد.',
+      });
+      return;
+    }
+
+    // Backend Enforcement #2: Deadline Expired (compared against authoritative server time)
+    if (isAssignmentExpiredServer(hwDueDate, Date.now())) {
+      res.status(403).json({
+        success: false,
+        code: 'ASSIGNMENT_EXPIRED',
+        message:
+          'مهلت ارسال این تکلیف به پایان رسیده است و امکان ارسال یا ویرایش پاسخ وجود ندارد.',
+      });
+      return;
+    }
+
+    const submissionsList = Array.isArray(extState.submissions)
+      ? ([...extState.submissions] as Record<string, unknown>[])
+      : [];
+    const existingIdx = submissionsList.findIndex(
+      (s) =>
+        Number(s.assignmentId) === assignmentId && Number(s.studentId) === studentId
+    );
+
+    if (existingIdx >= 0 && submissionsList[existingIdx].status === 'graded') {
+      res.status(403).json({
+        success: false,
+        code: 'SUBMISSION_ALREADY_GRADED',
+        message:
+          'پاسخ شما قبلاً توسط مدرس تصحیح و نمره‌دهی شده است و امکان ویرایش مجدد ندارد.',
+      });
+      return;
+    }
+
+    const studentFullName = `${String(studentRow.first_name)} ${String(studentRow.last_name)}`;
+    const studentClassCode = String(studentRow.class_code || '901');
+    const resolvedFileName = fileName || 'پاسخ-متنی-دانش‌آموز.txt';
+    const resolvedContent = fileContent || `فایل پیوست: ${resolvedFileName}`;
+
+    let submissionObj: Record<string, unknown>;
+    if (existingIdx >= 0) {
+      submissionObj = {
+        ...submissionsList[existingIdx],
+        fileName: resolvedFileName,
+        fileContent: resolvedContent,
+        fileDataUrl: fileDataUrl || submissionsList[existingIdx].fileDataUrl,
+        submittedAt,
+        status: 'pending',
+      };
+      submissionsList[existingIdx] = submissionObj;
+    } else {
+      submissionObj = {
+        id: Date.now(),
+        assignmentId,
+        studentId,
+        studentName: studentFullName,
+        classCode: studentClassCode,
+        fileName: resolvedFileName,
+        fileContent: resolvedContent,
+        fileDataUrl,
+        submittedAt,
+        score: null,
+        teacherFeedback: '',
+        status: 'pending',
+      };
+      submissionsList.unshift(submissionObj);
+    }
+
+    // Persist in relational `assignment_submissions` table as well
+    try {
+      const [existingSubRows] = await pool.query<RowDataPacket[]>(
+        'SELECT id FROM assignment_submissions WHERE assignment_id = ? AND student_id = ? LIMIT 1',
+        [assignmentId, studentId]
+      );
+      if (existingSubRows.length > 0) {
+        await pool.query(
+          `UPDATE assignment_submissions
+           SET file_name = ?, file_content = ?, submitted_at = ?, status = 'pending'
+           WHERE id = ?`,
+          [resolvedFileName, resolvedContent, submittedAt, existingSubRows[0].id]
+        );
+      } else {
+        await pool.query(
+          `INSERT INTO assignment_submissions (assignment_id, student_id, file_name, file_content, submitted_at, status)
+           VALUES (?, ?, ?, ?, ?, 'pending')`,
+          [assignmentId, studentId, resolvedFileName, resolvedContent, submittedAt]
+        );
+      }
+    } catch {
+      // Relational assignment_submissions sync is best-effort if assignment id is timestamp-based
+    }
+
+    const activitiesList = Array.isArray(extState.activities)
+      ? ([...extState.activities] as Record<string, unknown>[])
+      : [];
+    activitiesList.unshift({
+      id: Date.now() + 1,
+      title: `${existingIdx >= 0 ? 'ویرایش' : 'ارسال'} تکلیف توسط ${studentFullName}`,
+      detail: `تکلیف: ${hwTitle} (کلاس ${studentClassCode})`,
+      timeAgo: 'لحظاتی پیش',
+      category: 'assignment',
+    });
+
+    extState.submissions = submissionsList;
+    extState.activities = activitiesList.slice(0, 25);
+    await writeExtendedState(extState);
+
+    res.json({
+      success: true,
+      isEdit: existingIdx >= 0,
+      submission: submissionObj,
+      message:
+        existingIdx >= 0
+          ? 'پاسخ تکلیف شما با موفقیت بروزرسانی شد.'
+          : 'پاسخ تکلیف شما با موفقیت ثبت و برای مدرس ارسال گردید.',
+    });
+  } catch (err: unknown) {
+    console.error('[Student Assignment Submit Error]:', err);
+    res.status(500).json({
+      success: false,
+      message: 'خطا در ثبت پاسخ تکلیف در پایگاه داده.',
+    });
+  }
+});
+
+/**
+ * 5E. Student Reply to Ticket Endpoint (POST /api/student/tickets/:id/reply)
+ * Strictly prevents students from replying or attaching files to closed tickets ('بسته شده')!
+ */
+app.post('/api/student/tickets/:id/reply', async (req: Request, res: Response): Promise<void> => {
+  const ticketId = Number(req.params.id || 0);
+  const studentId = Number(req.body?.studentId ?? req.body?.student_id ?? 0);
+  const message = String(req.body?.message ?? '').trim();
+  const attachmentName = req.body?.attachmentName
+    ? String(req.body.attachmentName).trim()
+    : undefined;
+  const attachmentDataUrl = req.body?.attachmentDataUrl
+    ? String(req.body.attachmentDataUrl)
+    : undefined;
+  const sentAt =
+    String(req.body?.sentAt || '').trim() ||
+    `${new Date().toLocaleDateString('fa-IR')} · هم‌اکنون`;
+
+  if (!ticketId || !studentId || !message) {
+    res.status(422).json({
+      success: false,
+      message: 'متن پیام پاسخ تیکت الزامی است.',
+    });
+    return;
+  }
+
+  try {
+    const extState = await readExtendedState();
+    const ticketsList = Array.isArray(extState.tickets)
+      ? ([...extState.tickets] as Record<string, unknown>[])
+      : [];
+    const tkIdx = ticketsList.findIndex((t) => Number(t.id) === ticketId);
+
+    if (tkIdx < 0) {
+      res.status(404).json({
+        success: false,
+        message: 'تیکت مورد نظر یافت نشد.',
+      });
+      return;
+    }
+
+    const tk = ticketsList[tkIdx];
+    if (Number(tk.studentId) !== studentId) {
+      res.status(403).json({
+        success: false,
+        message: 'شما مجاز به ارسال پیام در این تیکت نیستید.',
+      });
+      return;
+    }
+
+    // Backend Enforcement: Reject student replies to closed tickets
+    if (String(tk.status) === 'بسته شده') {
+      res.status(403).json({
+        success: false,
+        code: 'TICKET_CLOSED',
+        message:
+          'این تیکت توسط مدیریت بسته شده است و امکان ارسال پیام یا فایل جدید در آن وجود ندارد.',
+      });
+      return;
+    }
+
+    const messages = Array.isArray(tk.messages)
+      ? ([...tk.messages] as Record<string, unknown>[])
+      : [];
+    const newMsg = {
+      id: Date.now(),
+      senderRole: 'student',
+      senderName: String(tk.studentName || 'دانش‌آموز'),
+      message,
+      sentAt,
+      attachmentName,
+      attachmentDataUrl,
+    };
+    messages.push(newMsg);
+
+    const updatedTicket = {
+      ...tk,
+      status: 'در انتظار پاسخ',
+      messages,
+    };
+    ticketsList[tkIdx] = updatedTicket;
+    extState.tickets = ticketsList;
+    await writeExtendedState(extState);
+
+    res.json({
+      success: true,
+      ticket: updatedTicket,
+      message: 'پیام شما در تیکت ثبت و برای مدرس ارسال گردید.',
+    });
+  } catch (err: unknown) {
+    console.error('[Student Ticket Reply Error]:', err);
+    res.status(500).json({
+      success: false,
+      message: 'خطا در ثبت پاسخ تیکت در پایگاه داده.',
+    });
+  }
+});
+
+/**
  * 6. Full Application State Sync with MySQL (GET /api/state & POST /api/state)
  */
 app.get('/api/state', async (_req: Request, res: Response): Promise<void> => {
   try {
     const [adminRows] = await pool.query<RowDataPacket[]>(
-      'SELECT id, first_name, last_name, phone, email, role_title, bio, avatar_url FROM admins ORDER BY id ASC LIMIT 1'
+      'SELECT * FROM admins ORDER BY id ASC LIMIT 1'
     );
     const [classRows] = await pool.query<RowDataPacket[]>(
       'SELECT * FROM classes ORDER BY code ASC'
     );
     const [studentRows] = await pool.query<RowDataPacket[]>(
-      'SELECT id, first_name, last_name, phone, class_code, status, notes, avatar_url, avatar_removed, created_at FROM students ORDER BY id DESC'
+      'SELECT * FROM students ORDER BY id DESC'
+    );
+    const [assignmentRows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM assignments ORDER BY id DESC'
     );
     const savedExtendedState = await readExtendedState();
 
@@ -1026,6 +1794,14 @@ app.get('/api/state', async (_req: Request, res: Response): Promise<void> => {
         firstName: String(row.first_name),
         lastName: String(row.last_name),
         phone: String(row.phone),
+        email:
+          row.email !== undefined && row.email !== null
+            ? String(row.email)
+            : String(extSt.email || ''),
+        bio:
+          row.bio !== undefined && row.bio !== null
+            ? String(row.bio)
+            : String(extSt.bio || ''),
         classCode: String(row.class_code ?? ''),
         status: (row.status as 'pending' | 'approved' | 'rejected') || 'pending',
         notes: String(row.notes || ''),
@@ -1038,6 +1814,26 @@ app.get('/api/state', async (_req: Request, res: Response): Promise<void> => {
           : String(extSt.createdAt || ''),
       };
     });
+
+    // Ensure relational assignments.status is reflected in returned assignments
+    const relStatusMap = new Map<number, 'active' | 'closed'>();
+    for (const r of assignmentRows) {
+      relStatusMap.set(
+        Number(r.id),
+        String(r.status) === 'closed' ? 'closed' : 'active'
+      );
+    }
+    const extAssignments = Array.isArray(savedExtendedState.assignments)
+      ? (savedExtendedState.assignments as Record<string, unknown>[]).map((hw) => {
+          const hwId = Number(hw.id);
+          const relSt = relStatusMap.get(hwId);
+          return {
+            ...hw,
+            status:
+              relSt || (String(hw.status) === 'closed' ? 'closed' : 'active'),
+          };
+        })
+      : [];
 
     const classes = classRows.map((row) => ({
       code: String(row.code),
@@ -1069,11 +1865,13 @@ app.get('/api/state', async (_req: Request, res: Response): Promise<void> => {
 
     res.json({
       success: true,
+      serverNowMs: Date.now(),
       data: {
         ...savedExtendedState,
         ...(admin ? { admin } : {}),
         classes: classes.length > 0 ? classes : savedExtendedState.classes || [],
         students,
+        assignments: extAssignments,
       },
     });
   } catch (err: unknown) {
@@ -1090,6 +1888,129 @@ app.post('/api/state', async (req: Request, res: Response): Promise<void> => {
   if (!state || typeof state !== 'object') {
     res.status(400).json({ success: false, message: 'داده نامعتبر است.' });
     return;
+  }
+
+  // Enforce backend security rules on state mutations before touching the database
+  const callerRole = String(req.headers['x-user-role'] || '');
+  const prevExtState = await readExtendedState();
+  const prevAssignments = Array.isArray(prevExtState.assignments)
+    ? (prevExtState.assignments as Record<string, unknown>[])
+    : [];
+  const prevSubmissions = Array.isArray(prevExtState.submissions)
+    ? (prevExtState.submissions as Record<string, unknown>[])
+    : [];
+  const prevTickets = Array.isArray(prevExtState.tickets)
+    ? (prevExtState.tickets as Record<string, unknown>[])
+    : [];
+
+  // 0A. Prevent students from modifying assignment status/dueDate via /api/state
+  if (callerRole === 'student' && Array.isArray(state.assignments)) {
+    for (const prevHw of prevAssignments) {
+      const incomingHw = (state.assignments as Record<string, unknown>[]).find(
+        (a) => Number(a.id) === Number(prevHw.id)
+      );
+      if (
+        incomingHw &&
+        (String(incomingHw.status || 'active') !== String(prevHw.status || 'active') ||
+          String(incomingHw.dueDate || '') !== String(prevHw.dueDate || ''))
+      ) {
+        res.status(403).json({
+          success: false,
+          message: 'دانش‌آموز مجاز به تغییر وضعیت یا مهلت تکلیف نیست.',
+        });
+        return;
+      }
+    }
+  }
+
+  // 0B. Prevent adding or editing student submissions on closed or expired assignments
+  if (Array.isArray(state.submissions)) {
+    const incomingSubs = state.submissions as Record<string, unknown>[];
+    for (const sub of incomingSubs) {
+      const subId = Number(sub.id) || 0;
+      const hwId = Number(sub.assignmentId) || 0;
+      const studentId = Number(sub.studentId) || 0;
+
+      const prevSub = prevSubmissions.find(
+        (p) =>
+          (subId > 0 && Number(p.id) === subId) ||
+          (Number(p.assignmentId) === hwId && Number(p.studentId) === studentId)
+      );
+
+      const isNewOrStudentEdited =
+        !prevSub ||
+        String(prevSub.fileName || '') !== String(sub.fileName || '') ||
+        String(prevSub.fileContent || '') !== String(sub.fileContent || '') ||
+        String(prevSub.fileDataUrl || '') !== String(sub.fileDataUrl || '');
+
+      if (isNewOrStudentEdited) {
+        const refHw =
+          prevAssignments.find((a) => Number(a.id) === hwId) ||
+          (Array.isArray(state.assignments)
+            ? (state.assignments as Record<string, unknown>[]).find(
+                (a) => Number(a.id) === hwId
+              )
+            : undefined);
+
+        if (refHw) {
+          if (String(refHw.status) === 'closed') {
+            res.status(403).json({
+              success: false,
+              code: 'ASSIGNMENT_CLOSED',
+              message:
+                'این تکلیف توسط مدرس بسته شده است و امکان ارسال یا ویرایش پاسخ وجود ندارد.',
+            });
+            return;
+          }
+          if (isAssignmentExpiredServer(String(refHw.dueDate || ''), Date.now())) {
+            res.status(403).json({
+              success: false,
+              code: 'ASSIGNMENT_EXPIRED',
+              message:
+                'مهلت ارسال این تکلیف به پایان رسیده است و امکان ارسال یا ویرایش پاسخ وجود ندارد.',
+            });
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  // 0C. Prevent student replies or reopening of closed tickets ('بسته شده')
+  if (Array.isArray(state.tickets)) {
+    const incomingTickets = state.tickets as Record<string, unknown>[];
+    for (const tk of incomingTickets) {
+      const tkId = Number(tk.id) || 0;
+      const prevTk = prevTickets.find((p) => Number(p.id) === tkId);
+      if (prevTk && String(prevTk.status) === 'بسته شده') {
+        const prevMsgs = Array.isArray(prevTk.messages)
+          ? (prevTk.messages as Record<string, unknown>[])
+          : [];
+        const nextMsgs = Array.isArray(tk.messages)
+          ? (tk.messages as Record<string, unknown>[])
+          : [];
+
+        const addedMsgs = nextMsgs.slice(prevMsgs.length);
+        const hasNewStudentReply = addedMsgs.some(
+          (m) => String(m.senderRole) === 'student'
+        );
+
+        if (
+          hasNewStudentReply ||
+          (callerRole === 'student' &&
+            (nextMsgs.length !== prevMsgs.length ||
+              String(tk.status) !== 'بسته شده'))
+        ) {
+          res.status(403).json({
+            success: false,
+            code: 'TICKET_CLOSED',
+            message:
+              'این تیکت توسط مدیریت بسته شده است و امکان ارسال پیام یا فایل جدید در آن وجود ندارد.',
+          });
+          return;
+        }
+      }
+    }
   }
 
   const conn = await pool.getConnection();
@@ -1191,11 +2112,13 @@ app.post('/api/state', async (req: Request, res: Response): Promise<void> => {
       }
     }
 
-    // 3. Sync Students metadata (match by `id` first so phone edits & class removals persist!)
+    // 3. Sync Students metadata (match by `id` first so phone edits, email, bio & class removals persist!)
     if (Array.isArray(state.students)) {
       for (const st of state.students) {
         const stId = Number(st.id) || 0;
         const cleanPhone = normalizeDigitsServer(String(st.phone || ''));
+        const email = String(st.email || '').trim().slice(0, 150);
+        const bio = String(st.bio || '').trim().slice(0, 500);
         const classCode = normalizeDigitsServer(String(st.classCode ?? ''));
         const validStatus = ['pending', 'approved', 'rejected'].includes(
           String(st.status)
@@ -1221,15 +2144,17 @@ app.post('/api/state', async (req: Request, res: Response): Promise<void> => {
             if (existingById.length > 0) {
               await conn.query(
                 `UPDATE students
-                 SET first_name = ?, last_name = ?, phone = ?, class_code = ?, status = ?, notes = ?, avatar_url = ?, avatar_removed = ?, password_hash = ?
+                 SET first_name = ?, last_name = ?, phone = ?, email = ?, class_code = ?, status = ?, notes = ?, bio = ?, avatar_url = ?, avatar_removed = ?, password_hash = ?
                  WHERE id = ?`,
                 [
                   String(st.firstName || ''),
                   String(st.lastName || ''),
                   cleanPhone,
+                  email,
                   classCode,
                   validStatus,
                   String(st.notes || ''),
+                  bio,
                   avatarUrl,
                   avatarRemoved,
                   stHash,
@@ -1241,14 +2166,16 @@ app.post('/api/state', async (req: Request, res: Response): Promise<void> => {
           }
 
           await conn.query(
-            `INSERT INTO students (first_name, last_name, phone, class_code, status, notes, avatar_url, avatar_removed, password_hash)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `INSERT INTO students (first_name, last_name, phone, email, class_code, status, notes, bio, avatar_url, avatar_removed, password_hash)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
                first_name = VALUES(first_name),
                last_name = VALUES(last_name),
+               email = VALUES(email),
                class_code = VALUES(class_code),
                status = VALUES(status),
                notes = VALUES(notes),
+               bio = VALUES(bio),
                avatar_url = VALUES(avatar_url),
                avatar_removed = VALUES(avatar_removed),
                password_hash = VALUES(password_hash)`,
@@ -1256,9 +2183,11 @@ app.post('/api/state', async (req: Request, res: Response): Promise<void> => {
               String(st.firstName || ''),
               String(st.lastName || ''),
               cleanPhone,
+              email,
               classCode,
               validStatus,
               String(st.notes || ''),
+              bio,
               avatarUrl,
               avatarRemoved,
               stHash,
@@ -1267,15 +2196,17 @@ app.post('/api/state', async (req: Request, res: Response): Promise<void> => {
         } else if (stId > 0) {
           await conn.query(
             `UPDATE students
-             SET first_name = ?, last_name = ?, phone = ?, class_code = ?, status = ?, notes = ?, avatar_url = ?, avatar_removed = ?
+             SET first_name = ?, last_name = ?, phone = ?, email = ?, class_code = ?, status = ?, notes = ?, bio = ?, avatar_url = ?, avatar_removed = ?
              WHERE id = ?`,
             [
               String(st.firstName || ''),
               String(st.lastName || ''),
               cleanPhone,
+              email,
               classCode,
               validStatus,
               String(st.notes || ''),
+              bio,
               avatarUrl,
               avatarRemoved,
               stId,
@@ -1284,14 +2215,16 @@ app.post('/api/state', async (req: Request, res: Response): Promise<void> => {
         } else {
           await conn.query(
             `UPDATE students
-             SET first_name = ?, last_name = ?, class_code = ?, status = ?, notes = ?, avatar_url = ?, avatar_removed = ?
+             SET first_name = ?, last_name = ?, email = ?, class_code = ?, status = ?, notes = ?, bio = ?, avatar_url = ?, avatar_removed = ?
              WHERE phone = ?`,
             [
               String(st.firstName || ''),
               String(st.lastName || ''),
+              email,
               classCode,
               validStatus,
               String(st.notes || ''),
+              bio,
               avatarUrl,
               avatarRemoved,
               cleanPhone,
@@ -1437,13 +2370,15 @@ app.post('/api/state', async (req: Request, res: Response): Promise<void> => {
 
     // 5. Persist extended state (without plain passwords) in `system_settings`
     const [latestStudents] = await conn.query<RowDataPacket[]>(
-      'SELECT id, first_name, last_name, phone, class_code, status, notes, avatar_url, avatar_removed, created_at FROM students ORDER BY id DESC'
+      'SELECT * FROM students ORDER BY id DESC'
     );
     const syncedStudents = latestStudents.map((row) => ({
       id: Number(row.id),
       firstName: String(row.first_name),
       lastName: String(row.last_name),
       phone: String(row.phone),
+      email: String(row.email || ''),
+      bio: String(row.bio || ''),
       classCode: String(row.class_code ?? ''),
       status: (row.status as 'pending' | 'approved' | 'rejected') || 'pending',
       notes: String(row.notes || ''),
@@ -1474,6 +2409,7 @@ app.post('/api/state', async (req: Request, res: Response): Promise<void> => {
     await conn.commit();
     res.json({
       success: true,
+      serverNowMs: Date.now(),
       message: 'اطلاعات در پایگاه داده MySQL ذخیره شد.',
       students: syncedStudents,
     });

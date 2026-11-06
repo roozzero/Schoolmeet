@@ -1,19 +1,37 @@
 import {
   API_BASE_URL,
+  getActiveUserRole,
   loadDbState,
   logAdminActivity,
   persistDbState,
+  setActiveStudentSessionId,
+  setActiveUserRole,
   syncStateFromBackend,
 } from './store';
 import {
   AdminProfile,
   ApiAuthResponse,
+  AssignmentItem,
+  AssignmentSubmission,
   LoginPayload,
   StudentRecord,
   StudentRegistrationPayload,
   StudentStatus,
+  TicketItem,
 } from './types';
 import { normalizeDigits } from './validation';
+
+function buildJsonHeaders(explicitRole?: 'admin' | 'student'): Record<string, string> {
+  const role = explicitRole || getActiveUserRole();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+  if (role) {
+    headers['X-User-Role'] = role;
+  }
+  return headers;
+}
 
 /**
  * Test the Node.js -> MySQL database connection via GET /api/test-db
@@ -49,10 +67,7 @@ export async function loginStudentApi(payload: LoginPayload): Promise<ApiAuthRes
   try {
     const res = await fetch(`${API_BASE_URL}/auth/login`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
+      headers: buildJsonHeaders(),
       body: JSON.stringify({
         phone: normalizedPhone,
         password: payload.password,
@@ -62,6 +77,13 @@ export async function loginStudentApi(payload: LoginPayload): Promise<ApiAuthRes
     const data = (await res.json()) as ApiAuthResponse;
 
     if (data.success) {
+      if (data.role === 'admin') {
+        setActiveUserRole('admin');
+      } else if (data.role === 'student' && data.student) {
+        setActiveUserRole('student');
+        setActiveStudentSessionId(data.student.id);
+      }
+
       // Ensure we have the latest backend state before merging login session info
       await syncStateFromBackend();
       const state = loadDbState();
@@ -72,7 +94,6 @@ export async function loginStudentApi(payload: LoginPayload): Promise<ApiAuthRes
           ...data.admin,
           password: '',
         };
-        await persistDbState(state);
       } else if (data.role === 'student' && data.student) {
         const existingIdx = state.students.findIndex(
           (s) =>
@@ -88,7 +109,7 @@ export async function loginStudentApi(payload: LoginPayload): Promise<ApiAuthRes
           state.students.unshift(data.student);
         }
         state.activeStudentId = data.student.id;
-        await persistDbState(state);
+        setActiveStudentSessionId(data.student.id);
       }
     }
 
@@ -112,10 +133,7 @@ export async function registerStudentApi(
   try {
     const res = await fetch(`${API_BASE_URL}/auth/register`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
+      headers: buildJsonHeaders('student'),
       body: JSON.stringify({
         firstName: payload.firstName.trim(),
         lastName: payload.lastName.trim(),
@@ -128,6 +146,8 @@ export async function registerStudentApi(
     const data = (await res.json()) as ApiAuthResponse;
 
     if (data.success && data.student) {
+      setActiveUserRole('student');
+      setActiveStudentSessionId(data.student.id);
       await syncStateFromBackend();
       const state = loadDbState();
       const createdStudent: StudentRecord = {
@@ -160,13 +180,15 @@ export async function registerStudentApi(
 }
 
 /**
- * Update Student Profile (firstName, lastName, avatarUrl, avatarRemoved) via PUT /api/student/profile
+ * Update Student Profile (firstName, lastName, email, bio, avatarUrl, avatarRemoved) via PUT /api/student/profile
  * Strictly enforces phone immutability on backend.
  */
 export async function updateStudentProfileApi(payload: {
   id: number;
   firstName: string;
   lastName: string;
+  email?: string;
+  bio?: string;
   avatarUrl?: string;
   avatarRemoved?: boolean;
 }): Promise<{
@@ -177,10 +199,7 @@ export async function updateStudentProfileApi(payload: {
   try {
     const res = await fetch(`${API_BASE_URL}/student/profile`, {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
+      headers: buildJsonHeaders('student'),
       body: JSON.stringify(payload),
     });
     return await res.json();
@@ -205,10 +224,7 @@ export async function changeStudentPasswordApi(payload: {
   try {
     const res = await fetch(`${API_BASE_URL}/student/password`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
+      headers: buildJsonHeaders('student'),
       body: JSON.stringify(payload),
     });
     return await res.json();
@@ -239,10 +255,7 @@ export async function updateAdminProfileApi(payload: {
   try {
     const res = await fetch(`${API_BASE_URL}/admin/profile`, {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
+      headers: buildJsonHeaders('admin'),
       body: JSON.stringify(payload),
     });
     return await res.json();
@@ -267,10 +280,7 @@ export async function changeAdminPasswordApi(payload: {
   try {
     const res = await fetch(`${API_BASE_URL}/admin/password`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
+      headers: buildJsonHeaders('admin'),
       body: JSON.stringify(payload),
     });
     return await res.json();
@@ -289,6 +299,8 @@ export async function adminCreateStudentApi(payload: {
   firstName: string;
   lastName: string;
   phone: string;
+  email?: string;
+  bio?: string;
   classCode: string;
   status: StudentStatus;
   notes?: string;
@@ -301,10 +313,7 @@ export async function adminCreateStudentApi(payload: {
   try {
     const res = await fetch(`${API_BASE_URL}/admin/students`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
+      headers: buildJsonHeaders('admin'),
       body: JSON.stringify(payload),
     });
     return await res.json();
@@ -325,6 +334,8 @@ export async function adminUpdateStudentApi(
     firstName: string;
     lastName: string;
     phone: string;
+    email: string;
+    bio: string;
     classCode: string;
     status: StudentStatus;
     notes: string;
@@ -340,10 +351,7 @@ export async function adminUpdateStudentApi(
   try {
     const res = await fetch(`${API_BASE_URL}/admin/students/${studentId}`, {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
+      headers: buildJsonHeaders('admin'),
       body: JSON.stringify(payload),
     });
     return await res.json();
@@ -351,6 +359,129 @@ export async function adminUpdateStudentApi(
     return {
       success: false,
       message: 'خطا در ارتباط با سرور جهت بروزرسانی اطلاعات دانش‌آموز.',
+    };
+  }
+}
+
+/**
+ * Admin: Remove Student Custom Profile Picture via DELETE /api/admin/students/:id/avatar
+ * Reverts student's profile picture to the default account icon and cleans up unreferenced file.
+ */
+export async function adminRemoveStudentAvatarApi(studentId: number): Promise<{
+  success: boolean;
+  fileDeleted?: boolean;
+  message: string;
+  student?: StudentRecord;
+}> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/admin/students/${studentId}/avatar`, {
+      method: 'DELETE',
+      headers: buildJsonHeaders('admin'),
+    });
+    return await res.json();
+  } catch {
+    return {
+      success: false,
+      message: 'خطا در ارتباط با سرور جهت حذف تصویر پروفایل دانش‌آموز.',
+    };
+  }
+}
+
+/**
+ * Admin: Close or Reopen an Assignment via POST /api/admin/assignments/:id/status
+ */
+export async function adminSetAssignmentStatusApi(
+  assignmentId: number,
+  status: 'active' | 'closed'
+): Promise<{
+  success: boolean;
+  status?: 'active' | 'closed';
+  assignment?: AssignmentItem;
+  message: string;
+}> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/admin/assignments/${assignmentId}/status`, {
+      method: 'POST',
+      headers: buildJsonHeaders('admin'),
+      body: JSON.stringify({ status }),
+    });
+    return await res.json();
+  } catch {
+    return {
+      success: false,
+      message: 'خطا در ارتباط با سرور جهت تغییر وضعیت تکلیف.',
+    };
+  }
+}
+
+/**
+ * Student: Submit or Edit Assignment Response via POST /api/student/assignments/:id/submit
+ * Enforces closed assignment and expired deadline restrictions on the backend.
+ */
+export async function studentSubmitAssignmentApi(
+  assignmentId: number,
+  payload: {
+    studentId: number;
+    fileName: string;
+    fileContent: string;
+    fileDataUrl?: string;
+    submittedAt?: string;
+  }
+): Promise<{
+  success: boolean;
+  isEdit?: boolean;
+  code?: string;
+  submission?: AssignmentSubmission;
+  message: string;
+}> {
+  try {
+    const res = await fetch(
+      `${API_BASE_URL}/student/assignments/${assignmentId}/submit`,
+      {
+        method: 'POST',
+        headers: buildJsonHeaders('student'),
+        body: JSON.stringify(payload),
+      }
+    );
+    return await res.json();
+  } catch {
+    return {
+      success: false,
+      message: 'خطا در ارتباط با سرور جهت ارسال تکلیف.',
+    };
+  }
+}
+
+/**
+ * Student: Reply to a Ticket via POST /api/student/tickets/:id/reply
+ * Enforces closed ticket restriction on the backend.
+ */
+export async function studentReplyTicketApi(
+  ticketId: number,
+  payload: {
+    studentId: number;
+    message: string;
+    attachmentName?: string;
+    attachmentDataUrl?: string;
+    sentAt?: string;
+  }
+): Promise<{
+  success: boolean;
+  code?: string;
+  ticket?: TicketItem;
+  message: string;
+}> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/student/tickets/${ticketId}/reply`, {
+      method: 'POST',
+      headers: buildJsonHeaders('student'),
+      body: JSON.stringify(payload),
+    });
+    return await res.json();
+  } catch {
+    return {
+      success: false,
+      message: 'خطا در ارتباط با سرور جهت ارسال پیام تیکت.',
     };
   }
 }

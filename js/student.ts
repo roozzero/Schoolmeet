@@ -1,15 +1,21 @@
 import $ from 'jquery';
 import {
   changeStudentPasswordApi,
+  studentReplyTicketApi,
+  studentSubmitAssignmentApi,
   updateStudentProfileApi,
 } from './api';
 import { showToast } from './modal';
 import { AppRoutePath, updateBrowserUrl } from './router';
 import {
+  getAuthoritativeNowMs,
   loadDbState,
   logAdminActivity,
   onDbStateSynced,
   persistDbState,
+  setActiveStudentSessionId,
+  setActiveUserRole,
+  syncStateFromBackend,
   uploadFileWithProgress,
 } from './store';
 import {
@@ -19,7 +25,12 @@ import {
   StudentRecord,
   StudentSectionId,
 } from './types';
-import { normalizeDigits, toPersianDigits } from './validation';
+import {
+  getAssignmentLockState,
+  isValidEmail,
+  normalizeDigits,
+  toPersianDigits,
+} from './validation';
 
 let activeStudentSection: StudentSectionId = 'dashboard';
 let studentHwSubView: 'list' | 'detail' = 'list';
@@ -260,7 +271,6 @@ function syncStudentChrome(state: DatabaseState): void {
   $('#sidebar-student-role, #student-sidebar-role').text(classLabel);
   $('#student-topbar-welcome').text(`${fullName} عزیز، به اسکول میت خوش آمدید`);
 
-  const portraitIdx = Math.abs(Number(student.id) || 0) % 4;
   const $avatar = $('#student-sidebar-avatar');
   $avatar.removeClass(
     'student-portrait-0 student-portrait-1 student-portrait-2 student-portrait-3 student-portrait-lg-0 student-portrait-lg-1 student-portrait-lg-2 student-portrait-lg-3 has-custom-avatar bg-[#EADCCA] flex items-center justify-center text-[#5A3A22]'
@@ -270,18 +280,13 @@ function syncStudentChrome(state: DatabaseState): void {
       .addClass('has-custom-avatar')
       .css('background-image', `url('${student.avatarUrl}')`)
       .html('');
-  } else if (student.avatarRemoved) {
+  } else {
     $avatar
       .css('background-image', 'none')
       .addClass('bg-[#EADCCA] flex items-center justify-center text-[#5A3A22]')
       .html(
         `<svg class="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>`
       );
-  } else {
-    $avatar
-      .addClass(`student-portrait-lg-${portraitIdx}`)
-      .css('background-image', '')
-      .html('');
   }
 
   const myAssignments = state.assignments.filter(
@@ -517,17 +522,37 @@ function renderStudentDashboard($container: JQuery<HTMLElement>, state: Database
                   .slice(0, 3)
                   .map((hw) => {
                     const sub = mySubmissions.find((s) => s.assignmentId === hw.id);
+                    const lockInfo = getAssignmentLockState(hw, getAuthoritativeNowMs());
                     return `
                       <div class="modern-class-card">
                         <div>
-                          <div class="flex items-center justify-between gap-2">
-                            <span class="text-[11px] font-extrabold px-2.5 py-1 rounded-lg ${
-                              sub
-                                ? 'bg-[#ECFDF5] text-[#059669]'
-                                : 'bg-[#FFFBEB] text-[#D97706]'
-                            }">
-                              ${sub ? 'تحویل داده شده' : 'در انتظار ارسال'}
-                            </span>
+                          <div class="flex items-center justify-between gap-2 flex-wrap">
+                            <div class="flex items-center gap-1.5 flex-wrap">
+                              <span class="text-[11px] font-extrabold px-2.5 py-1 rounded-lg ${
+                                sub
+                                  ? 'bg-[#ECFDF5] text-[#059669]'
+                                  : lockInfo.isLocked
+                                  ? 'bg-[#FFF1F2] text-[#E11D48]'
+                                  : 'bg-[#FFFBEB] text-[#D97706]'
+                              }">
+                                ${
+                                  sub
+                                    ? 'تحویل داده شده'
+                                    : lockInfo.isClosedByAdmin
+                                    ? 'بسته شده'
+                                    : lockInfo.isDeadlineExpired
+                                    ? 'مهلت به پایان رسیده'
+                                    : 'در انتظار ارسال'
+                                }
+                              </span>
+                              ${
+                                lockInfo.isLocked && sub
+                                  ? `<span class="text-[10.5px] font-extrabold px-2 py-0.5 rounded-md bg-[#FFF1F2] text-[#E11D48]">${
+                                      lockInfo.isClosedByAdmin ? 'بسته شده' : 'مهلت گذشته'
+                                    }</span>`
+                                  : ''
+                              }
+                            </div>
                             <span class="text-[11px] font-bold text-[#6E5D4F] tabular-nums">
                               بارم: ${toPersianDigits(hw.maxScore)} نمره
                             </span>
@@ -543,14 +568,22 @@ function renderStudentDashboard($container: JQuery<HTMLElement>, state: Database
                         <div class="mt-4 pt-3 border-t border-[#E6D8C5] space-y-2.5">
                           <div class="flex items-center justify-between text-[11px] text-[#6E5D4F]">
                             <span>مهلت تحویل:</span>
-                            <strong class="text-[#251B15] tabular-nums">${toPersianDigits(hw.dueDate)}</strong>
+                            <strong class="${lockInfo.isDeadlineExpired ? 'text-[#E11D48]' : 'text-[#251B15]'} tabular-nums">${toPersianDigits(hw.dueDate)}</strong>
                           </div>
                           <button
                             type="button"
                             class="btn-admin-primary w-full !h-9 text-xs js-st-open-hw-detail"
                             data-id="${hw.id}"
                           >
-                            ${sub ? 'مشاهده وضعیت و ویرایش پاسخ' : 'مشاهده و ارسال تکلیف'}
+                            ${
+                              lockInfo.isLocked
+                                ? sub
+                                  ? 'مشاهده وضعیت و پاسخ ارسالی'
+                                  : 'مشاهده جزئیات تکلیف'
+                                : sub
+                                ? 'مشاهده وضعیت و ویرایش پاسخ'
+                                : 'مشاهده و ارسال تکلیف'
+                            }
                           </button>
                         </div>
                       </div>
@@ -646,25 +679,41 @@ function renderStudentAssignments($container: JQuery<HTMLElement>, state: Databa
             ? myAssignments
                 .map((hw) => {
                   const sub = mySubmissions.find((s) => s.assignmentId === hw.id);
+                  const lockInfo = getAssignmentLockState(hw, getAuthoritativeNowMs());
                   return `
                     <div class="modern-class-card">
                       <div>
-                        <div class="flex items-center justify-between gap-2">
-                          <span class="text-[11px] font-extrabold px-2.5 py-1 rounded-lg ${
-                            sub
-                              ? sub.score !== null
-                                ? 'bg-[#ECFDF5] text-[#059669]'
-                                : 'bg-[#E2EFEA] text-[#1B5E5A]'
-                              : 'bg-[#FFFBEB] text-[#D97706]'
-                          }">
-                            ${
+                        <div class="flex items-center justify-between gap-2 flex-wrap">
+                          <div class="flex items-center gap-1.5 flex-wrap">
+                            <span class="text-[11px] font-extrabold px-2.5 py-1 rounded-lg ${
                               sub
                                 ? sub.score !== null
-                                  ? `نمره ثبت‌شده: ${toPersianDigits(sub.score)} از ${toPersianDigits(hw.maxScore)}`
-                                  : 'تحویل داده شده (در انتظار نمره)'
-                                : 'تحویل نداده'
+                                  ? 'bg-[#ECFDF5] text-[#059669]'
+                                  : 'bg-[#E2EFEA] text-[#1B5E5A]'
+                                : lockInfo.isLocked
+                                ? 'bg-[#FFF1F2] text-[#E11D48]'
+                                : 'bg-[#FFFBEB] text-[#D97706]'
+                            }">
+                              ${
+                                sub
+                                  ? sub.score !== null
+                                    ? `نمره ثبت‌شده: ${toPersianDigits(sub.score)} از ${toPersianDigits(hw.maxScore)}`
+                                    : 'تحویل داده شده (در انتظار نمره)'
+                                  : lockInfo.isClosedByAdmin
+                                  ? 'بسته شده توسط مدرس'
+                                  : lockInfo.isDeadlineExpired
+                                  ? 'مهلت به پایان رسیده'
+                                  : 'تحویل نداده'
+                              }
+                            </span>
+                            ${
+                              lockInfo.isLocked && sub
+                                ? `<span class="text-[10.5px] font-extrabold px-2 py-0.5 rounded-md bg-[#FFF1F2] text-[#E11D48]">${
+                                    lockInfo.isClosedByAdmin ? 'بسته شده' : 'مهلت به پایان رسیده'
+                                  }</span>`
+                                : ''
                             }
-                          </span>
+                          </div>
                           <span class="text-[11px] text-[#6E5D4F] tabular-nums">${toPersianDigits(hw.createdAt)}</span>
                         </div>
 
@@ -678,7 +727,7 @@ function renderStudentAssignments($container: JQuery<HTMLElement>, state: Databa
 
                       <div class="mt-4 pt-3 border-t border-[#E6D8C5] space-y-2.5">
                         <div class="flex items-center justify-between text-[11px] text-[#6E5D4F]">
-                          <span>مهلت تحویل: <strong class="text-[#251B15]">${toPersianDigits(hw.dueDate)}</strong></span>
+                          <span>مهلت تحویل: <strong class="${lockInfo.isDeadlineExpired ? 'text-[#E11D48]' : 'text-[#251B15]'}">${toPersianDigits(hw.dueDate)}</strong></span>
                           <span>بارم: <strong class="text-[#251B15]">${toPersianDigits(hw.maxScore)}</strong></span>
                         </div>
 
@@ -687,7 +736,15 @@ function renderStudentAssignments($container: JQuery<HTMLElement>, state: Databa
                           class="btn-admin-primary w-full !h-9 text-xs js-st-open-hw-detail"
                           data-id="${hw.id}"
                         >
-                          ${sub ? 'مشاهده جزئیات و پاسخ ارسالی' : 'مشاهده جزئیات و ارسال تکلیف'}
+                          ${
+                            lockInfo.isLocked
+                              ? sub
+                                ? 'مشاهده جزئیات و پاسخ ارسالی'
+                                : 'مشاهده جزئیات تکلیف'
+                              : sub
+                              ? 'مشاهده جزئیات و ویرایش پاسخ'
+                              : 'مشاهده جزئیات و ارسال تکلیف'
+                          }
                         </button>
                       </div>
                     </div>
@@ -717,14 +774,32 @@ function renderStudentAssignmentDetailPage(
   const existingSub = state.submissions.find(
     (s) => s.assignmentId === hw.id && s.studentId === student.id
   );
+  const lockInfo = getAssignmentLockState(hw, getAuthoritativeNowMs());
+  const isGraded = Boolean(existingSub && existingSub.score !== null);
+  const isSubmissionBlocked = lockInfo.isLocked || isGraded;
 
   $container.html(`
     <div class="space-y-4">
       <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap">
         <div>
-          <h2 class="text-base font-black text-[#251B15] m-0">${toPersianDigits(hw.title)}</h2>
+          <div class="flex items-center gap-2 flex-wrap">
+            <h2 class="text-base font-black text-[#251B15] m-0">${toPersianDigits(hw.title)}</h2>
+            <span class="text-[11px] font-extrabold px-2.5 py-0.5 rounded-lg ${
+              lockInfo.isLocked
+                ? 'bg-[#FFF1F2] text-[#E11D48] border border-[#FECDD3]'
+                : 'bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0]'
+            }">
+              ${
+                lockInfo.isClosedByAdmin
+                  ? 'بسته شده توسط مدرس'
+                  : lockInfo.isDeadlineExpired
+                  ? 'مهلت به پایان رسیده'
+                  : 'فعال و قابل ارسال'
+              }
+            </span>
+          </div>
           <p class="text-xs text-[#6E5D4F] mt-1 m-0">
-            مهلت تحویل: <strong class="text-[#251B15]">${toPersianDigits(hw.dueDate)}</strong> · بارم: <strong class="text-[#1B5E5A]">${toPersianDigits(hw.maxScore)} نمره</strong>
+            مهلت تحویل: <strong class="${lockInfo.isDeadlineExpired ? 'text-[#E11D48]' : 'text-[#251B15]'}">${toPersianDigits(hw.dueDate)}</strong> · بارم: <strong class="text-[#1B5E5A]">${toPersianDigits(hw.maxScore)} نمره</strong>
           </p>
         </div>
         <button type="button" class="btn-admin-action js-st-back-to-hw-list">
@@ -766,10 +841,19 @@ function renderStudentAssignmentDetailPage(
                     }
                   </span>
                 </div>
+                <div class="p-3 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] space-y-1.5">
+                  <div class="text-xs text-[#251B15] leading-relaxed whitespace-pre-line">
+                    <strong class="text-[#5A3A22]">پاسخ ارسالی شما:</strong> ${toPersianDigits(existingSub.fileContent)}
+                  </div>
+                  <div class="text-[11px] text-[#6E5D4F] pt-1.5 border-t border-[#E6D8C5] flex items-center justify-between flex-wrap gap-2">
+                    <span>فایل ارسالی: <strong class="text-[#1B5E5A]">${toPersianDigits(existingSub.fileName)}</strong></span>
+                    <span>زمان ارسال: ${toPersianDigits(existingSub.submittedAt)}</span>
+                  </div>
+                </div>
                 ${
                   existingSub.teacherFeedback
-                    ? `<div class="p-3 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] text-xs text-[#3E3027] leading-relaxed">
-                        <strong class="text-[#5A3A22]">بازخورد مدرس:</strong> ${toPersianDigits(existingSub.teacherFeedback)}
+                    ? `<div class="p-3 rounded-xl bg-[#ECFDF5] border border-[#A7F3D0] text-xs text-[#065F46] leading-relaxed">
+                        <strong>بازخورد مدرس:</strong> ${toPersianDigits(existingSub.teacherFeedback)}
                       </div>`
                     : `<p class="text-xs text-[#6E5D4F] m-0">تکلیف شما در تاریخ ${toPersianDigits(existingSub.submittedAt)} ارسال شده است و پس از تصحیح مدرس، نمره و بازخورد در این بخش قرار می‌گیرد.</p>`
                 }
@@ -778,57 +862,94 @@ function renderStudentAssignmentDetailPage(
           }
         </div>
 
-        <!-- ستون چپ: فرم ارسال یا بروزرسانی پاسخ و فایل تکلیف -->
+        <!-- ستون چپ: فرم ارسال یا بروزرسانی پاسخ و فایل تکلیف (یا پیام قفل شدن تکلیف) -->
         <div class="lg:col-span-6 admin-surface-card">
-          <h3 class="text-sm font-extrabold text-[#251B15] mb-3.5 m-0">
-            ${existingSub ? 'ویرایش و ارسال مجدد پاسخ تکلیف' : 'فرم ارسال پاسخ و فایل تکلیف'}
-          </h3>
-
-          <form id="form-student-submit-hw" data-hw-id="${hw.id}" class="space-y-3.5">
-            <div>
-              <label class="scool-field-label">توضیحات و متن پاسخ شما</label>
-              <textarea
-                id="st-hw-response-text"
-                class="school-textarea !min-h-[115px]"
-                placeholder="توضیحات مربوط به نحوه انجام تمرین یا کدهای خود را بنویسید..."
-                required
-              >${existingSub ? toPersianDigits(existingSub.fileContent) : ''}</textarea>
-            </div>
-
-            <div>
-              <label class="scool-field-label">فایل پروژه / تمرین ارسالی</label>
-              <div class="flex items-center gap-2">
-                <input
-                  type="text"
-                  id="st-hw-filename"
-                  class="school-input flex-1"
-                  placeholder="نام فایل ارسالی (مثال: project-901.zip)"
-                  value="${
-                    pendingStudentHwFileName
-                      ? toPersianDigits(pendingStudentHwFileName)
-                      : existingSub
-                      ? toPersianDigits(existingSub.fileName)
-                      : `${student.firstName}-hw-${hw.id}.zip`
-                  }"
-                  required
-                />
-                <label for="st-hw-file-input" class="btn-admin-action !h-[42px] cursor-pointer shrink-0">
-                  انتخاب فایل
-                </label>
-                <input type="file" id="st-hw-file-input" class="hidden" />
+          ${
+            isSubmissionBlocked
+              ? `
+              <div class="space-y-3">
+                <h3 class="text-sm font-extrabold text-[#251B15] m-0">
+                  وضعیت ارسال و ویرایش پاسخ تکلیف
+                </h3>
+                <div class="p-4 rounded-xl bg-[#FFF1F2] border border-[#FECDD3] space-y-2">
+                  <div class="text-xs font-extrabold text-[#E11D48]">
+                    ${
+                      lockInfo.isClosedByAdmin
+                        ? 'این تکلیف توسط مدرس بسته شده است.'
+                        : lockInfo.isDeadlineExpired
+                        ? 'مهلت ارسال این تکلیف به پایان رسیده است.'
+                        : 'این تکلیف توسط مدرس تصحیح و نمره‌دهی شده است.'
+                    }
+                  </div>
+                  <p class="text-xs text-[#881337] m-0 leading-relaxed">
+                    ${
+                      lockInfo.isClosedByAdmin
+                        ? 'امکان ارسال پاسخ جدید یا ویرایش پاسخ قبلی برای تکالیف بسته‌شده وجود ندارد.'
+                        : lockInfo.isDeadlineExpired
+                        ? `مهلت تحویل این تکلیف (${toPersianDigits(hw.dueDate)}) به پایان رسیده است و سامانه به صورت خودکار امکان ارسال یا ویرایش پاسخ را غیرفعال کرده است.`
+                        : 'پس از ثبت نمره نهایی توسط مدرس، امکان ویرایش پاسخ ارسالی وجود ندارد.'
+                    }
+                  </p>
+                </div>
+                <div class="pt-2">
+                  <button type="button" class="btn-admin-action !h-10 w-full js-st-back-to-hw-list">
+                    بازگشت به لیست تکالیف
+                  </button>
+                </div>
               </div>
-              <div id="st-hw-upload-progress-box" class="hidden"></div>
-            </div>
+              `
+              : `
+              <h3 class="text-sm font-extrabold text-[#251B15] mb-3.5 m-0">
+                ${existingSub ? 'ویرایش و ارسال مجدد پاسخ تکلیف' : 'فرم ارسال پاسخ و فایل تکلیف'}
+              </h3>
 
-            <div class="flex items-center gap-2 pt-2">
-              <button type="submit" id="btn-st-submit-hw" class="btn-admin-primary !h-10 flex-1">
-                ${existingSub ? 'بروزرسانی پاسخ ارسالی' : 'ثبت و ارسال نهایی تکلیف'}
-              </button>
-              <button type="button" class="btn-admin-action !h-10 js-st-back-to-hw-list">
-                انصراف
-              </button>
-            </div>
-          </form>
+              <form id="form-student-submit-hw" data-hw-id="${hw.id}" class="space-y-3.5">
+                <div>
+                  <label class="scool-field-label">توضیحات و متن پاسخ شما</label>
+                  <textarea
+                    id="st-hw-response-text"
+                    class="school-textarea !min-h-[115px]"
+                    placeholder="توضیحات مربوط به نحوه انجام تمرین یا کدهای خود را بنویسید..."
+                    required
+                  >${existingSub ? toPersianDigits(existingSub.fileContent) : ''}</textarea>
+                </div>
+
+                <div>
+                  <label class="scool-field-label">فایل پروژه / تمرین ارسالی</label>
+                  <div class="flex items-center gap-2">
+                    <input
+                      type="text"
+                      id="st-hw-filename"
+                      class="school-input flex-1"
+                      placeholder="نام فایل ارسالی (مثال: project-901.zip)"
+                      value="${
+                        pendingStudentHwFileName
+                          ? toPersianDigits(pendingStudentHwFileName)
+                          : existingSub
+                          ? toPersianDigits(existingSub.fileName)
+                          : `${student.firstName}-hw-${hw.id}.zip`
+                      }"
+                      required
+                    />
+                    <label for="st-hw-file-input" class="btn-admin-action !h-[42px] cursor-pointer shrink-0">
+                      انتخاب فایل
+                    </label>
+                    <input type="file" id="st-hw-file-input" class="hidden" />
+                  </div>
+                  <div id="st-hw-upload-progress-box" class="hidden"></div>
+                </div>
+
+                <div class="flex items-center gap-2 pt-2">
+                  <button type="submit" id="btn-st-submit-hw" class="btn-admin-primary !h-10 flex-1">
+                    ${existingSub ? 'بروزرسانی پاسخ ارسالی' : 'ثبت و ارسال نهایی تکلیف'}
+                  </button>
+                  <button type="button" class="btn-admin-action !h-10 js-st-back-to-hw-list">
+                    انصراف
+                  </button>
+                </div>
+              </form>
+              `
+          }
         </div>
       </div>
     </div>
@@ -1339,7 +1460,11 @@ function renderStudentTickets($container: JQuery<HTMLElement>, state: DatabaseSt
                         <div class="flex items-center justify-between gap-2">
                           <span class="text-xs font-extrabold text-[#251B15]">${toPersianDigits(tk.subject)}</span>
                           <span class="text-[11px] font-bold ${
-                            tk.status === 'پاسخ داده شده' ? 'text-[#059669]' : 'text-[#D97706]'
+                            tk.status === 'پاسخ داده شده'
+                              ? 'text-[#059669]'
+                              : tk.status === 'بسته شده'
+                              ? 'text-[#E11D48]'
+                              : 'text-[#D97706]'
                           }">${tk.status}</span>
                         </div>
                         <div class="text-[11px] text-[#6E5D4F] mt-1 tabular-nums">${toPersianDigits(tk.createdAt)}</div>
@@ -1357,7 +1482,13 @@ function renderStudentTickets($container: JQuery<HTMLElement>, state: DatabaseSt
               ? `
               <div class="pb-3 mb-3 border-b border-[#E6D8C5] flex items-center justify-between">
                 <h3 class="text-sm font-extrabold text-[#251B15] m-0">${toPersianDigits(currentTicket.subject)}</h3>
-                <span class="text-xs font-bold text-[#1B5E5A]">${currentTicket.status}</span>
+                <span class="text-xs font-extrabold px-2.5 py-0.5 rounded-lg ${
+                  currentTicket.status === 'بسته شده'
+                    ? 'bg-[#FFF1F2] text-[#E11D48] border border-[#FECDD3]'
+                    : currentTicket.status === 'پاسخ داده شده'
+                    ? 'bg-[#ECFDF5] text-[#059669]'
+                    : 'bg-[#FFFBEB] text-[#D97706]'
+                }">${currentTicket.status}</span>
               </div>
 
               <div class="space-y-3 mb-4 max-h-[240px] overflow-y-auto pr-1">
@@ -1395,30 +1526,40 @@ function renderStudentTickets($container: JQuery<HTMLElement>, state: DatabaseSt
                   .join('')}
               </div>
 
-              <form id="form-student-reply-ticket" data-id="${currentTicket.id}" class="space-y-3">
-                <div>
-                  <label class="scool-field-label">ارسال پیام جدید در این تیکت</label>
-                  <textarea
-                    id="st-ticket-reply-text"
-                    class="school-textarea !min-h-[70px]"
-                    placeholder="پیام خود را بنویسید..."
-                    required
-                  ></textarea>
-                </div>
-                <div id="st-ticket-reply-upload-progress" class="hidden"></div>
-                <div class="flex items-center justify-between gap-2 flex-wrap">
-                  <div class="flex items-center gap-2">
-                    <label for="st-ticket-reply-file" class="btn-admin-action cursor-pointer">
-                      <span>افزودن فایل ضمیمه</span>
-                    </label>
-                    <input type="file" id="st-ticket-reply-file" class="hidden" />
-                    <span id="st-ticket-attached-name" class="text-xs font-bold text-[#1B5E5A]">
-                      ${pendingStudentTicketFileName ? toPersianDigits(pendingStudentTicketFileName) : 'فایلی انتخاب نشده'}
-                    </span>
+              ${
+                currentTicket.status === 'بسته شده'
+                  ? `
+                  <div class="p-3.5 rounded-xl bg-[#FFF1F2] border border-[#FECDD3] text-xs font-extrabold text-[#E11D48] leading-relaxed">
+                    این تیکت توسط مدیریت بسته شده است و امکان ارسال پیام یا فایل جدید در آن وجود ندارد.
                   </div>
-                  <button type="submit" id="btn-st-submit-reply-ticket" class="btn-admin-primary">ارسال پیام</button>
-                </div>
-              </form>
+                  `
+                  : `
+                  <form id="form-student-reply-ticket" data-id="${currentTicket.id}" class="space-y-3">
+                    <div>
+                      <label class="scool-field-label">ارسال پیام جدید در این تیکت</label>
+                      <textarea
+                        id="st-ticket-reply-text"
+                        class="school-textarea !min-h-[70px]"
+                        placeholder="پیام خود را بنویسید..."
+                        required
+                      ></textarea>
+                    </div>
+                    <div id="st-ticket-reply-upload-progress" class="hidden"></div>
+                    <div class="flex items-center justify-between gap-2 flex-wrap">
+                      <div class="flex items-center gap-2">
+                        <label for="st-ticket-reply-file" class="btn-admin-action cursor-pointer">
+                          <span>افزودن فایل ضمیمه</span>
+                        </label>
+                        <input type="file" id="st-ticket-reply-file" class="hidden" />
+                        <span id="st-ticket-attached-name" class="text-xs font-bold text-[#1B5E5A]">
+                          ${pendingStudentTicketFileName ? toPersianDigits(pendingStudentTicketFileName) : 'فایلی انتخاب نشده'}
+                        </span>
+                      </div>
+                      <button type="submit" id="btn-st-submit-reply-ticket" class="btn-admin-primary">ارسال پیام</button>
+                    </div>
+                  </form>
+                  `
+              }
             `
               : `<div class="text-center py-8 text-xs text-[#6E5D4F]">یک تیکت را انتخاب کنید یا تیکت جدید ثبت نمایید.</div>`
           }
@@ -1532,19 +1673,16 @@ function renderStudentCreateTicketPage(
    ============================================================================ */
 function renderStudentProfile($container: JQuery<HTMLElement>, state: DatabaseState): void {
   const student = getActiveStudent(state);
-  const portraitIdx = Math.abs(Number(student.id) || 0) % 4;
 
   let avatarBoxHtml = '';
   if (student.avatarUrl && !student.avatarRemoved) {
     avatarBoxHtml = `<div class="student-avatar-lg has-custom-avatar" style="background-image: url('${student.avatarUrl}');" role="img" aria-label="تصویر پروفایل دانش‌آموز"></div>`;
-  } else if (student.avatarRemoved) {
-    avatarBoxHtml = `<div class="student-avatar-lg bg-[#EADCCA] flex items-center justify-center text-[#5A3A22]" style="background-image: none;" role="img" aria-label="بدون تصویر پروفایل">
+  } else {
+    avatarBoxHtml = `<div class="student-avatar-lg bg-[#EADCCA] flex items-center justify-center text-[#5A3A22]" style="background-image: none;" role="img" aria-label="آواتار پیش‌فرض دانش‌آموز">
       <svg class="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
         <path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
       </svg>
     </div>`;
-  } else {
-    avatarBoxHtml = `<div class="student-avatar-lg student-portrait-lg-${portraitIdx}" role="img" aria-label="تصویر پروفایل دانش‌آموز"></div>`;
   }
 
   $container.html(`
@@ -1563,6 +1701,16 @@ function renderStudentProfile($container: JQuery<HTMLElement>, state: DatabaseSt
               <p class="text-xs text-[#6E5D4F] mt-1 m-0 tabular-nums">
                 شماره تلفن: ${toPersianDigits(student.phone)}
               </p>
+              ${
+                student.email
+                  ? `<p class="text-xs text-[#5A3A22] mt-1 m-0" dir="ltr">${student.email}</p>`
+                  : ''
+              }
+              ${
+                student.bio
+                  ? `<p class="text-xs text-[#6E5D4F] mt-1.5 m-0 leading-relaxed max-w-md">${toPersianDigits(student.bio)}</p>`
+                  : ''
+              }
             </div>
           </div>
 
@@ -1583,7 +1731,7 @@ function renderStudentProfile($container: JQuery<HTMLElement>, state: DatabaseSt
         </div>
 
         <form id="form-student-profile-save" class="space-y-3.5">
-          <div class="grid grid-cols-2 gap-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label class="scool-field-label">نام</label>
               <input type="text" id="st-prof-firstname" class="school-input" value="${student.firstName}" required />
@@ -1594,7 +1742,7 @@ function renderStudentProfile($container: JQuery<HTMLElement>, state: DatabaseSt
             </div>
           </div>
 
-          <div class="grid grid-cols-2 gap-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label class="scool-field-label">شماره تلفن ثبت‌نامی (غیرقابل تغییر)</label>
               <input
@@ -1617,6 +1765,28 @@ function renderStudentProfile($container: JQuery<HTMLElement>, state: DatabaseSt
                 disabled
               />
             </div>
+          </div>
+
+          <div>
+            <label class="scool-field-label">پست الکترونیکی (Email)</label>
+            <input
+              type="email"
+              id="st-prof-email"
+              class="school-input"
+              dir="ltr"
+              placeholder="student@example.com"
+              value="${student.email || ''}"
+            />
+          </div>
+
+          <div>
+            <label class="scool-field-label">بیوگرافی و معرفی کوتاه (حداکثر ۵۰۰ کاراکتر)</label>
+            <textarea
+              id="st-prof-bio"
+              class="school-textarea !min-h-[82px]"
+              maxlength="500"
+              placeholder="علاقه‌مندی‌های درسی، مهارت‌ها یا معرفی کوتاه خود را بنویسید..."
+            >${student.bio || ''}</textarea>
           </div>
 
           <button type="submit" id="btn-st-save-profile" class="btn-admin-primary">ذخیره مشخصات پروفایل</button>
@@ -1800,6 +1970,8 @@ export function initStudentPanelEvents(): void {
   });
 
   $('#btn-student-logout').on('click', () => {
+    setActiveUserRole('');
+    setActiveStudentSessionId(0);
     $('#student-workspace-view').addClass('view-hidden');
     $('#public-auth-view').removeClass('view-hidden');
     updateBrowserUrl('/login');
@@ -1863,61 +2035,47 @@ export function initStudentPanelEvents(): void {
     const fileName = String($('#st-hw-filename').val() || 'homework.zip').trim();
     if (!responseText) return;
 
+    const state = loadDbState();
+    const student = getActiveStudent(state);
+    const hw = state.assignments.find((a) => a.id === hwId);
+    if (!hw) return;
+
+    const lockInfo = getAssignmentLockState(hw, getAuthoritativeNowMs());
+    if (lockInfo.isLocked) {
+      showToast('ارسال تکلیف مجاز نیست', lockInfo.reasonMessage, 'error');
+      renderActiveStudentSection();
+      return;
+    }
+
     const $btn = $('#btn-st-submit-hw');
     if ($btn.prop('disabled')) return;
     const origHtml = $btn.html();
     $btn.prop('disabled', true).text('در حال ثبت در سرور...');
 
     try {
-      const state = loadDbState();
-      const student = getActiveStudent(state);
       const existing = state.submissions.find(
         (s) => s.assignmentId === hwId && s.studentId === student.id
       );
 
-      const nowFa = `${new Date().toLocaleDateString('fa-IR')} · هم‌اکنون`;
+      const apiRes = await studentSubmitAssignmentApi(hwId, {
+        studentId: student.id,
+        fileName,
+        fileContent: responseText,
+        fileDataUrl: pendingStudentHwFileDataUrl || existing?.fileDataUrl,
+      });
 
-      if (existing) {
-        existing.fileContent = responseText;
-        existing.fileName = fileName;
-        if (pendingStudentHwFileDataUrl) {
-          existing.fileDataUrl = pendingStudentHwFileDataUrl;
-        }
-        existing.submittedAt = nowFa;
-      } else {
-        state.submissions.unshift({
-          id: Date.now(),
-          assignmentId: hwId,
-          studentId: student.id,
-          studentName: `${student.firstName} ${student.lastName}`,
-          classCode: student.classCode || '901',
-          fileName,
-          fileContent: responseText,
-          fileDataUrl: pendingStudentHwFileDataUrl || undefined,
-          submittedAt: nowFa,
-          score: null,
-          teacherFeedback: '',
-          status: 'pending',
-        });
-      }
-
-      logAdminActivity(
-        state,
-        `ارسال تکلیف توسط ${student.firstName} ${student.lastName}`,
-        `فایل: ${fileName}`,
-        'assignment',
-        true
-      );
-      const saved = await persistDbState(state);
-      if (!saved.success) {
-        showToast('خطا در ارسال تکلیف', saved.message, 'error');
+      if (!apiRes.success) {
+        await syncStateFromBackend();
+        renderActiveStudentSection();
+        showToast('خطا در ارسال تکلیف', apiRes.message, 'error');
         return;
       }
 
+      await syncStateFromBackend();
       studentHwSubView = 'list';
       updateBrowserUrl('/student/assignments');
       renderActiveStudentSection();
-      showToast('تکلیف ارسال شد', 'پاسخ و فایل تکلیف شما با موفقیت در پایگاه داده ثبت گردید.', 'success');
+      showToast('تکلیف ارسال شد', apiRes.message, 'success');
     } finally {
       $btn.prop('disabled', false).html(origHtml);
     }
@@ -2205,40 +2363,46 @@ export function initStudentPanelEvents(): void {
     const text = String($('#st-ticket-reply-text').val() || '').trim();
     if (!text) return;
 
+    const state = loadDbState();
+    const student = getActiveStudent(state);
+    const tk = state.tickets.find((t) => t.id === ticketId);
+    if (!tk) return;
+
+    if (tk.status === 'بسته شده') {
+      showToast(
+        'تیکت بسته شده است',
+        'این تیکت توسط مدیریت بسته شده است و امکان ارسال پیام جدید وجود ندارد.',
+        'error'
+      );
+      renderActiveStudentSection();
+      return;
+    }
+
     const $btn = $('#btn-st-submit-reply-ticket');
     if ($btn.prop('disabled')) return;
     const origText = $btn.text();
     $btn.prop('disabled', true).text('در حال ارسال...');
 
     try {
-      const state = loadDbState();
-      const student = getActiveStudent(state);
-      const tk = state.tickets.find((t) => t.id === ticketId);
-      if (!tk) return;
-
-      const nowFa = `${new Date().toLocaleDateString('fa-IR')} · هم‌اکنون`;
-
-      tk.messages.push({
-        id: Date.now(),
-        senderRole: 'student',
-        senderName: `${student.firstName} ${student.lastName}`,
+      const apiRes = await studentReplyTicketApi(ticketId, {
+        studentId: student.id,
         message: text,
-        sentAt: nowFa,
         attachmentName: pendingStudentTicketFileName || undefined,
         attachmentDataUrl: pendingStudentTicketFileDataUrl || undefined,
       });
-      tk.status = 'در انتظار پاسخ';
 
-      const saved = await persistDbState(state);
-      if (!saved.success) {
-        showToast('خطا در ارسال پیام', saved.message, 'error');
+      if (!apiRes.success) {
+        await syncStateFromBackend();
+        renderActiveStudentSection();
+        showToast('خطا در ارسال پیام', apiRes.message, 'error');
         return;
       }
 
       pendingStudentTicketFileName = '';
       pendingStudentTicketFileDataUrl = '';
+      await syncStateFromBackend();
       renderActiveStudentSection();
-      showToast('پیام ارسال شد', 'پیام شما در تیکت با موفقیت ذخیره گردید.', 'success');
+      showToast('پیام ارسال شد', apiRes.message, 'success');
     } finally {
       $btn.prop('disabled', false).text(origText);
     }
@@ -2278,6 +2442,8 @@ export function initStudentPanelEvents(): void {
       id: student.id,
       firstName: student.firstName,
       lastName: student.lastName,
+      email: student.email || '',
+      bio: student.bio || '',
       avatarUrl: cacheBustedUrl,
       avatarRemoved: false,
     });
@@ -2307,6 +2473,8 @@ export function initStudentPanelEvents(): void {
         id: student.id,
         firstName: student.firstName,
         lastName: student.lastName,
+        email: student.email || '',
+        bio: student.bio || '',
         avatarUrl: '',
         avatarRemoved: true,
       });
@@ -2330,8 +2498,21 @@ export function initStudentPanelEvents(): void {
     e.preventDefault();
     const firstName = String($('#st-prof-firstname').val() || '').trim();
     const lastName = String($('#st-prof-lastname').val() || '').trim();
+    const email = normalizeDigits(String($('#st-prof-email').val() || '').trim());
+    const bio = String($('#st-prof-bio').val() || '').trim();
+
     if (firstName.length < 2 || lastName.length < 2) {
       showToast('اطلاعات نامعتبر', 'نام و نام خانوادگی باید حداقل ۲ کاراکتر باشند.', 'error');
+      return;
+    }
+
+    if (email && !isValidEmail(email)) {
+      showToast('ایمیل نامعتبر', 'لطفاً یک آدرس ایمیل معتبر وارد نمایید.', 'error');
+      return;
+    }
+
+    if (bio.length > 500) {
+      showToast('بیوگرافی طولانی', 'متن بیوگرافی نمی‌تواند بیشتر از ۵۰۰ کاراکتر باشد.', 'error');
       return;
     }
 
@@ -2349,6 +2530,8 @@ export function initStudentPanelEvents(): void {
         id: student.id,
         firstName,
         lastName,
+        email,
+        bio,
         avatarUrl: student.avatarUrl,
         avatarRemoved: student.avatarRemoved,
       });
@@ -2360,6 +2543,8 @@ export function initStudentPanelEvents(): void {
 
       student.firstName = firstName;
       student.lastName = lastName;
+      student.email = email;
+      student.bio = bio;
       await persistDbState(state);
       renderActiveStudentSection();
       showToast('پروفایل بروزرسانی شد', apiRes.message, 'success');

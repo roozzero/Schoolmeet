@@ -498,10 +498,15 @@
           <div class="admin-sidebar-profile-top">
             <div
               id="student-sidebar-avatar"
-              class="student-avatar-lg student-portrait-lg-1 !w-14 !h-14 !rounded-2xl"
+              class="student-avatar-lg !w-14 !h-14 !rounded-2xl bg-[#EADCCA] flex items-center justify-center text-[#5A3A22]"
+              style="background-image: none;"
               role="img"
               aria-label="تصویر پروفایل دانش‌آموز"
-            ></div>
+            >
+              <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+              </svg>
+            </div>
             <div class="admin-sidebar-user-meta">
               <div id="sidebar-student-name" class="admin-sidebar-user-name">
                 امیرحسین رضایی
@@ -708,21 +713,26 @@
           پروفایل و پرونده آموزشی دانش‌آموز
         </h3>
 
-        <!-- تصویر پروفایل دانش‌آموز و امکان بارگذاری عکس جدید -->
-        <div class="flex items-center justify-between gap-3 p-3 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] mb-3.5">
+        <!-- تصویر پروفایل دانش‌آموز، بارگذاری عکس جدید و حذف عکس پروفایل -->
+        <div class="flex items-center justify-between gap-3 p-3 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] mb-3.5 flex-wrap">
           <div class="flex items-center gap-3">
             <div
               id="student-modal-avatar-box"
-              class="student-avatar-lg student-portrait-lg-0"
+              class="student-avatar-lg bg-[#EADCCA] flex items-center justify-center text-[#5A3A22]"
+              style="background-image: none;"
               role="img"
               aria-label="تصویر پروفایل دانش‌آموز"
-            ></div>
+            >
+              <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+              </svg>
+            </div>
             <div>
               <div id="student-modal-header-name" class="text-sm font-black text-[#251B15]">—</div>
               <div id="student-modal-header-class" class="text-xs font-bold text-[#1B5E5A] mt-0.5">—</div>
             </div>
           </div>
-          <div>
+          <div class="flex items-center gap-2">
             <label for="student-modal-avatar-upload" class="btn-admin-action !h-8 !text-xs cursor-pointer">
               <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
@@ -731,6 +741,14 @@
               <span>تغییر عکس</span>
             </label>
             <input type="file" id="student-modal-avatar-upload" accept="image/*" class="hidden" />
+            <button
+              type="button"
+              id="btn-admin-remove-student-avatar"
+              class="btn-admin-danger !h-8 !px-2.5 !text-xs"
+              title="حذف عکس پروفایل و بازگشت به آیکون پیش‌فرض"
+            >
+              حذف عکس پروفایل
+            </button>
           </div>
         </div>
 
@@ -772,8 +790,30 @@
           </div>
 
           <div>
+            <label class="scool-field-label">آدرس ایمیل دانش‌آموز (اختیاری)</label>
+            <input
+              type="email"
+              id="prof-modal-email"
+              class="school-input text-left"
+              dir="ltr"
+              placeholder="student@example.com"
+              maxlength="150"
+            />
+          </div>
+
+          <div>
+            <label class="scool-field-label">بیوگرافی و معرفی دانش‌آموز</label>
+            <textarea
+              id="prof-modal-bio"
+              class="school-textarea !min-h-[56px]"
+              maxlength="500"
+              placeholder="معرفی کوتاه، علاقه‌مندی‌ها یا مهارت‌های دانش‌آموز..."
+            ></textarea>
+          </div>
+
+          <div>
             <label class="scool-field-label">یادداشت آموزشی مدرس</label>
-            <textarea id="prof-modal-notes" class="school-textarea !min-h-[64px]"></textarea>
+            <textarea id="prof-modal-notes" class="school-textarea !min-h-[56px]"></textarea>
           </div>
 
           <div class="flex items-center justify-between gap-2 pt-1">
