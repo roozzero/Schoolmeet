@@ -7,8 +7,36 @@ import {
 } from './types';
 import { normalizeDigits } from './validation';
 
+const API_BASE_URL: string =
+  ((import.meta as unknown as { env?: Record<string, string> }).env
+    ?.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
+
 /**
- * Authenticate Admin or Student against MySQL State
+ * Test the Node.js -> MySQL database connection via GET /api/test-db
+ */
+export async function testDatabaseConnectionApi(): Promise<{
+  success: boolean;
+  connected: boolean;
+  database?: string;
+  message: string;
+}> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/test-db`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    return await response.json();
+  } catch {
+    return {
+      success: false,
+      connected: false,
+      message: 'عدم دسترسی به سرور بک‌اند Node.js در مسیر /api/test-db.',
+    };
+  }
+}
+
+/**
+ * Authenticate Admin or Student against Node.js + MySQL Backend (/api/auth/login)
  * Default Admin Credentials:
  *   Phone: 09120000000
  *   Password: admin1234
@@ -18,18 +46,54 @@ import { normalizeDigits } from './validation';
  */
 export async function loginStudentApi(payload: LoginPayload): Promise<ApiAuthResponse> {
   const normalizedPhone = normalizeDigits(payload.phone);
+
+  try {
+    const res = await fetch(`${API_BASE_URL}/auth/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        phone: normalizedPhone,
+        password: payload.password,
+      }),
+    });
+
+    // If MySQL is reachable and handled the request (200, 401, 403, 422), use backend response
+    if (res.status !== 500 && res.status !== 502 && res.status !== 504) {
+      const data = (await res.json()) as ApiAuthResponse;
+      if (data.success && data.role === 'student' && data.student) {
+        const state = loadDbState();
+        const existingIdx = state.students.findIndex(
+          (s) =>
+            s.id === data.student!.id ||
+            normalizeDigits(s.phone) === normalizeDigits(data.student!.phone)
+        );
+        if (existingIdx >= 0) {
+          state.students[existingIdx] = {
+            ...state.students[existingIdx],
+            ...data.student,
+          };
+        } else {
+          state.students.unshift(data.student);
+        }
+        state.activeStudentId = data.student.id;
+        saveDbState(state);
+      }
+      return data;
+    }
+  } catch (err) {
+    console.warn('[ScoolMeet API] Backend unreachable, using local state fallback:', err);
+  }
+
+  // Fallback if MySQL service is offline
   const state = loadDbState();
-
-  await new Promise((resolve) => window.setTimeout(resolve, 250));
-
   const adminPhone = normalizeDigits(state.admin.phone || '09120000000');
-
-  // 1. Check if this phone belongs to an existing registered student
   const matchedStudent = state.students.find(
     (s) => normalizeDigits(s.phone) === normalizedPhone
   );
 
-  // 2. If phone matches Admin phone OR password is admin password
   if (
     normalizedPhone === adminPhone ||
     normalizedPhone === '09120000000' ||
@@ -54,7 +118,6 @@ export async function loginStudentApi(payload: LoginPayload): Promise<ApiAuthRes
     };
   }
 
-  // 3. Student Login Validation
   if (!matchedStudent) {
     return {
       success: false,
@@ -93,15 +156,55 @@ export async function loginStudentApi(payload: LoginPayload): Promise<ApiAuthRes
 }
 
 /**
- * Register New Student and store in MySQL State
+ * Register New Student via Node.js + MySQL Backend (/api/auth/register)
  */
 export async function registerStudentApi(
   payload: StudentRegistrationPayload
 ): Promise<ApiAuthResponse> {
   const normalizedPhone = normalizeDigits(payload.phone);
-  const state = loadDbState();
 
-  await new Promise((resolve) => window.setTimeout(resolve, 350));
+  try {
+    const res = await fetch(`${API_BASE_URL}/auth/register`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        firstName: payload.firstName.trim(),
+        lastName: payload.lastName.trim(),
+        phone: normalizedPhone,
+        classCode: payload.classCode,
+        password: payload.password,
+      }),
+    });
+
+    if (res.status !== 500 && res.status !== 502 && res.status !== 504) {
+      const data = (await res.json()) as ApiAuthResponse;
+      if (data.success && data.student) {
+        const state = loadDbState();
+        const createdStudent: StudentRecord = {
+          ...data.student,
+          password: payload.password,
+        };
+        state.students.unshift(createdStudent);
+        state.activeStudentId = createdStudent.id;
+        logAdminActivity(
+          state,
+          `ثبت‌نام دانش‌آموز جدید (${createdStudent.firstName} ${createdStudent.lastName} — کلاس ${createdStudent.classCode})`,
+          `شماره تماس: ${createdStudent.phone} · ثبت‌شده در پایگاه داده MySQL`,
+          'student'
+        );
+        saveDbState(state);
+      }
+      return data;
+    }
+  } catch (err) {
+    console.warn('[ScoolMeet API] Backend unreachable during register, using local state fallback:', err);
+  }
+
+  // Fallback if MySQL service is offline
+  const state = loadDbState();
 
   const newStudent: StudentRecord = {
     id: Date.now(),
@@ -132,3 +235,4 @@ export async function registerStudentApi(
     student: newStudent,
   };
 }
+

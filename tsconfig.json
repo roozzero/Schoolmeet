@@ -10,5 +10,5 @@
     "skipLibCheck": true,
     "isolatedModules": true
   },
-  "include": ["js/**/*", "vite.config.ts"]
+  "include": ["js/**/*", "server/**/*", "vite.config.ts"]
 }

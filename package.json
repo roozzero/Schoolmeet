@@ -4,13 +4,26 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port=3000 --host=0.0.0.0",
+    "dev": "concurrently -k \"tsx server/index.ts\" \"vite --port=3000 --host=0.0.0.0\"",
+    "dev:server": "tsx server/index.ts",
+    "dev:client": "vite --port=3000 --host=0.0.0.0",
     "build": "vite build",
     "preview": "vite preview --port=3000 --host=0.0.0.0",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "jquery": "^3.7.1"
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.6",
+    "bcryptjs": "^3.0.3",
+    "concurrently": "^10.0.6",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.9",
+    "express": "^5.3.0",
+    "jquery": "^3.7.1",
+    "mysql2": "^3.24.6",
+    "tsx": "^4.23.15"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.1",

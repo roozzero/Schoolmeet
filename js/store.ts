@@ -615,7 +615,60 @@ const INITIAL_DB_STATE: DatabaseState = {
   },
 };
 
+const API_BASE_URL: string =
+  ((import.meta as unknown as { env?: Record<string, string> }).env
+    ?.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
+
+let backendSyncInitialized = false;
+
+/**
+ * Pull latest records from Node.js + MySQL backend (/api/state) into local cache
+ */
+export async function syncStateFromBackend(): Promise<void> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/state`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) return;
+    const json = (await res.json()) as {
+      success?: boolean;
+      data?: Partial<DatabaseState>;
+    };
+    if (json.success && json.data) {
+      const current = loadDbState();
+      const merged: DatabaseState = {
+        ...current,
+        ...json.data,
+        admin: {
+          ...current.admin,
+          ...(json.data.admin || {}),
+        },
+        settings: {
+          ...current.settings,
+          ...(json.data.settings || {}),
+        },
+        classes:
+          Array.isArray(json.data.classes) && json.data.classes.length > 0
+            ? json.data.classes
+            : current.classes,
+        students:
+          Array.isArray(json.data.students) && json.data.students.length > 0
+            ? json.data.students
+            : current.students,
+      };
+      window.localStorage.setItem(DB_STORAGE_KEY, JSON.stringify(merged));
+    }
+  } catch {
+    // Ignore when offline
+  }
+}
+
 export function loadDbState(): DatabaseState {
+  if (!backendSyncInitialized && typeof window !== 'undefined') {
+    backendSyncInitialized = true;
+    void syncStateFromBackend();
+  }
   try {
     const raw = window.localStorage.getItem(DB_STORAGE_KEY);
     if (!raw) {
@@ -646,6 +699,20 @@ export function saveDbState(state: DatabaseState): void {
   } catch {
     // Ignore storage quota issues in restricted iframes
   }
+
+  // Persist changes to Node.js MySQL backend asynchronously
+  if (typeof window !== 'undefined') {
+    void fetch(`${API_BASE_URL}/state`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(state),
+    }).catch(() => {
+      // Ignore network errors if backend is unreachable
+    });
+  }
 }
 
 export function resetDbState(): void {
@@ -674,3 +741,4 @@ export function logAdminActivity(
   }
   saveDbState(state);
 }
+

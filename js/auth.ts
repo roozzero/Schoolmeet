@@ -358,6 +358,9 @@ $(function () {
           'is-valid has-error'
         );
         openCongratulationModal(response.student);
+      } else {
+        setFieldError($phone, response.message || 'خطا در ثبت‌نام دانش‌آموز.');
+        showToast('خطا در ثبت‌نام', response.message || 'خطا در ثبت‌نام دانش‌آموز.', 'error');
       }
     } finally {
       $submitBtn.prop('disabled', false).html(originalHtml);
