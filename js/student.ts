@@ -1,8 +1,19 @@
 import $ from 'jquery';
+import {
+  changeStudentPasswordApi,
+  updateStudentProfileApi,
+} from './api';
 import { showToast } from './modal';
 import { AppRoutePath, updateBrowserUrl } from './router';
-import { loadDbState, logAdminActivity, saveDbState } from './store';
 import {
+  loadDbState,
+  logAdminActivity,
+  onDbStateSynced,
+  persistDbState,
+  uploadFileWithProgress,
+} from './store';
+import {
+  AnnouncementItem,
   AttendanceStatus,
   DatabaseState,
   StudentRecord,
@@ -15,6 +26,8 @@ let studentHwSubView: 'list' | 'detail' = 'list';
 let activeStudentHwId: number | null = null;
 let pendingStudentHwFileName = '';
 let pendingStudentHwFileDataUrl = '';
+let isUploadingStudentHwFile = false;
+let lastSelectedHwFile: File | null = null;
 
 let studentResSubView: 'list' | 'detail' = 'list';
 let activeStudentResId: number | null = null;
@@ -26,12 +39,43 @@ let studentTicketSubView: 'list' | 'create' = 'list';
 let activeStudentTicketId: number | null = null;
 let pendingStudentTicketFileName = '';
 let pendingStudentTicketFileDataUrl = '';
+let isUploadingReplyTicketFile = false;
+let lastSelectedReplyTicketFile: File | null = null;
+
 let pendingNewTicketFileName = '';
 let pendingNewTicketFileDataUrl = '';
+let isUploadingNewTicketFile = false;
+let lastSelectedNewTicketFile: File | null = null;
 
 function getActiveStudent(state: DatabaseState): StudentRecord {
   const found = state.students.find((s) => s.id === state.activeStudentId);
-  return found || state.students[0];
+  return (
+    found ||
+    state.students[0] || {
+      id: 0,
+      firstName: 'دانش‌آموز',
+      lastName: '',
+      phone: '',
+      classCode: '901',
+      status: 'approved',
+      createdAt: '',
+    }
+  );
+}
+
+/**
+ * Determine whether an announcement/notification belongs to this student:
+ * - If `targetStudentId` is set (e.g. personal feedback notification), only show to that student.
+ * - Otherwise, show if `targetClasses === 'all'` or matches `student.classCode`.
+ */
+function isAnnouncementForStudent(
+  ann: AnnouncementItem,
+  student: StudentRecord
+): boolean {
+  if (ann.targetStudentId && Number(ann.targetStudentId) > 0) {
+    return Number(ann.targetStudentId) === Number(student.id);
+  }
+  return ann.targetClasses === 'all' || ann.targetClasses === student.classCode;
 }
 
 function formatAttendanceBadge(status: AttendanceStatus): string {
@@ -50,6 +94,30 @@ function triggerStudentFileDownload(
   fallbackText?: string
 ): void {
   const cleanName = fileName.trim() || 'scoolmeet-file.txt';
+  if (
+    dataUrl &&
+    (dataUrl.startsWith('/uploads/') ||
+      dataUrl.startsWith('http://') ||
+      dataUrl.startsWith('https://'))
+  ) {
+    const sep = dataUrl.includes('?') ? '&' : '?';
+    const downloadHref = dataUrl.startsWith('/uploads/')
+      ? `${dataUrl}${sep}download=1&name=${encodeURIComponent(cleanName)}`
+      : dataUrl;
+    const link = document.createElement('a');
+    link.href = downloadHref;
+    link.download = cleanName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast(
+      'دانلود انجام شد',
+      `فایل «${toPersianDigits(cleanName)}» دانلود گردید.`,
+      'success'
+    );
+    return;
+  }
+
   if (dataUrl && dataUrl.startsWith('data:')) {
     const link = document.createElement('a');
     link.href = dataUrl;
@@ -57,14 +125,20 @@ function triggerStudentFileDownload(
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    showToast('دانلود انجام شد', `فایل «${toPersianDigits(cleanName)}» دانلود گردید.`, 'success');
+    showToast(
+      'دانلود انجام شد',
+      `فایل «${toPersianDigits(cleanName)}» دانلود گردید.`,
+      'success'
+    );
     return;
   }
 
   const content =
     fallbackText ||
     `سامانه آموزشی اسکول میت (ScoolMeet)\nنام فایل: ${cleanName}\nدریافت‌شده از پنل دانش‌آموزی.`;
-  const blob = new Blob([content], { type: 'application/octet-stream;charset=utf-8' });
+  const blob = new Blob([content], {
+    type: 'application/octet-stream;charset=utf-8',
+  });
   const objectUrl = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = objectUrl;
@@ -73,10 +147,18 @@ function triggerStudentFileDownload(
   link.click();
   document.body.removeChild(link);
   window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
-  showToast('دانلود انجام شد', `فایل «${toPersianDigits(cleanName)}» دانلود گردید.`, 'success');
+  showToast(
+    'دانلود انجام شد',
+    `فایل «${toPersianDigits(cleanName)}» دانلود گردید.`,
+    'success'
+  );
 }
 
-function markResourceViewedByStudent(state: DatabaseState, resourceId: number, student: StudentRecord): void {
+function markResourceViewedByStudent(
+  state: DatabaseState,
+  resourceId: number,
+  student: StudentRecord
+): void {
   const res = state.resources.find((r) => r.id === resourceId);
   if (!res) return;
   if (!res.viewers) {
@@ -88,9 +170,79 @@ function markResourceViewedByStudent(state: DatabaseState, resourceId: number, s
       studentId: student.id,
       studentName: `${student.firstName} ${student.lastName}`,
       classCode: student.classCode || '901',
-      viewedAt: '۱۴۰۵/۰۸/۱۵ · هم‌اکنون',
+      viewedAt: `${new Date().toLocaleDateString('fa-IR')} · هم‌اکنون`,
     });
-    saveDbState(state);
+    void persistDbState(state);
+  }
+}
+
+/**
+ * Render an inline upload progress bar inside a container selector
+ */
+function renderUploadProgressWidget(
+  containerSelector: string,
+  state: {
+    status: 'idle' | 'uploading' | 'success' | 'error';
+    percent?: number;
+    fileName?: string;
+    fileSize?: string;
+    errorMessage?: string;
+    retryActionClass?: string;
+  }
+): void {
+  const $box = $(containerSelector);
+  if (!$box.length) return;
+
+  if (state.status === 'idle') {
+    $box.html('').addClass('hidden');
+    return;
+  }
+
+  $box.removeClass('hidden');
+  const pct = Math.max(0, Math.min(100, Number(state.percent || 0)));
+
+  if (state.status === 'uploading') {
+    $box.html(`
+      <div class="p-3 rounded-xl bg-[#FDFBF7] border border-[#D4C3AE] space-y-2 mt-2">
+        <div class="flex items-center justify-between text-xs font-extrabold text-[#251B15]">
+          <span>در حال آپلود فایل «${toPersianDigits(state.fileName || '')}»...</span>
+          <span class="tabular-nums text-[#1B5E5A]">${toPersianDigits(pct)}٪</span>
+        </div>
+        <div class="w-full h-2.5 bg-[#E6D8C5] rounded-full overflow-hidden">
+          <div class="h-full bg-[#1B5E5A] transition-all duration-150 rounded-full" style="width: ${pct}%;"></div>
+        </div>
+      </div>
+    `);
+    return;
+  }
+
+  if (state.status === 'success') {
+    $box.html(`
+      <div class="p-2.5 rounded-xl bg-[#ECFDF5] border border-[#A7F3D0] flex items-center justify-between gap-2 mt-2">
+        <div class="flex items-center gap-2 text-xs font-extrabold text-[#059669]">
+          <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+          </svg>
+          <span>فایل «${toPersianDigits(state.fileName || '')}» با موفقیت آپلود شد (${toPersianDigits(100)}٪${state.fileSize ? ` · ${toPersianDigits(state.fileSize)}` : ''})</span>
+        </div>
+      </div>
+    `);
+    return;
+  }
+
+  if (state.status === 'error') {
+    $box.html(`
+      <div class="p-3 rounded-xl bg-[#FFF1F2] border border-[#FECDD3] flex items-center justify-between gap-3 flex-wrap mt-2">
+        <div class="text-xs font-extrabold text-[#E11D48]">
+          خطا در آپلود فایل: ${toPersianDigits(state.errorMessage || 'ارتباط با سرور برقرار نشد.')}
+        </div>
+        ${
+          state.retryActionClass
+            ? `<button type="button" class="btn-admin-action !h-8 !px-3 !text-xs ${state.retryActionClass}">تلاش مجدد آپلود</button>`
+            : ''
+        }
+      </div>
+    `);
   }
 }
 
@@ -111,9 +263,9 @@ function syncStudentChrome(state: DatabaseState): void {
   const portraitIdx = Math.abs(Number(student.id) || 0) % 4;
   const $avatar = $('#student-sidebar-avatar');
   $avatar.removeClass(
-    'student-portrait-0 student-portrait-1 student-portrait-2 student-portrait-3 student-portrait-lg-0 student-portrait-lg-1 student-portrait-lg-2 student-portrait-lg-3 has-custom-avatar'
+    'student-portrait-0 student-portrait-1 student-portrait-2 student-portrait-3 student-portrait-lg-0 student-portrait-lg-1 student-portrait-lg-2 student-portrait-lg-3 has-custom-avatar bg-[#EADCCA] flex items-center justify-center text-[#5A3A22]'
   );
-  if (student.avatarUrl) {
+  if (student.avatarUrl && !student.avatarRemoved) {
     $avatar
       .addClass('has-custom-avatar')
       .css('background-image', `url('${student.avatarUrl}')`)
@@ -139,8 +291,8 @@ function syncStudentChrome(state: DatabaseState): void {
   const myResources = state.resources.filter(
     (r) => r.classCode === 'all' || r.classCode === student.classCode
   );
-  const myAnnouncements = state.announcements.filter(
-    (an) => an.targetClasses === 'all' || an.targetClasses === student.classCode
+  const myAnnouncements = state.announcements.filter((an) =>
+    isAnnouncementForStudent(an, student)
   );
   const myUnreadAnnouncements = myAnnouncements.filter(
     (an) => !(an.readers || []).some((r) => r.studentId === student.id)
@@ -252,8 +404,8 @@ function renderStudentDashboard($container: JQuery<HTMLElement>, state: Database
   );
   const mySubmissions = state.submissions.filter((s) => s.studentId === student.id);
   const myGradebookEntries = state.gradebookEntries.filter((e) => e.studentId === student.id);
-  const myAnnouncements = state.announcements.filter(
-    (an) => an.targetClasses === 'all' || an.targetClasses === student.classCode
+  const myAnnouncements = state.announcements.filter((an) =>
+    isAnnouncementForStudent(an, student)
   );
 
   const totalPositives = myGradebookEntries.reduce((sum, e) => sum + e.positiveCount, 0);
@@ -359,57 +511,61 @@ function renderStudentDashboard($container: JQuery<HTMLElement>, state: Database
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch">
-          ${myAssignments
-            .slice(0, 3)
-            .map((hw) => {
-              const sub = mySubmissions.find((s) => s.assignmentId === hw.id);
-              return `
-                <div class="modern-class-card">
-                  <div>
-                    <div class="flex items-center justify-between gap-2">
-                      <span class="text-[11px] font-extrabold px-2.5 py-1 rounded-lg ${
-                        sub
-                          ? 'bg-[#ECFDF5] text-[#059669]'
-                          : 'bg-[#FFFBEB] text-[#D97706]'
-                      }">
-                        ${sub ? 'تحویل داده شده' : 'در انتظار ارسال'}
-                      </span>
-                      <span class="text-[11px] font-bold text-[#6E5D4F] tabular-nums">
-                        بارم: ${toPersianDigits(hw.maxScore)} نمره
-                      </span>
-                    </div>
-                    <h3 class="text-sm font-black text-[#251B15] mt-2.5 m-0 leading-snug">
-                      ${toPersianDigits(hw.title)}
-                    </h3>
-                    <p class="text-xs text-[#6E5D4F] mt-1.5 m-0 leading-relaxed">
-                      ${toPersianDigits(hw.description)}
-                    </p>
-                  </div>
+          ${
+            myAssignments.length
+              ? myAssignments
+                  .slice(0, 3)
+                  .map((hw) => {
+                    const sub = mySubmissions.find((s) => s.assignmentId === hw.id);
+                    return `
+                      <div class="modern-class-card">
+                        <div>
+                          <div class="flex items-center justify-between gap-2">
+                            <span class="text-[11px] font-extrabold px-2.5 py-1 rounded-lg ${
+                              sub
+                                ? 'bg-[#ECFDF5] text-[#059669]'
+                                : 'bg-[#FFFBEB] text-[#D97706]'
+                            }">
+                              ${sub ? 'تحویل داده شده' : 'در انتظار ارسال'}
+                            </span>
+                            <span class="text-[11px] font-bold text-[#6E5D4F] tabular-nums">
+                              بارم: ${toPersianDigits(hw.maxScore)} نمره
+                            </span>
+                          </div>
+                          <h3 class="text-sm font-black text-[#251B15] mt-2.5 m-0 leading-snug">
+                            ${toPersianDigits(hw.title)}
+                          </h3>
+                          <p class="text-xs text-[#6E5D4F] mt-1.5 m-0 leading-relaxed">
+                            ${toPersianDigits(hw.description)}
+                          </p>
+                        </div>
 
-                  <div class="mt-4 pt-3 border-t border-[#E6D8C5] space-y-2.5">
-                    <div class="flex items-center justify-between text-[11px] text-[#6E5D4F]">
-                      <span>مهلت تحویل:</span>
-                      <strong class="text-[#251B15] tabular-nums">${toPersianDigits(hw.dueDate)}</strong>
-                    </div>
-                    <button
-                      type="button"
-                      class="btn-admin-primary w-full !h-9 text-xs js-st-open-hw-detail"
-                      data-id="${hw.id}"
-                    >
-                      ${sub ? 'مشاهده وضعیت و ویرایش پاسخ' : 'مشاهده و ارسال تکلیف'}
-                    </button>
-                  </div>
-                </div>
-              `;
-            })
-            .join('')}
+                        <div class="mt-4 pt-3 border-t border-[#E6D8C5] space-y-2.5">
+                          <div class="flex items-center justify-between text-[11px] text-[#6E5D4F]">
+                            <span>مهلت تحویل:</span>
+                            <strong class="text-[#251B15] tabular-nums">${toPersianDigits(hw.dueDate)}</strong>
+                          </div>
+                          <button
+                            type="button"
+                            class="btn-admin-primary w-full !h-9 text-xs js-st-open-hw-detail"
+                            data-id="${hw.id}"
+                          >
+                            ${sub ? 'مشاهده وضعیت و ویرایش پاسخ' : 'مشاهده و ارسال تکلیف'}
+                          </button>
+                        </div>
+                      </div>
+                    `;
+                  })
+                  .join('')
+              : `<div class="col-span-full admin-surface-card text-center py-6 text-xs text-[#6E5D4F]">تکلیفی برای کلاس شما ثبت نشده است.</div>`
+          }
         </div>
       </div>
 
-      <!-- آخرین اطلاعیه‌های کلاس -->
+      <!-- آخرین اطلاعیه‌ها و اعلان‌های کلاس -->
       <div class="admin-surface-card">
         <div class="flex items-center justify-between mb-3.5">
-          <h2 class="text-sm font-extrabold text-[#251B15] m-0">آخرین اطلاعیه‌های آموزشی</h2>
+          <h2 class="text-sm font-extrabold text-[#251B15] m-0">آخرین اطلاعیه‌ها و اعلان‌های آموزشی</h2>
           <button
             type="button"
             class="text-xs font-extrabold text-[#5A3A22] hover:underline bg-transparent border-none p-0 cursor-pointer js-st-go-section"
@@ -420,19 +576,32 @@ function renderStudentDashboard($container: JQuery<HTMLElement>, state: Database
         </div>
 
         <div class="space-y-2.5">
-          ${myAnnouncements
-            .slice(0, 4)
-            .map(
-              (ann) => `
-              <div class="p-3.5 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB]">
-                <div class="flex items-center justify-between gap-2">
-                  <span class="text-xs font-extrabold text-[#251B15]">${toPersianDigits(ann.title)}</span>
-                  <span class="text-[11px] text-[#6E5D4F] tabular-nums">${toPersianDigits(ann.createdAt)}</span>
-                </div>
-                <p class="text-xs text-[#6E5D4F] mt-1.5 m-0 leading-relaxed">${toPersianDigits(ann.content)}</p>
-              </div>`
-            )
-            .join('')}
+          ${
+            myAnnouncements.length
+              ? myAnnouncements
+                  .slice(0, 4)
+                  .map(
+                    (ann) => `
+                    <div class="p-3.5 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB]">
+                      <div class="flex items-center justify-between gap-2 flex-wrap">
+                        <div class="flex items-center gap-2 flex-wrap">
+                          <span class="text-xs font-extrabold text-[#251B15]">${toPersianDigits(ann.title)}</span>
+                          ${
+                            ann.notificationType === 'feedback'
+                              ? `<span class="text-[10.5px] font-extrabold px-2 py-0.5 rounded-md bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0]">بازخورد اختصاصی مدرس</span>`
+                              : ann.notificationType === 'assignment'
+                              ? `<span class="text-[10.5px] font-extrabold px-2 py-0.5 rounded-md bg-[#E2EFEA] text-[#1B5E5A]">اعلان تکلیف جدید</span>`
+                              : ''
+                          }
+                        </div>
+                        <span class="text-[11px] text-[#6E5D4F] tabular-nums">${toPersianDigits(ann.createdAt)}</span>
+                      </div>
+                      <p class="text-xs text-[#6E5D4F] mt-1.5 m-0 leading-relaxed">${toPersianDigits(ann.content)}</p>
+                    </div>`
+                  )
+                  .join('')
+              : `<div class="text-center py-6 text-xs text-[#6E5D4F]">اطلاعیه‌ای ثبت نشده است.</div>`
+          }
         </div>
       </div>
     </div>
@@ -472,57 +641,61 @@ function renderStudentAssignments($container: JQuery<HTMLElement>, state: Databa
       </div>
 
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-stretch">
-        ${myAssignments
-          .map((hw) => {
-            const sub = mySubmissions.find((s) => s.assignmentId === hw.id);
-            return `
-              <div class="modern-class-card">
-                <div>
-                  <div class="flex items-center justify-between gap-2">
-                    <span class="text-[11px] font-extrabold px-2.5 py-1 rounded-lg ${
-                      sub
-                        ? sub.score !== null
-                          ? 'bg-[#ECFDF5] text-[#059669]'
-                          : 'bg-[#E2EFEA] text-[#1B5E5A]'
-                        : 'bg-[#FFFBEB] text-[#D97706]'
-                    }">
-                      ${
-                        sub
-                          ? sub.score !== null
-                            ? `نمره ثبت‌شده: ${toPersianDigits(sub.score)} از ${toPersianDigits(hw.maxScore)}`
-                            : 'تحویل داده شده (در انتظار نمره)'
-                          : 'تحویل نداده'
-                      }
-                    </span>
-                    <span class="text-[11px] text-[#6E5D4F] tabular-nums">${toPersianDigits(hw.createdAt)}</span>
-                  </div>
+        ${
+          myAssignments.length
+            ? myAssignments
+                .map((hw) => {
+                  const sub = mySubmissions.find((s) => s.assignmentId === hw.id);
+                  return `
+                    <div class="modern-class-card">
+                      <div>
+                        <div class="flex items-center justify-between gap-2">
+                          <span class="text-[11px] font-extrabold px-2.5 py-1 rounded-lg ${
+                            sub
+                              ? sub.score !== null
+                                ? 'bg-[#ECFDF5] text-[#059669]'
+                                : 'bg-[#E2EFEA] text-[#1B5E5A]'
+                              : 'bg-[#FFFBEB] text-[#D97706]'
+                          }">
+                            ${
+                              sub
+                                ? sub.score !== null
+                                  ? `نمره ثبت‌شده: ${toPersianDigits(sub.score)} از ${toPersianDigits(hw.maxScore)}`
+                                  : 'تحویل داده شده (در انتظار نمره)'
+                                : 'تحویل نداده'
+                            }
+                          </span>
+                          <span class="text-[11px] text-[#6E5D4F] tabular-nums">${toPersianDigits(hw.createdAt)}</span>
+                        </div>
 
-                  <h3 class="text-sm font-black text-[#251B15] mt-2.5 m-0 leading-snug">
-                    ${toPersianDigits(hw.title)}
-                  </h3>
-                  <p class="text-xs text-[#6E5D4F] mt-1.5 m-0 leading-relaxed">
-                    ${toPersianDigits(hw.description)}
-                  </p>
-                </div>
+                        <h3 class="text-sm font-black text-[#251B15] mt-2.5 m-0 leading-snug">
+                          ${toPersianDigits(hw.title)}
+                        </h3>
+                        <p class="text-xs text-[#6E5D4F] mt-1.5 m-0 leading-relaxed">
+                          ${toPersianDigits(hw.description)}
+                        </p>
+                      </div>
 
-                <div class="mt-4 pt-3 border-t border-[#E6D8C5] space-y-2.5">
-                  <div class="flex items-center justify-between text-[11px] text-[#6E5D4F]">
-                    <span>مهلت تحویل: <strong class="text-[#251B15]">${toPersianDigits(hw.dueDate)}</strong></span>
-                    <span>بارم: <strong class="text-[#251B15]">${toPersianDigits(hw.maxScore)}</strong></span>
-                  </div>
+                      <div class="mt-4 pt-3 border-t border-[#E6D8C5] space-y-2.5">
+                        <div class="flex items-center justify-between text-[11px] text-[#6E5D4F]">
+                          <span>مهلت تحویل: <strong class="text-[#251B15]">${toPersianDigits(hw.dueDate)}</strong></span>
+                          <span>بارم: <strong class="text-[#251B15]">${toPersianDigits(hw.maxScore)}</strong></span>
+                        </div>
 
-                  <button
-                    type="button"
-                    class="btn-admin-primary w-full !h-9 text-xs js-st-open-hw-detail"
-                    data-id="${hw.id}"
-                  >
-                    ${sub ? 'مشاهده جزئیات و پاسخ ارسالی' : 'مشاهده جزئیات و ارسال تکلیف'}
-                  </button>
-                </div>
-              </div>
-            `;
-          })
-          .join('')}
+                        <button
+                          type="button"
+                          class="btn-admin-primary w-full !h-9 text-xs js-st-open-hw-detail"
+                          data-id="${hw.id}"
+                        >
+                          ${sub ? 'مشاهده جزئیات و پاسخ ارسالی' : 'مشاهده جزئیات و ارسال تکلیف'}
+                        </button>
+                      </div>
+                    </div>
+                  `;
+                })
+                .join('')
+            : `<div class="col-span-full admin-surface-card text-center py-8 text-xs text-[#6E5D4F]">تکلیفی برای کلاس شما ثبت نشده است.</div>`
+        }
       </div>
     </div>
   `);
@@ -644,10 +817,11 @@ function renderStudentAssignmentDetailPage(
                 </label>
                 <input type="file" id="st-hw-file-input" class="hidden" />
               </div>
+              <div id="st-hw-upload-progress-box" class="hidden"></div>
             </div>
 
             <div class="flex items-center gap-2 pt-2">
-              <button type="submit" class="btn-admin-primary !h-10 flex-1">
+              <button type="submit" id="btn-st-submit-hw" class="btn-admin-primary !h-10 flex-1">
                 ${existingSub ? 'بروزرسانی پاسخ ارسالی' : 'ثبت و ارسال نهایی تکلیف'}
               </button>
               <button type="button" class="btn-admin-action !h-10 js-st-back-to-hw-list">
@@ -663,7 +837,6 @@ function renderStudentAssignmentDetailPage(
 
 /* ============================================================================
    3. نمرات من: بصورت کارت با دکمه جزئیات (مودال)، مثبت‌ها سبز و منفی‌ها قرمز
-      (بخش نمرات و بازخورد تکالیف طبق درخواست کاملاً حذف شده است)
    ============================================================================ */
 function renderStudentGrades($container: JQuery<HTMLElement>, state: DatabaseState): void {
   const student = getActiveStudent(state);
@@ -746,7 +919,6 @@ function renderStudentGrades($container: JQuery<HTMLElement>, state: DatabaseSta
                         </div>
 
                         <div class="mt-4 pt-3 border-t border-[#E6D8C5] space-y-3">
-                          <!-- نمره جلسه و بج‌های سبز مثبت و قرمز منفی -->
                           <div class="flex items-center justify-between gap-2 flex-wrap tabular-nums">
                             <span class="text-xs font-bold text-[#251B15]">
                               نمره جلسه:
@@ -968,22 +1140,19 @@ function renderStudentResourceDetailPage(
 }
 
 /* ============================================================================
-   5. اطلاعیه‌ها در پنل دانش‌آموز
-   ============================================================================ */
-/* ============================================================================
-   5. اطلاعیه‌ها در پنل دانش‌آموز (با دکمه «خوانده شد» و کاهش بج اطلاعیه)
+   5. اطلاعیه‌ها در پنل دانش‌آموز (شامل اطلاعیه‌های کلاس، اعلان تکلیف جدید و بازخورد اختصاصی)
    ============================================================================ */
 function renderStudentAnnouncements($container: JQuery<HTMLElement>, state: DatabaseState): void {
   const student = getActiveStudent(state);
   const normalizedQuery = normalizeDigits(studentAnnSearchQuery.trim()).toLowerCase();
 
   const list = state.announcements.filter((ann) => {
-    const inClass = ann.targetClasses === 'all' || ann.targetClasses === student.classCode;
+    const forMe = isAnnouncementForStudent(ann, student);
     const matchesQuery =
       !normalizedQuery ||
       ann.title.toLowerCase().includes(normalizedQuery) ||
       ann.content.toLowerCase().includes(normalizedQuery);
-    return inClass && matchesQuery;
+    return forMe && matchesQuery;
   });
 
   const unreadCount = list.filter(
@@ -995,7 +1164,7 @@ function renderStudentAnnouncements($container: JQuery<HTMLElement>, state: Data
       <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h2 class="text-sm font-extrabold text-[#251B15] m-0">
-            اطلاعیه‌های کلاس ${toPersianDigits(student.classCode || 'من')} (${toPersianDigits(list.length)})
+            اطلاعیه‌ها و اعلان‌های کلاس ${toPersianDigits(student.classCode || 'من')} (${toPersianDigits(list.length)})
           </h2>
           <p class="text-xs text-[#6E5D4F] mt-1 m-0">
             اطلاعیه‌های خوانده‌نشده: <strong class="text-[#059669]">${toPersianDigits(unreadCount)} مورد</strong> — با زدن دکمه «خوانده شد»، وضعیت مطالعه شما برای مدیر نیز ثبت می‌شود.
@@ -1016,6 +1185,12 @@ function renderStudentAnnouncements($container: JQuery<HTMLElement>, state: Data
             ? list
                 .map((ann) => {
                   const readLog = (ann.readers || []).find((r) => r.studentId === student.id);
+                  const targetLabel = ann.targetStudentId
+                    ? `اختصاصی برای ${student.firstName} ${student.lastName}`
+                    : ann.targetClasses === 'all'
+                    ? 'همه کلاس‌ها'
+                    : `کلاس ${toPersianDigits(ann.targetClasses)}`;
+
                   return `
                     <div class="admin-surface-card ${readLog ? 'opacity-95' : 'border-[#5A3A22]'}">
                       <div class="flex items-center justify-between gap-2 flex-wrap">
@@ -1031,6 +1206,13 @@ function renderStudentAnnouncements($container: JQuery<HTMLElement>, state: Data
                             ${ann.priority}
                           </span>
                           ${
+                            ann.notificationType === 'feedback'
+                              ? `<span class="text-[11px] font-extrabold px-2 py-0.5 rounded-md bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0]">بازخورد مدرس</span>`
+                              : ann.notificationType === 'assignment'
+                              ? `<span class="text-[11px] font-extrabold px-2 py-0.5 rounded-md bg-[#E2EFEA] text-[#1B5E5A]">تکلیف جدید</span>`
+                              : ''
+                          }
+                          ${
                             !readLog
                               ? `<span class="text-[11px] font-extrabold px-2 py-0.5 rounded-md bg-[#FFFBEB] text-[#D97706]">جدید (خوانده نشده)</span>`
                               : ''
@@ -1038,32 +1220,53 @@ function renderStudentAnnouncements($container: JQuery<HTMLElement>, state: Data
                         </div>
                         <span class="text-xs text-[#6E5D4F] tabular-nums">${toPersianDigits(ann.createdAt)}</span>
                       </div>
-                      <p class="text-xs text-[#3E3027] mt-2 m-0 leading-relaxed">${toPersianDigits(ann.content)}</p>
+                      <p class="text-xs text-[#3E3027] mt-2 m-0 leading-relaxed whitespace-pre-line">${toPersianDigits(ann.content)}</p>
 
                       <div class="mt-3 pt-2.5 border-t border-[#E6D8C5] flex items-center justify-between gap-2 flex-wrap">
                         <span class="text-[11px] text-[#6E5D4F]">
-                          مخاطب: <strong class="text-[#5A3A22]">${ann.targetClasses === 'all' ? 'همه کلاس‌ها' : `کلاس ${toPersianDigits(ann.targetClasses)}`}</strong>
+                          مخاطب: <strong class="text-[#5A3A22]">${targetLabel}</strong>
                         </span>
 
-                        ${
-                          readLog
-                            ? `<span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0] text-xs font-extrabold tabular-nums">
-                                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-                                  <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
-                                </svg>
-                                <span>خوانده شده (${toPersianDigits(readLog.readAt)})</span>
-                              </span>`
-                            : `<button
-                                type="button"
-                                class="btn-admin-primary !h-8 !px-3.5 !text-xs js-st-mark-ann-read"
-                                data-id="${ann.id}"
-                              >
-                                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.3">
-                                  <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
-                                </svg>
-                                <span>خوانده شد</span>
-                              </button>`
-                        }
+                        <div class="flex items-center gap-2 flex-wrap">
+                          ${
+                            ann.assignmentId
+                              ? `<button
+                                  type="button"
+                                  class="btn-admin-action !h-8 !px-3 !text-xs js-st-open-hw-detail"
+                                  data-id="${ann.assignmentId}"
+                                >
+                                  مشاهده تکلیف مرتبط
+                                </button>`
+                              : ann.notificationType === 'feedback'
+                              ? `<button
+                                  type="button"
+                                  class="btn-admin-action !h-8 !px-3 !text-xs js-st-go-section"
+                                  data-section="grades"
+                                >
+                                  مشاهده نمرات من
+                                </button>`
+                              : ''
+                          }
+                          ${
+                            readLog
+                              ? `<span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0] text-xs font-extrabold tabular-nums">
+                                  <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                                  </svg>
+                                  <span>خوانده شده (${toPersianDigits(readLog.readAt)})</span>
+                                </span>`
+                              : `<button
+                                  type="button"
+                                  class="btn-admin-primary !h-8 !px-3.5 !text-xs js-st-mark-ann-read"
+                                  data-id="${ann.id}"
+                                >
+                                  <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.3">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                                  </svg>
+                                  <span>خوانده شد</span>
+                                </button>`
+                          }
+                        </div>
                       </div>
                     </div>`;
                 })
@@ -1099,7 +1302,6 @@ function renderStudentTickets($container: JQuery<HTMLElement>, state: DatabaseSt
 
   $container.html(`
     <div class="space-y-4">
-      <!-- نوار بالایی تیکت‌های دانش‌آموز و دکمه باز کردن صفحه ایجاد تیکت جدید -->
       <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h2 class="text-sm font-extrabold text-[#251B15] m-0">
@@ -1116,7 +1318,6 @@ function renderStudentTickets($container: JQuery<HTMLElement>, state: DatabaseSt
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        <!-- لیست تیکت‌های من -->
         <div class="lg:col-span-5 admin-surface-card">
           <h3 class="text-sm font-extrabold text-[#251B15] mb-3 m-0">
             لیست تیکت‌های من (${toPersianDigits(myTickets.length)})
@@ -1150,7 +1351,6 @@ function renderStudentTickets($container: JQuery<HTMLElement>, state: DatabaseSt
           </div>
         </div>
 
-        <!-- گفت‌وگوی تیکت و دانلود فایل‌های ضمیمه -->
         <div class="lg:col-span-7 admin-surface-card">
           ${
             currentTicket
@@ -1205,6 +1405,7 @@ function renderStudentTickets($container: JQuery<HTMLElement>, state: DatabaseSt
                     required
                   ></textarea>
                 </div>
+                <div id="st-ticket-reply-upload-progress" class="hidden"></div>
                 <div class="flex items-center justify-between gap-2 flex-wrap">
                   <div class="flex items-center gap-2">
                     <label for="st-ticket-reply-file" class="btn-admin-action cursor-pointer">
@@ -1215,7 +1416,7 @@ function renderStudentTickets($container: JQuery<HTMLElement>, state: DatabaseSt
                       ${pendingStudentTicketFileName ? toPersianDigits(pendingStudentTicketFileName) : 'فایلی انتخاب نشده'}
                     </span>
                   </div>
-                  <button type="submit" class="btn-admin-primary">ارسال پیام</button>
+                  <button type="submit" id="btn-st-submit-reply-ticket" class="btn-admin-primary">ارسال پیام</button>
                 </div>
               </form>
             `
@@ -1285,34 +1486,37 @@ function renderStudentCreateTicketPage(
             ></textarea>
           </div>
 
-          <div class="p-3.5 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] flex items-center justify-between gap-3 flex-wrap">
-            <div class="flex items-center gap-2.5">
-              <label for="st-new-ticket-file" class="btn-admin-action cursor-pointer">
-                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                </svg>
-                <span>انتخاب فایل ضمیمه (اختیاری)</span>
-              </label>
-              <input type="file" id="st-new-ticket-file" class="hidden" />
-              <span id="st-new-ticket-file-name" class="text-xs font-bold text-[#1B5E5A]">
-                ${
-                  pendingNewTicketFileName
-                    ? `فایل انتخاب‌شده: ${toPersianDigits(pendingNewTicketFileName)}`
-                    : 'فایلی انتخاب نشده است'
-                }
+          <div class="p-3.5 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] space-y-2">
+            <div class="flex items-center justify-between gap-3 flex-wrap">
+              <div class="flex items-center gap-2.5">
+                <label for="st-new-ticket-file" class="btn-admin-action cursor-pointer">
+                  <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                  </svg>
+                  <span>انتخاب فایل ضمیمه (اختیاری)</span>
+                </label>
+                <input type="file" id="st-new-ticket-file" class="hidden" />
+                <span id="st-new-ticket-file-name" class="text-xs font-bold text-[#1B5E5A]">
+                  ${
+                    pendingNewTicketFileName
+                      ? `فایل انتخاب‌شده: ${toPersianDigits(pendingNewTicketFileName)}`
+                      : 'فایلی انتخاب نشده است'
+                  }
+                </span>
+              </div>
+
+              <span class="text-[11px] text-[#6E5D4F]">
+                فرستنده: ${student.firstName} ${student.lastName} (کلاس ${toPersianDigits(student.classCode || '۹۰۱')})
               </span>
             </div>
-
-            <span class="text-[11px] text-[#6E5D4F]">
-              فرستنده: ${student.firstName} ${student.lastName} (کلاس ${toPersianDigits(student.classCode || '۹۰۱')})
-            </span>
+            <div id="st-new-ticket-upload-progress" class="hidden"></div>
           </div>
 
           <div class="flex items-center justify-end gap-2.5 pt-2 border-t border-[#E6D8C5]">
             <button type="button" class="btn-admin-action !h-10 js-st-back-to-tickets">
               انصراف و بازگشت
             </button>
-            <button type="submit" class="btn-admin-primary !h-10">
+            <button type="submit" id="btn-st-submit-new-ticket" class="btn-admin-primary !h-10">
               ثبت و ارسال نهایی تیکت
             </button>
           </div>
@@ -1324,13 +1528,14 @@ function renderStudentCreateTicketPage(
 
 /* ============================================================================
    7. پروفایل دانش‌آموز: تصویر پروفایل (با امکان تغییر و حذف عکس)، مشخصات فردی و تغییر رمز عبور
+      شماره تلفن ثبت‌نامی کاملاً غیرقابل ویرایش (readonly + disabled) است.
    ============================================================================ */
 function renderStudentProfile($container: JQuery<HTMLElement>, state: DatabaseState): void {
   const student = getActiveStudent(state);
   const portraitIdx = Math.abs(Number(student.id) || 0) % 4;
 
   let avatarBoxHtml = '';
-  if (student.avatarUrl) {
+  if (student.avatarUrl && !student.avatarRemoved) {
     avatarBoxHtml = `<div class="student-avatar-lg has-custom-avatar" style="background-image: url('${student.avatarUrl}');" role="img" aria-label="تصویر پروفایل دانش‌آموز"></div>`;
   } else if (student.avatarRemoved) {
     avatarBoxHtml = `<div class="student-avatar-lg bg-[#EADCCA] flex items-center justify-center text-[#5A3A22]" style="background-image: none;" role="img" aria-label="بدون تصویر پروفایل">
@@ -1391,16 +1596,30 @@ function renderStudentProfile($container: JQuery<HTMLElement>, state: DatabaseSt
 
           <div class="grid grid-cols-2 gap-3">
             <div>
-              <label class="scool-field-label">شماره تلفن</label>
-              <input type="tel" id="st-prof-phone" class="school-input tabular-nums" value="${toPersianDigits(student.phone)}" required />
+              <label class="scool-field-label">شماره تلفن ثبت‌نامی (غیرقابل تغییر)</label>
+              <input
+                type="tel"
+                id="st-prof-phone"
+                class="school-input tabular-nums !bg-[#F3ECE0] !text-[#6E5D4F] cursor-not-allowed"
+                value="${toPersianDigits(student.phone)}"
+                readonly
+                disabled
+                aria-readonly="true"
+              />
             </div>
             <div>
               <label class="scool-field-label">کلاس ثبت‌شده</label>
-              <input type="text" class="school-input" value="${student.classCode ? `کلاس ${toPersianDigits(student.classCode)}` : '—'}" readonly />
+              <input
+                type="text"
+                class="school-input !bg-[#F3ECE0] !text-[#6E5D4F] cursor-not-allowed"
+                value="${student.classCode ? `کلاس ${toPersianDigits(student.classCode)}` : '—'}"
+                readonly
+                disabled
+              />
             </div>
           </div>
 
-          <button type="submit" class="btn-admin-primary">ذخیره مشخصات پروفایل</button>
+          <button type="submit" id="btn-st-save-profile" class="btn-admin-primary">ذخیره مشخصات پروفایل</button>
         </form>
       </div>
 
@@ -1415,14 +1634,164 @@ function renderStudentProfile($container: JQuery<HTMLElement>, state: DatabaseSt
             <label class="scool-field-label">تکرار رمز عبور جدید</label>
             <input type="password" id="st-confirm-pass" class="school-input" placeholder="تکرار رمز عبور" required />
           </div>
-          <button type="submit" class="btn-admin-primary w-full">بروزرسانی رمز عبور</button>
+          <button type="submit" id="btn-st-save-password" class="btn-admin-primary w-full">بروزرسانی رمز عبور</button>
         </form>
       </div>
     </div>
   `);
 }
 
+async function startStudentHwFileUpload(file: File): Promise<void> {
+  lastSelectedHwFile = file;
+  isUploadingStudentHwFile = true;
+  pendingStudentHwFileName = file.name;
+  pendingStudentHwFileDataUrl = '';
+  $('#st-hw-filename').val(toPersianDigits(file.name));
+  $('#btn-st-submit-hw').prop('disabled', true);
+
+  renderUploadProgressWidget('#st-hw-upload-progress-box', {
+    status: 'uploading',
+    percent: 0,
+    fileName: file.name,
+  });
+
+  const result = await uploadFileWithProgress(file, (pct) => {
+    renderUploadProgressWidget('#st-hw-upload-progress-box', {
+      status: 'uploading',
+      percent: pct,
+      fileName: file.name,
+    });
+  });
+
+  isUploadingStudentHwFile = false;
+  $('#btn-st-submit-hw').prop('disabled', false);
+
+  if (result.success && result.fileUrl) {
+    pendingStudentHwFileDataUrl = result.fileUrl;
+    renderUploadProgressWidget('#st-hw-upload-progress-box', {
+      status: 'success',
+      percent: 100,
+      fileName: file.name,
+      fileSize: result.fileSize,
+    });
+  } else {
+    pendingStudentHwFileDataUrl = '';
+    renderUploadProgressWidget('#st-hw-upload-progress-box', {
+      status: 'error',
+      fileName: file.name,
+      errorMessage: result.message || 'آپلود فایل ناموفق بود.',
+      retryActionClass: 'js-retry-st-hw-upload',
+    });
+    showToast('خطا در آپلود فایل تکلیف', result.message || 'آپلود فایل ناموفق بود.', 'error');
+  }
+}
+
+async function startNewTicketFileUpload(file: File): Promise<void> {
+  lastSelectedNewTicketFile = file;
+  isUploadingNewTicketFile = true;
+  pendingNewTicketFileName = file.name;
+  pendingNewTicketFileDataUrl = '';
+  $('#st-new-ticket-file-name').text(`در حال آپلود: ${toPersianDigits(file.name)}`);
+  $('#btn-st-submit-new-ticket').prop('disabled', true);
+
+  renderUploadProgressWidget('#st-new-ticket-upload-progress', {
+    status: 'uploading',
+    percent: 0,
+    fileName: file.name,
+  });
+
+  const result = await uploadFileWithProgress(file, (pct) => {
+    renderUploadProgressWidget('#st-new-ticket-upload-progress', {
+      status: 'uploading',
+      percent: pct,
+      fileName: file.name,
+    });
+  });
+
+  isUploadingNewTicketFile = false;
+  $('#btn-st-submit-new-ticket').prop('disabled', false);
+
+  if (result.success && result.fileUrl) {
+    pendingNewTicketFileDataUrl = result.fileUrl;
+    $('#st-new-ticket-file-name').text(
+      `فایل آماده ارسال: ${toPersianDigits(file.name)} (${toPersianDigits(result.fileSize || '')})`
+    );
+    renderUploadProgressWidget('#st-new-ticket-upload-progress', {
+      status: 'success',
+      percent: 100,
+      fileName: file.name,
+      fileSize: result.fileSize,
+    });
+  } else {
+    pendingNewTicketFileDataUrl = '';
+    $('#st-new-ticket-file-name').text('خطا در آپلود فایل');
+    renderUploadProgressWidget('#st-new-ticket-upload-progress', {
+      status: 'error',
+      fileName: file.name,
+      errorMessage: result.message || 'آپلود فایل ضمیمه ناموفق بود.',
+      retryActionClass: 'js-retry-st-new-ticket-upload',
+    });
+    showToast('خطا در آپلود پیوست تیکت', result.message || 'آپلود فایل ناموفق بود.', 'error');
+  }
+}
+
+async function startReplyTicketFileUpload(file: File): Promise<void> {
+  lastSelectedReplyTicketFile = file;
+  isUploadingReplyTicketFile = true;
+  pendingStudentTicketFileName = file.name;
+  pendingStudentTicketFileDataUrl = '';
+  $('#st-ticket-attached-name').text(`در حال آپلود: ${toPersianDigits(file.name)}`);
+  $('#btn-st-submit-reply-ticket').prop('disabled', true);
+
+  renderUploadProgressWidget('#st-ticket-reply-upload-progress', {
+    status: 'uploading',
+    percent: 0,
+    fileName: file.name,
+  });
+
+  const result = await uploadFileWithProgress(file, (pct) => {
+    renderUploadProgressWidget('#st-ticket-reply-upload-progress', {
+      status: 'uploading',
+      percent: pct,
+      fileName: file.name,
+    });
+  });
+
+  isUploadingReplyTicketFile = false;
+  $('#btn-st-submit-reply-ticket').prop('disabled', false);
+
+  if (result.success && result.fileUrl) {
+    pendingStudentTicketFileDataUrl = result.fileUrl;
+    $('#st-ticket-attached-name').text(
+      `پیوست آماده: ${toPersianDigits(file.name)} (${toPersianDigits(result.fileSize || '')})`
+    );
+    renderUploadProgressWidget('#st-ticket-reply-upload-progress', {
+      status: 'success',
+      percent: 100,
+      fileName: file.name,
+      fileSize: result.fileSize,
+    });
+  } else {
+    pendingStudentTicketFileDataUrl = '';
+    $('#st-ticket-attached-name').text('خطا در آپلود فایل');
+    renderUploadProgressWidget('#st-ticket-reply-upload-progress', {
+      status: 'error',
+      fileName: file.name,
+      errorMessage: result.message || 'آپلود فایل ضمیمه ناموفق بود.',
+      retryActionClass: 'js-retry-st-reply-ticket-upload',
+    });
+    showToast('خطا در آپلود پیوست تیکت', result.message || 'آپلود فایل ناموفق بود.', 'error');
+  }
+}
+
 export function initStudentPanelEvents(): void {
+  // Automatically re-render Student Panel when initial MySQL state finishes loading
+  onDbStateSynced(() => {
+    if (!$('#student-workspace-view').hasClass('view-hidden')) {
+      renderActiveStudentSection();
+    }
+  });
+
   $(document).on('click', '.student-nav-btn, .js-st-go-section', function () {
     const sec = $(this).data('section') as StudentSectionId;
     if (sec) {
@@ -1442,6 +1811,8 @@ export function initStudentPanelEvents(): void {
     activeStudentHwId = Number($(this).attr('data-id'));
     pendingStudentHwFileName = '';
     pendingStudentHwFileDataUrl = '';
+    isUploadingStudentHwFile = false;
+    lastSelectedHwFile = null;
     activeStudentSection = 'assignments';
     studentHwSubView = 'detail';
     $('.student-nav-btn').removeClass('is-active');
@@ -1471,63 +1842,85 @@ export function initStudentPanelEvents(): void {
   $(document).on('change', '#st-hw-file-input', function (this: HTMLInputElement) {
     const file = this.files && this.files[0];
     if (!file) return;
-    pendingStudentHwFileName = file.name;
-    $('#st-hw-filename').val(toPersianDigits(file.name));
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      pendingStudentHwFileDataUrl = String(ev.target?.result || '');
-    };
-    reader.readAsDataURL(file);
+    void startStudentHwFileUpload(file);
   });
 
-  $(document).on('submit', '#form-student-submit-hw', function (e) {
+  $(document).on('click', '.js-retry-st-hw-upload', function () {
+    if (lastSelectedHwFile) {
+      void startStudentHwFileUpload(lastSelectedHwFile);
+    }
+  });
+
+  $(document).on('submit', '#form-student-submit-hw', async function (e) {
     e.preventDefault();
+    if (isUploadingStudentHwFile) {
+      showToast('در حال آپلود فایل', 'لطفاً تا تکمیل آپلود فایل صبر کنید.', 'info');
+      return;
+    }
+
     const hwId = Number($(this).attr('data-hw-id'));
     const responseText = String($('#st-hw-response-text').val() || '').trim();
     const fileName = String($('#st-hw-filename').val() || 'homework.zip').trim();
     if (!responseText) return;
 
-    const state = loadDbState();
-    const student = getActiveStudent(state);
-    const existing = state.submissions.find(
-      (s) => s.assignmentId === hwId && s.studentId === student.id
-    );
+    const $btn = $('#btn-st-submit-hw');
+    if ($btn.prop('disabled')) return;
+    const origHtml = $btn.html();
+    $btn.prop('disabled', true).text('در حال ثبت در سرور...');
 
-    if (existing) {
-      existing.fileContent = responseText;
-      existing.fileName = fileName;
-      if (pendingStudentHwFileDataUrl) {
-        existing.fileDataUrl = pendingStudentHwFileDataUrl;
+    try {
+      const state = loadDbState();
+      const student = getActiveStudent(state);
+      const existing = state.submissions.find(
+        (s) => s.assignmentId === hwId && s.studentId === student.id
+      );
+
+      const nowFa = `${new Date().toLocaleDateString('fa-IR')} · هم‌اکنون`;
+
+      if (existing) {
+        existing.fileContent = responseText;
+        existing.fileName = fileName;
+        if (pendingStudentHwFileDataUrl) {
+          existing.fileDataUrl = pendingStudentHwFileDataUrl;
+        }
+        existing.submittedAt = nowFa;
+      } else {
+        state.submissions.unshift({
+          id: Date.now(),
+          assignmentId: hwId,
+          studentId: student.id,
+          studentName: `${student.firstName} ${student.lastName}`,
+          classCode: student.classCode || '901',
+          fileName,
+          fileContent: responseText,
+          fileDataUrl: pendingStudentHwFileDataUrl || undefined,
+          submittedAt: nowFa,
+          score: null,
+          teacherFeedback: '',
+          status: 'pending',
+        });
       }
-      existing.submittedAt = '۱۴۰۵/۰۸/۱۵ · هم‌اکنون';
-    } else {
-      state.submissions.unshift({
-        id: Date.now(),
-        assignmentId: hwId,
-        studentId: student.id,
-        studentName: `${student.firstName} ${student.lastName}`,
-        classCode: student.classCode || '901',
-        fileName,
-        fileContent: responseText,
-        fileDataUrl: pendingStudentHwFileDataUrl || undefined,
-        submittedAt: '۱۴۰۵/۰۸/۱۵ · هم‌اکنون',
-        score: null,
-        teacherFeedback: '',
-        status: 'pending',
-      });
-    }
 
-    logAdminActivity(
-      state,
-      `ارسال تکلیف توسط ${student.firstName} ${student.lastName}`,
-      `فایل: ${fileName}`,
-      'assignment'
-    );
-    saveDbState(state);
-    studentHwSubView = 'list';
-    updateBrowserUrl('/student/assignments');
-    renderActiveStudentSection();
-    showToast('تکلیف ارسال شد', 'پاسخ و فایل تکلیف شما با موفقیت برای مدرس ارسال گردید.', 'success');
+      logAdminActivity(
+        state,
+        `ارسال تکلیف توسط ${student.firstName} ${student.lastName}`,
+        `فایل: ${fileName}`,
+        'assignment',
+        true
+      );
+      const saved = await persistDbState(state);
+      if (!saved.success) {
+        showToast('خطا در ارسال تکلیف', saved.message, 'error');
+        return;
+      }
+
+      studentHwSubView = 'list';
+      updateBrowserUrl('/student/assignments');
+      renderActiveStudentSection();
+      showToast('تکلیف ارسال شد', 'پاسخ و فایل تکلیف شما با موفقیت در پایگاه داده ثبت گردید.', 'success');
+    } finally {
+      $btn.prop('disabled', false).html(origHtml);
+    }
   });
 
   // Student Grades Detail Modal
@@ -1632,13 +2025,16 @@ export function initStudentPanelEvents(): void {
     renderActiveStudentSection('#st-announcement-search');
   });
 
-  $(document).on('click', '.js-st-mark-ann-read', function () {
-    const annId = Number($(this).attr('data-id'));
+  $(document).on('click', '.js-st-mark-ann-read', async function () {
+    const $btn = $(this);
+    if ($btn.prop('disabled')) return;
+    const annId = Number($btn.attr('data-id'));
     const state = loadDbState();
     const student = getActiveStudent(state);
     const ann = state.announcements.find((a) => a.id === annId);
     if (!ann) return;
 
+    $btn.prop('disabled', true).text('در حال ثبت...');
     if (!ann.readers) {
       ann.readers = [];
     }
@@ -1648,15 +2044,21 @@ export function initStudentPanelEvents(): void {
         studentId: student.id,
         studentName: `${student.firstName} ${student.lastName}`,
         classCode: student.classCode || '901',
-        readAt: '۱۴۰۵/۰۸/۱۵ · هم‌اکنون',
+        readAt: `${new Date().toLocaleDateString('fa-IR')} · هم‌اکنون`,
       });
-      saveDbState(state);
+    }
+
+    const saved = await persistDbState(state);
+    if (!saved.success) {
+      $btn.prop('disabled', false).text('خوانده شد');
+      showToast('خطا در ثبت وضعیت مطالعه', saved.message, 'error');
+      return;
     }
 
     renderActiveStudentSection();
     showToast(
       'اطلاعیه خوانده شد',
-      'وضعیت مطالعه اطلاعیه ثبت گردید و از شمارنده اطلاعیه‌های جدید کسر شد.',
+      'وضعیت مطالعه اطلاعیه در پایگاه داده ثبت گردید و از شمارنده اطلاعیه‌های جدید کسر شد.',
       'success'
     );
   });
@@ -1665,6 +2067,8 @@ export function initStudentPanelEvents(): void {
   $(document).on('click', '#btn-st-open-create-ticket', function () {
     pendingNewTicketFileName = '';
     pendingNewTicketFileDataUrl = '';
+    isUploadingNewTicketFile = false;
+    lastSelectedNewTicketFile = null;
     studentTicketSubView = 'create';
     updateBrowserUrl('/student/tickets/create');
     renderActiveStudentSection();
@@ -1681,116 +2085,163 @@ export function initStudentPanelEvents(): void {
     if (!file) {
       pendingNewTicketFileName = '';
       pendingNewTicketFileDataUrl = '';
+      renderUploadProgressWidget('#st-new-ticket-upload-progress', { status: 'idle' });
       $('#st-new-ticket-file-name').text('فایلی انتخاب نشده است');
       return;
     }
-    pendingNewTicketFileName = file.name;
-    $('#st-new-ticket-file-name').text(`فایل انتخاب‌شده: ${toPersianDigits(file.name)}`);
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      pendingNewTicketFileDataUrl = String(ev.target?.result || '');
-    };
-    reader.readAsDataURL(file);
+    void startNewTicketFileUpload(file);
+  });
+
+  $(document).on('click', '.js-retry-st-new-ticket-upload', function () {
+    if (lastSelectedNewTicketFile) {
+      void startNewTicketFileUpload(lastSelectedNewTicketFile);
+    }
   });
 
   $(document).on('click', '.js-st-select-ticket', function () {
     activeStudentTicketId = Number($(this).attr('data-id'));
     pendingStudentTicketFileName = '';
     pendingStudentTicketFileDataUrl = '';
+    isUploadingReplyTicketFile = false;
+    lastSelectedReplyTicketFile = null;
     renderActiveStudentSection();
   });
 
-  $(document).on('submit', '#form-student-new-ticket', function (e) {
+  $(document).on('submit', '#form-student-new-ticket', async function (e) {
     e.preventDefault();
+    if (isUploadingNewTicketFile) {
+      showToast('در حال آپلود پیوست', 'لطفاً تا پایان آپلود فایل ضمیمه صبر کنید.', 'info');
+      return;
+    }
+
     const subject = String($('#st-new-ticket-subject').val() || '').trim();
-    const priority = (String($('#st-new-ticket-priority').val() || 'عادی') as
+    const priority = String($('#st-new-ticket-priority').val() || 'عادی') as
       | 'عادی'
       | 'مهم'
-      | 'فوری');
+      | 'فوری';
     const msg = String($('#st-new-ticket-msg').val() || '').trim();
     if (!subject || !msg) return;
 
-    const state = loadDbState();
-    const student = getActiveStudent(state);
-    const newTicketId = Date.now();
+    const $btn = $('#btn-st-submit-new-ticket');
+    if ($btn.prop('disabled')) return;
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال ارسال تیکت...');
 
-    state.tickets.unshift({
-      id: newTicketId,
-      studentId: student.id,
-      studentName: `${student.firstName} ${student.lastName}`,
-      studentPhone: student.phone,
-      classCode: student.classCode || '901',
-      subject,
-      priority,
-      status: 'در انتظار پاسخ',
-      createdAt: '۱۴۰۵/۰۸/۱۵ · هم‌اکنون',
-      messages: [
-        {
-          id: Date.now() + 1,
-          senderRole: 'student',
-          senderName: `${student.firstName} ${student.lastName}`,
-          message: msg,
-          sentAt: '۱۴۰۵/۰۸/۱۵ · هم‌اکنون',
-          attachmentName: pendingNewTicketFileName || undefined,
-          attachmentDataUrl: pendingNewTicketFileDataUrl || undefined,
-        },
-      ],
-    });
+    try {
+      const state = loadDbState();
+      const student = getActiveStudent(state);
+      const newTicketId = Date.now();
+      const nowFa = `${new Date().toLocaleDateString('fa-IR')} · هم‌اکنون`;
 
-    logAdminActivity(
-      state,
-      `ثبت تیکت جدید توسط ${student.firstName} ${student.lastName}`,
-      `موضوع: ${subject}`,
-      'ticket'
-    );
-    pendingNewTicketFileName = '';
-    pendingNewTicketFileDataUrl = '';
-    activeStudentTicketId = newTicketId;
-    studentTicketSubView = 'list';
-    saveDbState(state);
-    updateBrowserUrl('/student/tickets');
-    renderActiveStudentSection();
-    showToast('تیکت ارسال شد', 'تیکت جدید شما با موفقیت برای مدرس ثبت گردید.', 'success');
+      state.tickets.unshift({
+        id: newTicketId,
+        studentId: student.id,
+        studentName: `${student.firstName} ${student.lastName}`,
+        studentPhone: student.phone,
+        classCode: student.classCode || '901',
+        subject,
+        priority,
+        status: 'در انتظار پاسخ',
+        createdAt: nowFa,
+        messages: [
+          {
+            id: Date.now() + 1,
+            senderRole: 'student',
+            senderName: `${student.firstName} ${student.lastName}`,
+            message: msg,
+            sentAt: nowFa,
+            attachmentName: pendingNewTicketFileName || undefined,
+            attachmentDataUrl: pendingNewTicketFileDataUrl || undefined,
+          },
+        ],
+      });
+
+      logAdminActivity(
+        state,
+        `ثبت تیکت جدید توسط ${student.firstName} ${student.lastName}`,
+        `موضوع: ${subject}`,
+        'ticket',
+        true
+      );
+
+      const saved = await persistDbState(state);
+      if (!saved.success) {
+        showToast('خطا در ثبت تیکت', saved.message, 'error');
+        return;
+      }
+
+      pendingNewTicketFileName = '';
+      pendingNewTicketFileDataUrl = '';
+      activeStudentTicketId = newTicketId;
+      studentTicketSubView = 'list';
+      updateBrowserUrl('/student/tickets');
+      renderActiveStudentSection();
+      showToast('تیکت ارسال شد', 'تیکت جدید شما با موفقیت در پایگاه داده ثبت گردید.', 'success');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 
   $(document).on('change', '#st-ticket-reply-file', function (this: HTMLInputElement) {
     const file = this.files && this.files[0];
     if (!file) return;
-    pendingStudentTicketFileName = file.name;
-    $('#st-ticket-attached-name').text(`پیوست: ${toPersianDigits(file.name)}`);
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      pendingStudentTicketFileDataUrl = String(ev.target?.result || '');
-    };
-    reader.readAsDataURL(file);
+    void startReplyTicketFileUpload(file);
   });
 
-  $(document).on('submit', '#form-student-reply-ticket', function (e) {
+  $(document).on('click', '.js-retry-st-reply-ticket-upload', function () {
+    if (lastSelectedReplyTicketFile) {
+      void startReplyTicketFileUpload(lastSelectedReplyTicketFile);
+    }
+  });
+
+  $(document).on('submit', '#form-student-reply-ticket', async function (e) {
     e.preventDefault();
+    if (isUploadingReplyTicketFile) {
+      showToast('در حال آپلود پیوست', 'لطفاً تا تکمیل آپلود فایل ضمیمه صبر کنید.', 'info');
+      return;
+    }
+
     const ticketId = Number($(this).attr('data-id'));
     const text = String($('#st-ticket-reply-text').val() || '').trim();
     if (!text) return;
 
-    const state = loadDbState();
-    const student = getActiveStudent(state);
-    const tk = state.tickets.find((t) => t.id === ticketId);
-    if (!tk) return;
+    const $btn = $('#btn-st-submit-reply-ticket');
+    if ($btn.prop('disabled')) return;
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال ارسال...');
 
-    tk.messages.push({
-      id: Date.now(),
-      senderRole: 'student',
-      senderName: `${student.firstName} ${student.lastName}`,
-      message: text,
-      sentAt: '۱۴۰۵/۰۸/۱۵ · هم‌اکنون',
-      attachmentName: pendingStudentTicketFileName || undefined,
-      attachmentDataUrl: pendingStudentTicketFileDataUrl || undefined,
-    });
-    tk.status = 'در انتظار پاسخ';
-    pendingStudentTicketFileName = '';
-    pendingStudentTicketFileDataUrl = '';
-    saveDbState(state);
-    renderActiveStudentSection();
-    showToast('پیام ارسال شد', 'پیام شما در تیکت ثبت گردید.', 'success');
+    try {
+      const state = loadDbState();
+      const student = getActiveStudent(state);
+      const tk = state.tickets.find((t) => t.id === ticketId);
+      if (!tk) return;
+
+      const nowFa = `${new Date().toLocaleDateString('fa-IR')} · هم‌اکنون`;
+
+      tk.messages.push({
+        id: Date.now(),
+        senderRole: 'student',
+        senderName: `${student.firstName} ${student.lastName}`,
+        message: text,
+        sentAt: nowFa,
+        attachmentName: pendingStudentTicketFileName || undefined,
+        attachmentDataUrl: pendingStudentTicketFileDataUrl || undefined,
+      });
+      tk.status = 'در انتظار پاسخ';
+
+      const saved = await persistDbState(state);
+      if (!saved.success) {
+        showToast('خطا در ارسال پیام', saved.message, 'error');
+        return;
+      }
+
+      pendingStudentTicketFileName = '';
+      pendingStudentTicketFileDataUrl = '';
+      renderActiveStudentSection();
+      showToast('پیام ارسال شد', 'پیام شما در تیکت با موفقیت ذخیره گردید.', 'success');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 
   $(document).on('click', '.js-st-download-ticket-file', function () {
@@ -1804,48 +2255,120 @@ export function initStudentPanelEvents(): void {
     triggerStudentFileDownload(msg.attachmentName, msg.attachmentDataUrl, msg.message);
   });
 
-  // Student Profile Save, Avatar Upload & Delete Avatar
-  $(document).on('change', '#st-prof-avatar-upload', function (this: HTMLInputElement) {
+  // Student Profile Save, Avatar Upload & Delete Avatar (Persisted in MySQL)
+  $(document).on('change', '#st-prof-avatar-upload', async function (this: HTMLInputElement) {
     const file = this.files && this.files[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const dataUrl = String(ev.target?.result || '');
-      if (!dataUrl) return;
+
+    const uploadRes = await uploadFileWithProgress(file);
+    if (!uploadRes.success || !uploadRes.fileUrl) {
+      showToast(
+        'خطا در آپلود تصویر',
+        uploadRes.message || 'آپلود تصویر پروفایل ناموفق بود.',
+        'error'
+      );
+      return;
+    }
+
+    const cacheBustedUrl = `${uploadRes.fileUrl}?v=${Date.now()}`;
+    const state = loadDbState();
+    const student = getActiveStudent(state);
+
+    const apiRes = await updateStudentProfileApi({
+      id: student.id,
+      firstName: student.firstName,
+      lastName: student.lastName,
+      avatarUrl: cacheBustedUrl,
+      avatarRemoved: false,
+    });
+
+    if (!apiRes.success) {
+      showToast('خطا در ذخیره تصویر پروفایل', apiRes.message, 'error');
+      return;
+    }
+
+    student.avatarUrl = cacheBustedUrl;
+    student.avatarRemoved = false;
+    await persistDbState(state);
+    renderActiveStudentSection();
+    showToast('تصویر پروفایل ذخیره شد', 'عکس جدید پروفایل شما در پایگاه داده ثبت گردید.', 'success');
+  });
+
+  $(document).on('click', '#btn-st-delete-avatar', async function () {
+    const $btn = $(this);
+    if ($btn.prop('disabled')) return;
+    $btn.prop('disabled', true);
+
+    try {
       const state = loadDbState();
       const student = getActiveStudent(state);
-      student.avatarUrl = dataUrl;
-      student.avatarRemoved = false;
-      saveDbState(state);
+
+      const apiRes = await updateStudentProfileApi({
+        id: student.id,
+        firstName: student.firstName,
+        lastName: student.lastName,
+        avatarUrl: '',
+        avatarRemoved: true,
+      });
+
+      if (!apiRes.success) {
+        showToast('خطا در حذف تصویر', apiRes.message, 'error');
+        return;
+      }
+
+      student.avatarUrl = '';
+      student.avatarRemoved = true;
+      await persistDbState(state);
       renderActiveStudentSection();
-      showToast('تصویر پروفایل ذخیره شد', 'عکس جدید پروفایل شما ثبت گردید.', 'success');
-    };
-    reader.readAsDataURL(file);
+      showToast('تصویر پروفایل حذف شد', 'عکس پروفایل شما در پایگاه داده حذف گردید.', 'info');
+    } finally {
+      $btn.prop('disabled', false);
+    }
   });
 
-  $(document).on('click', '#btn-st-delete-avatar', function () {
-    const state = loadDbState();
-    const student = getActiveStudent(state);
-    student.avatarUrl = '';
-    student.avatarRemoved = true;
-    saveDbState(state);
-    renderActiveStudentSection();
-    showToast('تصویر پروفایل حذف شد', 'عکس پروفایل شما با موفقیت حذف گردید.', 'info');
-  });
-
-  $(document).on('submit', '#form-student-profile-save', function (e) {
+  $(document).on('submit', '#form-student-profile-save', async function (e) {
     e.preventDefault();
-    const state = loadDbState();
-    const student = getActiveStudent(state);
-    student.firstName = String($('#st-prof-firstname').val() || '').trim();
-    student.lastName = String($('#st-prof-lastname').val() || '').trim();
-    student.phone = normalizeDigits(String($('#st-prof-phone').val() || ''));
-    saveDbState(state);
-    renderActiveStudentSection();
-    showToast('پروفایل بروزرسانی شد', 'اطلاعات شما با موفقیت ذخیره گردید.', 'success');
+    const firstName = String($('#st-prof-firstname').val() || '').trim();
+    const lastName = String($('#st-prof-lastname').val() || '').trim();
+    if (firstName.length < 2 || lastName.length < 2) {
+      showToast('اطلاعات نامعتبر', 'نام و نام خانوادگی باید حداقل ۲ کاراکتر باشند.', 'error');
+      return;
+    }
+
+    const $btn = $('#btn-st-save-profile');
+    if ($btn.prop('disabled')) return;
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال ذخیره...');
+
+    try {
+      const state = loadDbState();
+      const student = getActiveStudent(state);
+
+      // Phone number is strictly read-only and never modified by student
+      const apiRes = await updateStudentProfileApi({
+        id: student.id,
+        firstName,
+        lastName,
+        avatarUrl: student.avatarUrl,
+        avatarRemoved: student.avatarRemoved,
+      });
+
+      if (!apiRes.success) {
+        showToast('خطا در بروزرسانی پروفایل', apiRes.message, 'error');
+        return;
+      }
+
+      student.firstName = firstName;
+      student.lastName = lastName;
+      await persistDbState(state);
+      renderActiveStudentSection();
+      showToast('پروفایل بروزرسانی شد', apiRes.message, 'success');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 
-  $(document).on('submit', '#form-student-change-pass', function (e) {
+  $(document).on('submit', '#form-student-change-pass', async function (e) {
     e.preventDefault();
     const newPass = String($('#st-new-pass').val() || '');
     const confirmPass = String($('#st-confirm-pass').val() || '');
@@ -1853,11 +2376,32 @@ export function initStudentPanelEvents(): void {
       showToast('خطا در رمز عبور', 'رمز عبور باید حداقل ۶ کاراکتر و با تکرار آن یکسان باشد.', 'error');
       return;
     }
-    const state = loadDbState();
-    const student = getActiveStudent(state);
-    student.password = newPass;
-    saveDbState(state);
-    renderActiveStudentSection();
-    showToast('رمز عبور تغییر کرد', 'رمز عبور جدید شما با موفقیت ثبت شد.', 'success');
+
+    const $btn = $('#btn-st-save-password');
+    if ($btn.prop('disabled')) return;
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال بروزرسانی...');
+
+    try {
+      const state = loadDbState();
+      const student = getActiveStudent(state);
+
+      const apiRes = await changeStudentPasswordApi({
+        studentId: student.id,
+        newPassword: newPass,
+      });
+
+      if (!apiRes.success) {
+        showToast('خطا در تغییر رمز عبور', apiRes.message, 'error');
+        return;
+      }
+
+      $('#st-new-pass').val('');
+      $('#st-confirm-pass').val('');
+      renderActiveStudentSection();
+      showToast('رمز عبور تغییر کرد', apiRes.message, 'success');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 }

@@ -143,6 +143,9 @@ export interface AnnouncementItem {
   title: string;
   content: string;
   targetClasses: TargetClassScope;
+  targetStudentId?: number;
+  assignmentId?: number;
+  notificationType?: 'general' | 'assignment' | 'feedback';
   priority: 'عادی' | 'مهم' | 'فوری';
   createdAt: string;
   readers?: AnnouncementReaderLog[];

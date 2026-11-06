@@ -225,6 +225,58 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    name: '004_full_persistence_and_uploads',
+    up: async (conn: PoolConnection) => {
+      // 1. Add avatar_url column to admins if missing
+      const [adminCols] = await conn.query<RowDataPacket[]>(
+        `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'admins' AND COLUMN_NAME = 'avatar_url'`
+      );
+      if (adminCols.length === 0) {
+        await conn.query(
+          `ALTER TABLE \`admins\` ADD COLUMN \`avatar_url\` LONGTEXT NULL AFTER \`bio\``
+        );
+      }
+
+      // 2. Add avatar_url and avatar_removed columns to students if missing
+      const [studentCols] = await conn.query<RowDataPacket[]>(
+        `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'students' AND COLUMN_NAME IN ('avatar_url', 'avatar_removed')`
+      );
+      const existingStCols = new Set(studentCols.map((r) => String(r.COLUMN_NAME)));
+      if (!existingStCols.has('avatar_url')) {
+        await conn.query(
+          `ALTER TABLE \`students\` ADD COLUMN \`avatar_url\` LONGTEXT NULL AFTER \`notes\``
+        );
+      }
+      if (!existingStCols.has('avatar_removed')) {
+        await conn.query(
+          `ALTER TABLE \`students\` ADD COLUMN \`avatar_removed\` TINYINT(1) NOT NULL DEFAULT 0 AFTER \`avatar_url\``
+        );
+      }
+
+      // 3. Relax ENUM columns on class_code / code so custom classes and unassigned students ('') persist in MySQL
+      await conn.query(
+        `ALTER TABLE \`classes\` MODIFY COLUMN \`code\` VARCHAR(20) NOT NULL`
+      );
+      await conn.query(
+        `ALTER TABLE \`students\` MODIFY COLUMN \`class_code\` VARCHAR(20) NOT NULL DEFAULT ''`
+      );
+      await conn.query(
+        `ALTER TABLE \`assignments\` MODIFY COLUMN \`class_code\` VARCHAR(20) NOT NULL DEFAULT 'all'`
+      );
+      await conn.query(
+        `ALTER TABLE \`class_schedules\` MODIFY COLUMN \`class_code\` VARCHAR(20) NOT NULL DEFAULT '901'`
+      );
+      await conn.query(
+        `ALTER TABLE \`educational_resources\` MODIFY COLUMN \`class_code\` VARCHAR(20) NOT NULL DEFAULT 'all'`
+      );
+      await conn.query(
+        `ALTER TABLE \`tickets\` MODIFY COLUMN \`class_code\` VARCHAR(20) NOT NULL DEFAULT ''`
+      );
+    },
+  },
 ];
 
 /**

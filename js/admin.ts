@@ -1,7 +1,21 @@
 import $ from 'jquery';
+import {
+  adminCreateStudentApi,
+  adminUpdateStudentApi,
+  changeAdminPasswordApi,
+  updateAdminProfileApi,
+} from './api';
 import { showToast } from './modal';
 import { AppRoutePath, updateBrowserUrl } from './router';
-import { loadDbState, logAdminActivity, resetDbState, saveDbState } from './store';
+import {
+  loadDbState,
+  logAdminActivity,
+  onDbStateSynced,
+  persistDbState,
+  resetDbState,
+  saveDbState,
+  uploadFileWithProgress,
+} from './store';
 import {
   AdminSectionId,
   AttendanceStatus,
@@ -32,6 +46,8 @@ let activeAssignmentDetailId: number | null = null;
 let activeSubmissionId: number | null = null;
 let pendingAssignmentAttachmentName = '';
 let pendingAssignmentAttachmentDataUrl = '';
+let isUploadingAdminHwFile = false;
+let lastAdminHwFile: File | null = null;
 
 // Educational Resources state & dedicated sub-page
 let resourceFilter = 'all';
@@ -42,6 +58,8 @@ let activeResourceDetailId: number | null = null;
 let pendingResourceFileName = '';
 let pendingResourceFileDataUrl = '';
 let pendingResourceFileSize = '';
+let isUploadingAdminResourceFile = false;
+let lastAdminResourceFile: File | null = null;
 
 // Announcements state
 let announcementFilter = 'all';
@@ -52,9 +70,11 @@ let ticketFilter: 'all' | 'در انتظار پاسخ' | 'پاسخ داده شد
 let activeTicketId: number | null = null;
 let pendingTicketAttachmentName = '';
 let pendingTicketAttachmentDataUrl = '';
+let isUploadingAdminTicketFile = false;
+let lastAdminTicketFile: File | null = null;
 
 // Confirmation modal callback
-let pendingConfirmCallback: (() => void) | null = null;
+let pendingConfirmCallback: (() => void | Promise<void>) | null = null;
 
 function formatClassLabel(code: TargetClassScope): string {
   if (!code || code === '-') return '—';
@@ -66,6 +86,76 @@ function formatStatusLabel(status: 'pending' | 'approved' | 'rejected'): string 
   if (status === 'pending') return 'در انتظار تأیید';
   if (status === 'approved') return 'تأیید شده';
   return 'رد شده';
+}
+
+/**
+ * Render inline XHR upload progress bar (0%–100%), completion badge, or error + retry button
+ */
+function renderAdminUploadProgressWidget(
+  containerSelector: string,
+  state: {
+    status: 'idle' | 'uploading' | 'success' | 'error';
+    percent?: number;
+    fileName?: string;
+    fileSize?: string;
+    errorMessage?: string;
+    retryActionClass?: string;
+  }
+): void {
+  const $box = $(containerSelector);
+  if (!$box.length) return;
+
+  if (state.status === 'idle') {
+    $box.html('').addClass('hidden');
+    return;
+  }
+
+  $box.removeClass('hidden');
+  const pct = Math.max(0, Math.min(100, Number(state.percent || 0)));
+
+  if (state.status === 'uploading') {
+    $box.html(`
+      <div class="p-3 rounded-xl bg-[#FDFBF7] border border-[#D4C3AE] space-y-2 mt-2">
+        <div class="flex items-center justify-between text-xs font-extrabold text-[#251B15]">
+          <span>در حال آپلود فایل «${toPersianDigits(state.fileName || '')}» در سرور...</span>
+          <span class="tabular-nums text-[#1B5E5A]">${toPersianDigits(pct)}٪</span>
+        </div>
+        <div class="w-full h-2.5 bg-[#E6D8C5] rounded-full overflow-hidden">
+          <div class="h-full bg-[#1B5E5A] transition-all duration-150 rounded-full" style="width: ${pct}%;"></div>
+        </div>
+      </div>
+    `);
+    return;
+  }
+
+  if (state.status === 'success') {
+    $box.html(`
+      <div class="p-2.5 rounded-xl bg-[#ECFDF5] border border-[#A7F3D0] flex items-center justify-between gap-2 mt-2">
+        <div class="flex items-center gap-2 text-xs font-extrabold text-[#059669]">
+          <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+          </svg>
+          <span>فایل «${toPersianDigits(state.fileName || '')}» با موفقیت آپلود شد (${toPersianDigits(100)}٪${state.fileSize ? ` · ${toPersianDigits(state.fileSize)}` : ''})</span>
+        </div>
+      </div>
+    `);
+    return;
+  }
+
+  if (state.status === 'error') {
+    $box.html(`
+      <div class="p-3 rounded-xl bg-[#FFF1F2] border border-[#FECDD3] flex items-center justify-between gap-3 flex-wrap mt-2">
+        <div class="text-xs font-extrabold text-[#E11D48]">
+          خطا در آپلود فایل: ${toPersianDigits(state.errorMessage || 'ارتباط با سرور برقرار نشد.')}
+        </div>
+        ${
+          state.retryActionClass
+            ? `<button type="button" class="btn-admin-action !h-8 !px-3 !text-xs ${state.retryActionClass}">تلاش مجدد آپلود</button>`
+            : ''
+        }
+      </div>
+    `);
+  }
 }
 
 /**
@@ -82,7 +172,7 @@ function renderStudentAvatarHtml(
       ? `student-avatar-lg student-portrait-lg-${portraitIdx}`
       : `student-avatar-sm student-portrait-${portraitIdx}`;
 
-  if (student.avatarUrl) {
+  if (student.avatarUrl && !student.avatarRemoved) {
     return `<div class="${baseClass} has-custom-avatar" style="background-image: url('${student.avatarUrl}');" role="img" aria-label="تصویر ${fullName}"></div>`;
   }
   if (student.avatarRemoved) {
@@ -106,6 +196,26 @@ function triggerFileDownload(
 ): void {
   const cleanName = fileName.trim() || 'scoolmeet-attachment.txt';
 
+  if (
+    dataUrl &&
+    (dataUrl.startsWith('/uploads/') ||
+      dataUrl.startsWith('http://') ||
+      dataUrl.startsWith('https://'))
+  ) {
+    const sep = dataUrl.includes('?') ? '&' : '?';
+    const downloadHref = dataUrl.startsWith('/uploads/')
+      ? `${dataUrl}${sep}download=1&name=${encodeURIComponent(cleanName)}`
+      : dataUrl;
+    const link = document.createElement('a');
+    link.href = downloadHref;
+    link.download = cleanName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast('دانلود فایل آغاز شد', `فایل «${toPersianDigits(cleanName)}» با موفقیت دانلود شد.`, 'success');
+    return;
+  }
+
   if (dataUrl && dataUrl.startsWith('data:')) {
     const link = document.createElement('a');
     link.href = dataUrl;
@@ -119,7 +229,7 @@ function triggerFileDownload(
 
   const content =
     fallbackTextContent ||
-    `سامانه آموزشی اسکول میت (ScoolMeet)\nنام فایل: ${cleanName}\nتاریخ دریافت: ۱۴۰۵/۰۸/۱۵\n\nاین فایل ضمیمه از سامانه اسکول میت دریافت شده است.`;
+    `سامانه آموزشی اسکول میت (ScoolMeet)\nنام فایل: ${cleanName}\nتاریخ دریافت: ${new Date().toLocaleDateString('fa-IR')}\n\nاین فایل ضمیمه از سامانه اسکول میت دریافت شده است.`;
   const blob = new Blob([content], { type: 'application/octet-stream;charset=utf-8' });
   const objectUrl = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -1179,6 +1289,7 @@ function renderAssignmentFormPage($container: JQuery<HTMLElement>, state: Databa
                 </label>
                 <input type="file" id="hw-file-upload" class="hidden" />
               </div>
+              <div id="admin-hw-upload-progress" class="hidden"></div>
             </div>
           </div>
 
@@ -1196,7 +1307,7 @@ function renderAssignmentFormPage($container: JQuery<HTMLElement>, state: Databa
             <button type="button" class="btn-admin-action !h-10 js-back-to-assignments-list">
               انصراف و بازگشت
             </button>
-            <button type="submit" class="btn-admin-primary !h-10">
+            <button type="submit" id="btn-save-hw-submit" class="btn-admin-primary !h-10">
               ${editingItem ? 'ذخیره تغییرات تکلیف' : 'ثبت و انتشار تکلیف جدید'}
             </button>
           </div>
@@ -1738,6 +1849,7 @@ function renderResourceFormPage($container: JQuery<HTMLElement>, state: Database
               </label>
               <input type="file" id="res-file-upload" class="hidden" />
             </div>
+            <div id="admin-res-upload-progress" class="hidden"></div>
           </div>
 
           <div>
@@ -1754,7 +1866,7 @@ function renderResourceFormPage($container: JQuery<HTMLElement>, state: Database
             <button type="button" class="btn-admin-action !h-10 js-back-to-resources-list">
               انصراف و بازگشت
             </button>
-            <button type="submit" class="btn-admin-primary !h-10">
+            <button type="submit" id="btn-save-resource-submit" class="btn-admin-primary !h-10">
               ${editingRes ? 'ذخیره تغییرات منبع آموزشی' : 'ثبت و انتشار منبع آموزشی'}
             </button>
           </div>
@@ -2191,6 +2303,8 @@ function renderTicketsSection($container: JQuery<HTMLElement>, state: DatabaseSt
                 ></textarea>
               </div>
 
+              <div id="admin-ticket-upload-progress" class="hidden"></div>
+
               <!-- بخش پیوست فایل در تیکت -->
               <div class="flex items-center justify-between gap-2 flex-wrap">
                 <div class="flex items-center gap-2">
@@ -2209,7 +2323,7 @@ function renderTicketsSection($container: JQuery<HTMLElement>, state: DatabaseSt
                   </span>
                 </div>
 
-                <button type="submit" class="btn-admin-primary">
+                <button type="submit" id="btn-admin-reply-ticket-submit" class="btn-admin-primary">
                   ارسال پاسخ تیکت
                 </button>
               </div>
@@ -2456,6 +2570,24 @@ function openStudentProfileModal(studentId: number): void {
  * Bind Delegated Event Listeners for the Admin Panel
  */
 export function initAdminPanelEvents(): void {
+  // Automatically re-render active Admin Panel view when backend state finishes syncing
+  onDbStateSynced(() => {
+    if ($('#admin-workspace-view').hasClass('view-hidden')) return;
+    const activeEl = document.activeElement as HTMLElement | null;
+    const isTypingInForm =
+      activeEl &&
+      (activeEl.tagName === 'INPUT' ||
+        activeEl.tagName === 'TEXTAREA' ||
+        activeEl.tagName === 'SELECT') &&
+      activeEl.id !== 'student-search-input' &&
+      activeEl.id !== 'assignment-search-input' &&
+      activeEl.id !== 'resource-search-input' &&
+      activeEl.id !== 'announcement-search-input';
+    if (!isTypingInForm) {
+      renderActiveSection();
+    }
+  });
+
   // Global Backdrop Click Closes Any Open Modal Across the Entire Project
   $(document).on('click', '.scool-modal-backdrop', function (e) {
     if (e.target === this) {
@@ -2541,8 +2673,11 @@ export function initAdminPanelEvents(): void {
     $('#admin-class-form-modal').addClass('is-open').attr('aria-hidden', 'false');
   });
 
-  $(document).on('submit', '#form-save-class-modal', function (e) {
+  $(document).on('submit', '#form-save-class-modal', async function (e) {
     e.preventDefault();
+    const $btn = $(this).find('button[type="submit"]');
+    if ($btn.prop('disabled')) return;
+
     const mode = String($('#cls-modal-mode').val());
     const rawCode = normalizeDigits(String($('#cls-modal-code').val() || '').trim());
     const capacity = Number(normalizeDigits(String($('#cls-modal-capacity').val() || '30'))) || 30;
@@ -2565,7 +2700,6 @@ export function initAdminPanelEvents(): void {
         cls.roomOrLink = roomOrLink;
         cls.description = description;
       }
-      showToast('کلاس ویرایش شد', `مشخصات کلاس ${toPersianDigits(rawCode)} بروزرسانی گردید.`, 'success');
     } else {
       if (state.classes.some((c) => c.code === rawCode)) {
         showToast('کد تکراری', `کلاس با کد ${toPersianDigits(rawCode)} قبلاً ثبت شده است.`, 'error');
@@ -2582,12 +2716,24 @@ export function initAdminPanelEvents(): void {
         description,
       });
       selectedClassTab = rawCode;
-      showToast('کلاس جدید ایجاد شد', `${toPersianDigits(title)} با موفقیت اضافه گردید.`, 'success');
     }
 
-    saveDbState(state);
-    $('#admin-class-form-modal').removeClass('is-open').attr('aria-hidden', 'true');
-    renderActiveSection();
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال ذخیره...');
+    try {
+      await persistDbState(state);
+      $('#admin-class-form-modal').removeClass('is-open').attr('aria-hidden', 'true');
+      renderActiveSection();
+      if (mode === 'edit') {
+        showToast('کلاس ویرایش شد', `مشخصات کلاس ${toPersianDigits(rawCode)} بروزرسانی گردید.`, 'success');
+      } else {
+        showToast('کلاس جدید ایجاد شد', `${toPersianDigits(title)} با موفقیت اضافه گردید.`, 'success');
+      }
+    } catch (err) {
+      showToast('خطا در ذخیره کلاس', err instanceof Error ? err.message : 'ارتباط با سرور برقرار نشد.', 'error');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 
   /* --------------------------------------------------------------------------
@@ -2603,20 +2749,29 @@ export function initAdminPanelEvents(): void {
       title: 'تأیید عضویت دانش‌آموز',
       message: `آیا از تأیید عضویت «${st.firstName} ${st.lastName}» اطمینان دارید؟`,
       confirmText: 'بله، تأیید شود',
-      onConfirm: () => {
-        const fresh = loadDbState();
-        const target = fresh.students.find((s) => s.id === id);
-        if (!target) return;
-        target.status = 'approved';
-        logAdminActivity(
-          fresh,
-          `تأیید عضویت دانش‌آموز (${target.firstName} ${target.lastName})`,
-          target.classCode ? `کلاس ${toPersianDigits(target.classCode)}` : 'بدون کلاس',
-          'student'
-        );
-        saveDbState(fresh);
-        renderActiveSection();
-        showToast('دانش‌آموز تأیید شد', `وضعیت ${target.firstName} ${target.lastName} به تأیید شده تغییر یافت.`, 'success');
+      onConfirm: async () => {
+        try {
+          const fresh = loadDbState();
+          const target = fresh.students.find((s) => s.id === id);
+          if (!target) return;
+          const res = await adminUpdateStudentApi(id, { status: 'approved' });
+          if (!res.success) {
+            showToast('خطا در تأیید دانش‌آموز', res.message || 'خطا در ثبت وضعیت.', 'error');
+            return;
+          }
+          target.status = 'approved';
+          logAdminActivity(
+            fresh,
+            `تأیید عضویت دانش‌آموز (${target.firstName} ${target.lastName})`,
+            target.classCode ? `کلاس ${toPersianDigits(target.classCode)}` : 'بدون کلاس',
+            'student'
+          );
+          await persistDbState(fresh);
+          renderActiveSection();
+          showToast('دانش‌آموز تأیید شد', `وضعیت ${target.firstName} ${target.lastName} به تأیید شده تغییر یافت.`, 'success');
+        } catch (err) {
+          showToast('خطا در تأیید دانش‌آموز', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+        }
       },
     });
   });
@@ -2632,14 +2787,23 @@ export function initAdminPanelEvents(): void {
       message: `آیا از رد کردن وضعیت «${st.firstName} ${st.lastName}» اطمینان دارید؟`,
       confirmText: 'بله، رد شود',
       isDanger: true,
-      onConfirm: () => {
-        const fresh = loadDbState();
-        const target = fresh.students.find((s) => s.id === id);
-        if (!target) return;
-        target.status = 'rejected';
-        saveDbState(fresh);
-        renderActiveSection();
-        showToast('وضعیت تغییر کرد', `درخواست ${target.firstName} ${target.lastName} رد شد.`, 'info');
+      onConfirm: async () => {
+        try {
+          const fresh = loadDbState();
+          const target = fresh.students.find((s) => s.id === id);
+          if (!target) return;
+          const res = await adminUpdateStudentApi(id, { status: 'rejected' });
+          if (!res.success) {
+            showToast('خطا در تغییر وضعیت', res.message || 'خطا در ثبت وضعیت.', 'error');
+            return;
+          }
+          target.status = 'rejected';
+          await persistDbState(fresh);
+          renderActiveSection();
+          showToast('وضعیت تغییر کرد', `درخواست ${target.firstName} ${target.lastName} رد شد.`, 'info');
+        } catch (err) {
+          showToast('خطا در تغییر وضعیت', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+        }
       },
     });
   });
@@ -2654,14 +2818,23 @@ export function initAdminPanelEvents(): void {
       title: 'بازنشانی وضعیت تأیید',
       message: `آیا می‌خواهید وضعیت «${st.firstName} ${st.lastName}» به حالت «در انتظار تأیید» بازنشانی شود؟`,
       confirmText: 'بله، بازنشانی شود',
-      onConfirm: () => {
-        const fresh = loadDbState();
-        const target = fresh.students.find((s) => s.id === id);
-        if (!target) return;
-        target.status = 'pending';
-        saveDbState(fresh);
-        renderActiveSection();
-        showToast('بازنشانی انجام شد', `وضعیت ${target.firstName} ${target.lastName} به در انتظار تأیید تغییر یافت.`, 'info');
+      onConfirm: async () => {
+        try {
+          const fresh = loadDbState();
+          const target = fresh.students.find((s) => s.id === id);
+          if (!target) return;
+          const res = await adminUpdateStudentApi(id, { status: 'pending' });
+          if (!res.success) {
+            showToast('خطا در بازنشانی وضعیت', res.message || 'خطا در ثبت وضعیت.', 'error');
+            return;
+          }
+          target.status = 'pending';
+          await persistDbState(fresh);
+          renderActiveSection();
+          showToast('بازنشانی انجام شد', `وضعیت ${target.firstName} ${target.lastName} به در انتظار تأیید تغییر یافت.`, 'info');
+        } catch (err) {
+          showToast('خطا در بازنشانی وضعیت', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+        }
       },
     });
   });
@@ -2678,8 +2851,11 @@ export function initAdminPanelEvents(): void {
     $('#admin-reset-pass-modal').addClass('is-open').attr('aria-hidden', 'false');
   });
 
-  $(document).on('submit', '#form-reset-student-pass', function (e) {
+  $(document).on('submit', '#form-reset-student-pass', async function (e) {
     e.preventDefault();
+    const $btn = $(this).find('button[type="submit"]');
+    if ($btn.prop('disabled')) return;
+
     const id = Number($('#reset-pass-student-id').val());
     const newPass = String($('#reset-pass-new-value').val() || '').trim();
     if (newPass.length < 6) {
@@ -2691,33 +2867,67 @@ export function initAdminPanelEvents(): void {
     const st = state.students.find((s) => s.id === id);
     if (!st) return;
 
-    st.password = newPass;
-    saveDbState(state);
-    $('#admin-reset-pass-modal').removeClass('is-open').attr('aria-hidden', 'true');
-    showToast('رمز عبور بازنشانی شد', `رمز عبور جدید برای ${st.firstName} ${st.lastName} ثبت گردید.`, 'success');
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال ذخیره...');
+    try {
+      const res = await adminUpdateStudentApi(id, { password: newPass });
+      if (!res.success) {
+        showToast('خطا در بازنشانی رمز عبور', res.message || 'خطا در ثبت رمز عبور جدید.', 'error');
+        return;
+      }
+      st.password = newPass;
+      await persistDbState(state);
+      $('#admin-reset-pass-modal').removeClass('is-open').attr('aria-hidden', 'true');
+      showToast('رمز عبور بازنشانی شد', `رمز عبور جدید برای ${st.firstName} ${st.lastName} ثبت گردید.`, 'success');
+    } catch (err) {
+      showToast('خطا در بازنشانی رمز عبور', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 
   // Upload custom student profile photo inside Student Profile Modal
-  $(document).on('change', '#student-modal-avatar-upload', function (this: HTMLInputElement) {
+  $(document).on('change', '#student-modal-avatar-upload', async function (this: HTMLInputElement) {
     const file = this.files && this.files[0];
     if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      showToast('فرمت نامعتبر', 'لطفاً یک فایل تصویری معتبر انتخاب کنید.', 'error');
+      this.value = '';
+      return;
+    }
     const studentId = Number($('#prof-modal-student-id').val());
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const dataUrl = String(ev.target?.result || '');
-      if (!dataUrl) return;
+    try {
+      const uploaded = await uploadFileWithProgress(file);
+      const cacheBustedUrl = `${uploaded.fileUrl}?v=${Date.now()}`;
+      const res = await adminUpdateStudentApi(studentId, {
+        avatarUrl: cacheBustedUrl,
+        avatarRemoved: false,
+      });
+      if (!res.success) {
+        showToast('خطا در ذخیره تصویر', res.message || 'تصویر پروفایل ذخیره نشد.', 'error');
+        return;
+      }
       const state = loadDbState();
       const st = state.students.find((s) => s.id === studentId);
-      if (!st) return;
-      st.avatarUrl = dataUrl;
-      saveDbState(state);
+      if (st) {
+        st.avatarUrl = cacheBustedUrl;
+        st.avatarRemoved = false;
+        await persistDbState(state);
+      }
       $('#student-modal-avatar-box')
         .addClass('has-custom-avatar')
-        .css('background-image', `url('${dataUrl}')`);
+        .css('background-image', `url('${cacheBustedUrl}')`);
       renderActiveSection();
-      showToast('عکس دانش‌آموز بروزرسانی شد', `تصویر پروفایل ${st.firstName} ${st.lastName} ذخیره گردید.`, 'success');
-    };
-    reader.readAsDataURL(file);
+      showToast(
+        'عکس دانش‌آموز بروزرسانی شد',
+        `تصویر پروفایل ${st ? `${st.firstName} ${st.lastName}` : 'دانش‌آموز'} در دیتابیس ذخیره گردید.`,
+        'success'
+      );
+    } catch (err) {
+      showToast('خطا در آپلود تصویر', err instanceof Error ? err.message : 'خطا در آپلود فایل', 'error');
+    } finally {
+      this.value = '';
+    }
   });
 
   // Remove student ONLY from class (keeps student in Students list with classCode = '')
@@ -2731,15 +2941,28 @@ export function initAdminPanelEvents(): void {
       message: `آیا از حذف «${st.firstName} ${st.lastName}» از کلاس ${toPersianDigits(st.classCode || 'فعلی')} اطمینان دارید؟ دانش‌آموز فقط از کلاس خارج شده و در لیست دانش‌آموزان باقی می‌ماند.`,
       confirmText: 'حذف از کلاس',
       isDanger: true,
-      onConfirm: () => {
-        const fresh = loadDbState();
-        const target = fresh.students.find((s) => s.id === studentId);
-        if (!target) return;
-        target.classCode = '';
-        saveDbState(fresh);
-        $('#admin-student-modal').removeClass('is-open').attr('aria-hidden', 'true');
-        renderActiveSection();
-        showToast('از کلاس حذف شد', `${target.firstName} ${target.lastName} از کلاس خارج گردید و در بخش دانش‌آموزان بدون کلاس (—) قرار گرفت.`, 'info');
+      onConfirm: async () => {
+        try {
+          const fresh = loadDbState();
+          const target = fresh.students.find((s) => s.id === studentId);
+          if (!target) return;
+          const res = await adminUpdateStudentApi(studentId, { classCode: '' });
+          if (!res.success) {
+            showToast('خطا در حذف از کلاس', res.message || 'خطا در بروزرسانی کلاس دانش‌آموز.', 'error');
+            return;
+          }
+          target.classCode = '';
+          await persistDbState(fresh);
+          $('#admin-student-modal').removeClass('is-open').attr('aria-hidden', 'true');
+          renderActiveSection();
+          showToast(
+            'از کلاس حذف شد',
+            `${target.firstName} ${target.lastName} از کلاس خارج گردید و در بخش دانش‌آموزان بدون کلاس (—) قرار گرفت.`,
+            'info'
+          );
+        } catch (err) {
+          showToast('خطا در حذف از کلاس', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+        }
       },
     });
   }
@@ -2755,17 +2978,36 @@ export function initAdminPanelEvents(): void {
   });
 
   // Change Student Class Directly from Table
-  $(document).on('change', '.js-change-student-class', function () {
-    const id = Number($(this).attr('data-id'));
-    const newClass = String($(this).val() || '');
+  $(document).on('change', '.js-change-student-class', async function () {
+    const $sel = $(this);
+    const id = Number($sel.attr('data-id'));
+    const newClass = String($sel.val() || '');
     const state = loadDbState();
     const st = state.students.find((s) => s.id === id);
     if (!st) return;
 
-    st.classCode = newClass;
-    saveDbState(state);
-    renderActiveSection();
-    showToast('انتقال کلاس انجام شد', `${st.firstName} ${st.lastName} به کلاس ${toPersianDigits(newClass)} منتقل شد.`, 'success');
+    $sel.prop('disabled', true);
+    try {
+      const res = await adminUpdateStudentApi(id, { classCode: newClass });
+      if (!res.success) {
+        showToast('خطا در انتقال کلاس', res.message || 'تغییر کلاس ذخیره نشد.', 'error');
+        renderActiveSection();
+        return;
+      }
+      st.classCode = newClass;
+      await persistDbState(state);
+      renderActiveSection();
+      showToast(
+        'انتقال کلاس انجام شد',
+        `${st.firstName} ${st.lastName} به ${newClass ? `کلاس ${toPersianDigits(newClass)}` : 'بخش بدون کلاس'} منتقل شد.`,
+        'success'
+      );
+    } catch (err) {
+      showToast('خطا در انتقال کلاس', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+      renderActiveSection();
+    } finally {
+      $sel.prop('disabled', false);
+    }
   });
 
   // Students Filters & Search
@@ -2785,24 +3027,60 @@ export function initAdminPanelEvents(): void {
     openStudentProfileModal(id);
   });
 
-  $('#form-edit-student-profile').on('submit', function (e) {
+  $('#form-edit-student-profile').on('submit', async function (e) {
     e.preventDefault();
+    const $btn = $(this).find('button[type="submit"]');
+    if ($btn.prop('disabled')) return;
+
     const id = Number($('#prof-modal-student-id').val());
     const state = loadDbState();
     const st = state.students.find((s) => s.id === id);
     if (!st) return;
 
-    st.firstName = String($('#prof-modal-firstname').val() || '').trim();
-    st.lastName = String($('#prof-modal-lastname').val() || '').trim();
-    st.phone = normalizeDigits(String($('#prof-modal-phone').val() || ''));
-    st.classCode = String($('#prof-modal-class').val() || '');
-    st.status = String($('#prof-modal-status').val()) as typeof st.status;
-    st.notes = String($('#prof-modal-notes').val() || '').trim();
+    const firstName = String($('#prof-modal-firstname').val() || '').trim();
+    const lastName = String($('#prof-modal-lastname').val() || '').trim();
+    const phone = normalizeDigits(String($('#prof-modal-phone').val() || ''));
+    const classCode = String($('#prof-modal-class').val() || '');
+    const status = String($('#prof-modal-status').val()) as typeof st.status;
+    const notes = String($('#prof-modal-notes').val() || '').trim();
 
-    saveDbState(state);
-    $('#admin-student-modal').removeClass('is-open').attr('aria-hidden', 'true');
-    renderActiveSection();
-    showToast('پروفایل بروزرسانی شد', `اطلاعات ${st.firstName} ${st.lastName} ذخیره گردید.`, 'success');
+    if (!firstName || !lastName || phone.length < 10) {
+      showToast('اطلاعات نامعتبر', 'لطفاً نام، نام خانوادگی و شماره موبایل معتبر وارد کنید.', 'error');
+      return;
+    }
+
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال ذخیره...');
+    try {
+      const res = await adminUpdateStudentApi(id, {
+        firstName,
+        lastName,
+        phone,
+        classCode,
+        status,
+        notes,
+      });
+      if (!res.success) {
+        showToast('خطا در ذخیره پروفایل دانش‌آموز', res.message || 'خطا در ثبت تغییرات.', 'error');
+        return;
+      }
+
+      st.firstName = firstName;
+      st.lastName = lastName;
+      st.phone = phone;
+      st.classCode = classCode;
+      st.status = status;
+      st.notes = notes;
+
+      await persistDbState(state);
+      $('#admin-student-modal').removeClass('is-open').attr('aria-hidden', 'true');
+      renderActiveSection();
+      showToast('پروفایل بروزرسانی شد', `اطلاعات ${st.firstName} ${st.lastName} در دیتابیس ذخیره گردید.`, 'success');
+    } catch (err) {
+      showToast('خطا در ذخیره پروفایل', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 
   // Add New Student Modal
@@ -2814,8 +3092,11 @@ export function initAdminPanelEvents(): void {
     $('#admin-add-student-modal').addClass('is-open').attr('aria-hidden', 'false');
   });
 
-  $('#form-admin-add-student').on('submit', function (e) {
+  $('#form-admin-add-student').on('submit', async function (e) {
     e.preventDefault();
+    const $btn = $(this).find('button[type="submit"]');
+    if ($btn.prop('disabled')) return;
+
     const firstName = String($('#add-st-firstname').val() || '').trim();
     const lastName = String($('#add-st-lastname').val() || '').trim();
     const phone = normalizeDigits(String($('#add-st-phone').val() || ''));
@@ -2826,21 +3107,39 @@ export function initAdminPanelEvents(): void {
       return;
     }
 
-    const state = loadDbState();
-    state.students.unshift({
-      id: Date.now(),
-      firstName,
-      lastName,
-      phone,
-      classCode,
-      status: 'approved',
-      createdAt: '۱۴۰۵/۰۸/۱۵',
-    });
-    saveDbState(state);
-    ($('#form-admin-add-student')[0] as HTMLFormElement | undefined)?.reset();
-    $('#admin-add-student-modal').removeClass('is-open').attr('aria-hidden', 'true');
-    renderActiveSection();
-    showToast('دانش‌آموز اضافه شد', `${firstName} ${lastName} با موفقیت ثبت گردید.`, 'success');
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال ثبت...');
+    try {
+      const res = await adminCreateStudentApi({
+        firstName,
+        lastName,
+        phone,
+        classCode,
+        status: 'approved',
+        password: '123456',
+      });
+      if (!res.success || !res.student) {
+        showToast('خطا در افزودن دانش‌آموز', res.message || 'ثبت دانش‌آموز انجام نشد.', 'error');
+        return;
+      }
+
+      const state = loadDbState();
+      const existingIdx = state.students.findIndex((s) => s.id === res.student!.id);
+      if (existingIdx >= 0) {
+        state.students[existingIdx] = res.student;
+      } else {
+        state.students.unshift(res.student);
+      }
+      await persistDbState(state);
+      ($('#form-admin-add-student')[0] as HTMLFormElement | undefined)?.reset();
+      $('#admin-add-student-modal').removeClass('is-open').attr('aria-hidden', 'true');
+      renderActiveSection();
+      showToast('دانش‌آموز اضافه شد', `${firstName} ${lastName} با موفقیت در دیتابیس ثبت گردید.`, 'success');
+    } catch (err) {
+      showToast('خطا در افزودن دانش‌آموز', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 
   /* --------------------------------------------------------------------------
@@ -2861,6 +3160,8 @@ export function initAdminPanelEvents(): void {
     editingAssignmentId = null;
     pendingAssignmentAttachmentName = '';
     pendingAssignmentAttachmentDataUrl = '';
+    lastAdminHwFile = null;
+    isUploadingAdminHwFile = false;
     assignmentSubView = 'form';
     updateBrowserUrl('/admin/assignments/create');
     renderActiveSection();
@@ -2872,6 +3173,8 @@ export function initAdminPanelEvents(): void {
     editingAssignmentId = id;
     pendingAssignmentAttachmentName = '';
     pendingAssignmentAttachmentDataUrl = '';
+    lastAdminHwFile = null;
+    isUploadingAdminHwFile = false;
     assignmentSubView = 'form';
     updateBrowserUrl('/admin/assignments/edit');
     renderActiveSection();
@@ -2881,26 +3184,81 @@ export function initAdminPanelEvents(): void {
   $(document).on('click', '.js-back-to-assignments-list', function () {
     assignmentSubView = 'list';
     editingAssignmentId = null;
+    lastAdminHwFile = null;
+    isUploadingAdminHwFile = false;
     updateBrowserUrl('/admin/assignments');
     renderActiveSection();
   });
+
+  async function startAdminHwFileUpload(file: File): Promise<void> {
+    lastAdminHwFile = file;
+    isUploadingAdminHwFile = true;
+    pendingAssignmentAttachmentName = file.name;
+    pendingAssignmentAttachmentDataUrl = '';
+    $('#hw-attachment').val(toPersianDigits(file.name));
+    $('#btn-save-hw-submit').prop('disabled', true);
+    renderAdminUploadProgressWidget('#admin-hw-upload-progress', {
+      fileName: file.name,
+      percent: 0,
+      status: 'uploading',
+    });
+
+    try {
+      const uploaded = await uploadFileWithProgress(file, (pct) => {
+        renderAdminUploadProgressWidget('#admin-hw-upload-progress', {
+          fileName: file.name,
+          percent: pct,
+          status: 'uploading',
+        });
+      });
+      pendingAssignmentAttachmentName = uploaded.fileName || file.name;
+      pendingAssignmentAttachmentDataUrl = uploaded.fileUrl || '';
+      isUploadingAdminHwFile = false;
+      $('#btn-save-hw-submit').prop('disabled', false);
+      renderAdminUploadProgressWidget('#admin-hw-upload-progress', {
+        fileName: pendingAssignmentAttachmentName,
+        percent: 100,
+        status: 'success',
+      });
+    } catch (err) {
+      isUploadingAdminHwFile = false;
+      pendingAssignmentAttachmentDataUrl = '';
+      $('#btn-save-hw-submit').prop('disabled', false);
+      renderAdminUploadProgressWidget('#admin-hw-upload-progress', {
+        fileName: file.name,
+        percent: 0,
+        status: 'error',
+        errorMessage: err instanceof Error ? err.message : 'خطا در آپلود فایل تکلیف.',
+        retryActionClass: 'js-retry-admin-hw-upload',
+      });
+      showToast('خطا در آپلود فایل تکلیف', err instanceof Error ? err.message : 'آپلود فایل ناموفق بود.', 'error');
+    }
+  }
 
   // File upload inside Assignment Form Page
   $(document).on('change', '#hw-file-upload', function (this: HTMLInputElement) {
     const file = this.files && this.files[0];
     if (!file) return;
-    pendingAssignmentAttachmentName = file.name;
-    $('#hw-attachment').val(toPersianDigits(file.name));
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      pendingAssignmentAttachmentDataUrl = String(ev.target?.result || '');
-    };
-    reader.readAsDataURL(file);
+    void startAdminHwFileUpload(file);
+  });
+
+  $(document).on('click', '.js-retry-admin-hw-upload', function () {
+    if (lastAdminHwFile) {
+      void startAdminHwFileUpload(lastAdminHwFile);
+    }
   });
 
   // Save Assignment from New Page and return to list
-  $(document).on('submit', '#form-save-assignment', function (e) {
+  $(document).on('submit', '#form-save-assignment', async function (e) {
     e.preventDefault();
+    if (isUploadingAdminHwFile) {
+      showToast('در حال آپلود فایل', 'لطفاً تا تکمیل آپلود فایل پیوست تکلیف صبر کنید.', 'info');
+      return;
+    }
+
+    const $btn = $('#btn-save-hw-submit');
+    if ($btn.prop('disabled')) return;
+
     const title = String($('#hw-title').val() || '').trim();
     const classCode = String($('#hw-class').val() || 'all');
     const dueDate = String($('#hw-duedate').val() || '').trim();
@@ -2911,6 +3269,9 @@ export function initAdminPanelEvents(): void {
     if (!title || !description) return;
 
     const state = loadDbState();
+    const isEditing = Boolean(editingAssignmentId);
+    const nowId = Date.now();
+
     if (editingAssignmentId) {
       const item = state.assignments.find((a) => a.id === editingAssignmentId);
       if (item) {
@@ -2924,11 +3285,10 @@ export function initAdminPanelEvents(): void {
         }
         item.description = description;
       }
-      editingAssignmentId = null;
-      showToast('تکلیف ویرایش شد', 'تغییرات تکلیف با موفقیت ذخیره گردید.', 'success');
     } else {
+      const newAssignmentId = nowId;
       state.assignments.unshift({
-        id: Date.now(),
+        id: newAssignmentId,
         title,
         classCode,
         dueDate,
@@ -2939,21 +3299,55 @@ export function initAdminPanelEvents(): void {
         status: 'active',
         createdAt: '۱۴۰۵/۰۸/۱۵',
       });
+
+      // Automatically notify the relevant class (Requirement #6)
+      const targetClassLabel = formatClassLabel(classCode);
+      state.announcements.unshift({
+        id: nowId + 1,
+        title: `تکلیف جدید: ${title}`,
+        targetClasses: classCode,
+        priority: 'مهم',
+        content: `تکلیف جدیدی با عنوان «${title}» ویژه ${targetClassLabel} ثبت شد. مهلت تحویل: ${dueDate || 'مطابق برنامه کلاسی'}. لطفاً از بخش تکالیف من نسبت به بررسی و ارسال پاسخ اقدام نمایید.`,
+        createdAt: '۱۴۰۵/۰۸/۱۵ · هم‌اکنون',
+        readers: [],
+        assignmentId: newAssignmentId,
+        notificationType: 'assignment',
+      });
+
       logAdminActivity(
         state,
         `ایجاد تکلیف جدید: ${title}`,
-        `ویژه ${formatClassLabel(classCode)} · مهلت: ${dueDate}`,
+        `ویژه ${targetClassLabel} · مهلت: ${dueDate} (همراه با ارسال اعلان خودکار)`,
         'assignment'
       );
-      showToast('تکلیف منتشر شد', `تکلیف «${title}» با موفقیت ثبت گردید.`, 'success');
     }
 
-    pendingAssignmentAttachmentName = '';
-    pendingAssignmentAttachmentDataUrl = '';
-    saveDbState(state);
-    assignmentSubView = 'list';
-    updateBrowserUrl('/admin/assignments');
-    renderActiveSection();
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال ذخیره...');
+    try {
+      await persistDbState(state);
+      editingAssignmentId = null;
+      pendingAssignmentAttachmentName = '';
+      pendingAssignmentAttachmentDataUrl = '';
+      lastAdminHwFile = null;
+      assignmentSubView = 'list';
+      updateBrowserUrl('/admin/assignments');
+      renderActiveSection();
+
+      if (isEditing) {
+        showToast('تکلیف ویرایش شد', 'تغییرات تکلیف با موفقیت در دیتابیس ذخیره گردید.', 'success');
+      } else {
+        showToast(
+          'تکلیف منتشر و اطلاع‌رسانی شد',
+          `تکلیف «${title}» ثبت گردید و اعلان آن برای ${formatClassLabel(classCode)} ارسال شد.`,
+          'success'
+        );
+      }
+    } catch (err) {
+      showToast('خطا در ذخیره تکلیف', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 
   $(document).on('click', '.js-delete-assignment', function () {
@@ -2967,12 +3361,16 @@ export function initAdminPanelEvents(): void {
       message: `آیا از حذف تکلیف «${toPersianDigits(hw.title)}» اطمینان دارید؟`,
       confirmText: 'حذف تکلیف',
       isDanger: true,
-      onConfirm: () => {
-        const fresh = loadDbState();
-        fresh.assignments = fresh.assignments.filter((a) => a.id !== id);
-        saveDbState(fresh);
-        renderActiveSection();
-        showToast('تکلیف حذف شد', 'تکلیف مورد نظر از لیست حذف گردید.', 'info');
+      onConfirm: async () => {
+        try {
+          const fresh = loadDbState();
+          fresh.assignments = fresh.assignments.filter((a) => a.id !== id);
+          await persistDbState(fresh);
+          renderActiveSection();
+          showToast('تکلیف حذف شد', 'تکلیف مورد نظر از دیتابیس حذف گردید.', 'info');
+        } catch (err) {
+          showToast('خطا در حذف تکلیف', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+        }
       },
     });
   });
@@ -3028,9 +3426,12 @@ export function initAdminPanelEvents(): void {
     );
   });
 
-  // Save Score & Feedback from Dedicated Submission Page
-  $(document).on('submit', '#form-grade-submission-page', function (e) {
+  // Save Score & Feedback from Dedicated Submission Page (Requirement #7: Auto-notify student)
+  $(document).on('submit', '#form-grade-submission-page', async function (e) {
     e.preventDefault();
+    const $btn = $(this).find('button[type="submit"]');
+    if ($btn.prop('disabled')) return;
+
     const subId = Number($(this).attr('data-id'));
     const score = Number(normalizeDigits(String($('#grade-page-score').val() || '20')));
     const feedback = String($('#grade-page-feedback').val() || '').trim();
@@ -3039,21 +3440,54 @@ export function initAdminPanelEvents(): void {
     const sub = state.submissions.find((s) => s.id === subId);
     if (!sub) return;
 
+    const hw = state.assignments.find((a) => a.id === sub.assignmentId);
+    const hwTitle = hw ? hw.title : 'تکلیف کلاسی';
+
     sub.score = score;
     sub.teacherFeedback = feedback;
     sub.status = 'graded';
 
+    // Automatically create a private notification for this specific student (Requirement #7)
+    const feedbackSummary = feedback
+      ? `بازخورد دبیر: «${feedback}»`
+      : 'پاسخ شما بررسی و نمره آن در کارنامه ثبت گردید.';
+    state.announcements.unshift({
+      id: Date.now(),
+      title: `ثبت نمره و بازخورد تکلیف: ${hwTitle}`,
+      targetClasses: sub.classCode || 'all',
+      targetStudentId: sub.studentId,
+      assignmentId: sub.assignmentId,
+      notificationType: 'feedback',
+      priority: 'مهم',
+      content: `دانش‌آموز گرامی ${sub.studentName}، تکلیف «${hwTitle}» بررسی شد و نمره ${toPersianDigits(score)}${hw ? ` از ${toPersianDigits(hw.maxScore)}` : ''} برای شما ثبت گردید. ${feedbackSummary}`,
+      createdAt: '۱۴۰۵/۰۸/۱۵ · هم‌اکنون',
+      readers: [],
+    });
+
     logAdminActivity(
       state,
-      `ثبت نمره تکلیف برای ${sub.studentName}`,
-      `نمره ثبت‌شده: ${toPersianDigits(score)}`,
+      `ثبت نمره و بازخورد تکلیف برای ${sub.studentName}`,
+      `نمره ثبت‌شده: ${toPersianDigits(score)} (همراه با ارسال اعلان به دانش‌آموز)`,
       'assignment'
     );
-    saveDbState(state);
-    assignmentSubView = 'detail';
-    updateBrowserUrl('/admin/assignments/detail');
-    renderActiveSection();
-    showToast('نمره و بازخورد ثبت شد', `نمره ${toPersianDigits(score)} برای ${sub.studentName} ذخیره گردید.`, 'success');
+
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال ثبت نمره...');
+    try {
+      await persistDbState(state);
+      assignmentSubView = 'detail';
+      updateBrowserUrl('/admin/assignments/detail');
+      renderActiveSection();
+      showToast(
+        'نمره و بازخورد ثبت شد',
+        `نمره ${toPersianDigits(score)} برای ${sub.studentName} ذخیره و اعلان بازخورد برای او ارسال گردید.`,
+        'success'
+      );
+    } catch (err) {
+      showToast('خطا در ثبت نمره', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 
   /* --------------------------------------------------------------------------
@@ -3075,6 +3509,8 @@ export function initAdminPanelEvents(): void {
     pendingResourceFileName = '';
     pendingResourceFileDataUrl = '';
     pendingResourceFileSize = '';
+    lastAdminResourceFile = null;
+    isUploadingAdminResourceFile = false;
     resourceSubView = 'form';
     updateBrowserUrl('/admin/resources/create');
     renderActiveSection();
@@ -3087,6 +3523,8 @@ export function initAdminPanelEvents(): void {
     pendingResourceFileName = '';
     pendingResourceFileDataUrl = '';
     pendingResourceFileSize = '';
+    lastAdminResourceFile = null;
+    isUploadingAdminResourceFile = false;
     resourceSubView = 'form';
     updateBrowserUrl('/admin/resources/edit');
     renderActiveSection();
@@ -3096,28 +3534,87 @@ export function initAdminPanelEvents(): void {
   $(document).on('click', '.js-back-to-resources-list', function () {
     resourceSubView = 'list';
     editingResourceId = null;
+    lastAdminResourceFile = null;
+    isUploadingAdminResourceFile = false;
     updateBrowserUrl('/admin/resources');
     renderActiveSection();
   });
 
-  // File upload inside Resource Form Page
-  $(document).on('change', '#res-file-upload', function (this: HTMLInputElement) {
-    const file = this.files && this.files[0];
-    if (!file) return;
+  async function startAdminResourceFileUpload(file: File): Promise<void> {
+    lastAdminResourceFile = file;
+    isUploadingAdminResourceFile = true;
     pendingResourceFileName = file.name;
+    pendingResourceFileDataUrl = '';
     const sizeMb = Math.max(0.1, Math.round((file.size / (1024 * 1024)) * 10) / 10);
     pendingResourceFileSize = `${toPersianDigits(sizeMb)} مگابایت`;
     $('#res-url').val(toPersianDigits(file.name));
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      pendingResourceFileDataUrl = String(ev.target?.result || '');
-    };
-    reader.readAsDataURL(file);
+    $('#btn-save-resource-submit').prop('disabled', true);
+
+    renderAdminUploadProgressWidget('#admin-res-upload-progress', {
+      fileName: file.name,
+      percent: 0,
+      status: 'uploading',
+    });
+
+    try {
+      const uploaded = await uploadFileWithProgress(file, (pct) => {
+        renderAdminUploadProgressWidget('#admin-res-upload-progress', {
+          fileName: file.name,
+          percent: pct,
+          status: 'uploading',
+        });
+      });
+      pendingResourceFileName = uploaded.fileName || file.name;
+      pendingResourceFileDataUrl = uploaded.fileUrl || '';
+      if (uploaded.fileSize) {
+        pendingResourceFileSize = toPersianDigits(uploaded.fileSize);
+      }
+      isUploadingAdminResourceFile = false;
+      $('#btn-save-resource-submit').prop('disabled', false);
+      renderAdminUploadProgressWidget('#admin-res-upload-progress', {
+        fileName: pendingResourceFileName,
+        percent: 100,
+        status: 'success',
+      });
+    } catch (err) {
+      isUploadingAdminResourceFile = false;
+      pendingResourceFileDataUrl = '';
+      $('#btn-save-resource-submit').prop('disabled', false);
+      renderAdminUploadProgressWidget('#admin-res-upload-progress', {
+        fileName: file.name,
+        percent: 0,
+        status: 'error',
+        errorMessage: err instanceof Error ? err.message : 'خطا در آپلود فایل منبع آموزشی.',
+        retryActionClass: 'js-retry-admin-res-upload',
+      });
+      showToast('خطا در آپلود فایل منبع', err instanceof Error ? err.message : 'آپلود فایل ناموفق بود.', 'error');
+    }
+  }
+
+  // File upload inside Resource Form Page (Requirement #8: >1 MB + progress bar)
+  $(document).on('change', '#res-file-upload', function (this: HTMLInputElement) {
+    const file = this.files && this.files[0];
+    if (!file) return;
+    void startAdminResourceFileUpload(file);
+  });
+
+  $(document).on('click', '.js-retry-admin-res-upload', function () {
+    if (lastAdminResourceFile) {
+      void startAdminResourceFileUpload(lastAdminResourceFile);
+    }
   });
 
   // Save Resource from Dedicated Page and return to list
-  $(document).on('submit', '#form-save-resource', function (e) {
+  $(document).on('submit', '#form-save-resource', async function (e) {
     e.preventDefault();
+    if (isUploadingAdminResourceFile) {
+      showToast('در حال آپلود فایل', 'لطفاً تا پایان آپلود فایل منبع آموزشی صبر کنید.', 'info');
+      return;
+    }
+
+    const $btn = $('#btn-save-resource-submit');
+    if ($btn.prop('disabled')) return;
+
     const title = String($('#res-title').val() || '').trim();
     const category = String($('#res-category').val() || 'جزوه PDF') as
       | 'جزوه PDF'
@@ -3131,6 +3628,8 @@ export function initAdminPanelEvents(): void {
     if (!title || !urlOrFileName) return;
 
     const state = loadDbState();
+    const isEditing = Boolean(editingResourceId);
+
     if (editingResourceId) {
       const item = state.resources.find((r) => r.id === editingResourceId);
       if (item) {
@@ -3146,8 +3645,6 @@ export function initAdminPanelEvents(): void {
         }
         item.description = description;
       }
-      editingResourceId = null;
-      showToast('منبع آموزشی ویرایش شد', `تغییرات «${title}» ذخیره گردید.`, 'success');
     } else {
       state.resources.unshift({
         id: Date.now(),
@@ -3158,21 +3655,36 @@ export function initAdminPanelEvents(): void {
         fileDataUrl: pendingResourceFileDataUrl || undefined,
         fileSize:
           pendingResourceFileSize ||
-          (category === 'لینک آموزشی' ? 'لینک وب' : '۳.۱ مگابایت'),
+          (category === 'لینک آموزشی' ? 'لینک وب' : 'فایل پیوست'),
         description,
         createdAt: '۱۴۰۵/۰۸/۱۵',
         viewers: [],
       });
-      showToast('منبع آموزشی اضافه شد', `«${title}» در بخش منابع قرار گرفت.`, 'success');
     }
 
-    pendingResourceFileName = '';
-    pendingResourceFileDataUrl = '';
-    pendingResourceFileSize = '';
-    saveDbState(state);
-    resourceSubView = 'list';
-    updateBrowserUrl('/admin/resources');
-    renderActiveSection();
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال ذخیره...');
+    try {
+      await persistDbState(state);
+      editingResourceId = null;
+      pendingResourceFileName = '';
+      pendingResourceFileDataUrl = '';
+      pendingResourceFileSize = '';
+      lastAdminResourceFile = null;
+      resourceSubView = 'list';
+      updateBrowserUrl('/admin/resources');
+      renderActiveSection();
+
+      if (isEditing) {
+        showToast('منبع آموزشی ویرایش شد', `تغییرات «${title}» در دیتابیس ذخیره گردید.`, 'success');
+      } else {
+        showToast('منبع آموزشی اضافه شد', `«${title}» با موفقیت در دیتابیس ذخیره گردید.`, 'success');
+      }
+    } catch (err) {
+      showToast('خطا در ذخیره منبع آموزشی', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 
   // Navigate to Resource Detail New Page (/admin/resources/detail)
@@ -3207,12 +3719,16 @@ export function initAdminPanelEvents(): void {
       message: `آیا از حذف «${toPersianDigits(res.title)}» اطمینان دارید؟`,
       confirmText: 'حذف منبع',
       isDanger: true,
-      onConfirm: () => {
-        const fresh = loadDbState();
-        fresh.resources = fresh.resources.filter((r) => r.id !== id);
-        saveDbState(fresh);
-        renderActiveSection();
-        showToast('منبع حذف شد', 'آیتم انتخاب‌شده از منابع آموزشی حذف گردید.', 'info');
+      onConfirm: async () => {
+        try {
+          const fresh = loadDbState();
+          fresh.resources = fresh.resources.filter((r) => r.id !== id);
+          await persistDbState(fresh);
+          renderActiveSection();
+          showToast('منبع حذف شد', 'آیتم انتخاب‌شده از منابع آموزشی حذف گردید.', 'info');
+        } catch (err) {
+          showToast('خطا در حذف منبع', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+        }
       },
     });
   });
@@ -3240,8 +3756,11 @@ export function initAdminPanelEvents(): void {
     $('#admin-announcement-form-modal').addClass('is-open').attr('aria-hidden', 'false');
   });
 
-  $(document).on('submit', '#form-add-announcement', function (e) {
+  $(document).on('submit', '#form-add-announcement', async function (e) {
     e.preventDefault();
+    const $btn = $(this).find('button[type="submit"]');
+    if ($btn.prop('disabled')) return;
+
     const title = String($('#ann-title').val() || '').trim();
     const targetClasses = String($('#ann-target').val() || 'all');
     const priority = String($('#ann-priority').val() || 'عادی') as 'عادی' | 'مهم' | 'فوری';
@@ -3257,6 +3776,7 @@ export function initAdminPanelEvents(): void {
       priority,
       content,
       createdAt: '۱۴۰۵/۰۸/۱۵ · هم‌اکنون',
+      notificationType: 'general',
     });
     logAdminActivity(
       state,
@@ -3264,14 +3784,23 @@ export function initAdminPanelEvents(): void {
       `عنوان: ${title}`,
       'announcement'
     );
-    saveDbState(state);
-    $('#admin-announcement-form-modal').removeClass('is-open').attr('aria-hidden', 'true');
-    renderActiveSection();
-    showToast(
-      'اطلاعیه ارسال شد',
-      `اطلاعیه «${title}» برای ${formatClassLabel(targetClasses)} منتشر گردید.`,
-      'success'
-    );
+
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال ارسال...');
+    try {
+      await persistDbState(state);
+      $('#admin-announcement-form-modal').removeClass('is-open').attr('aria-hidden', 'true');
+      renderActiveSection();
+      showToast(
+        'اطلاعیه ارسال شد',
+        `اطلاعیه «${title}» برای ${formatClassLabel(targetClasses)} منتشر گردید.`,
+        'success'
+      );
+    } catch (err) {
+      showToast('خطا در ارسال اطلاعیه', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 
   $(document).on('click', '.js-delete-announcement', function () {
@@ -3281,17 +3810,21 @@ export function initAdminPanelEvents(): void {
       message: 'آیا از حذف این اطلاعیه اطمینان دارید؟',
       confirmText: 'حذف اطلاعیه',
       isDanger: true,
-      onConfirm: () => {
-        const state = loadDbState();
-        state.announcements = state.announcements.filter((a) => a.id !== id);
-        saveDbState(state);
-        renderActiveSection();
-        showToast('اطلاعیه حذف شد', 'اطلاعیه مورد نظر حذف گردید.', 'info');
+      onConfirm: async () => {
+        try {
+          const state = loadDbState();
+          state.announcements = state.announcements.filter((a) => a.id !== id);
+          await persistDbState(state);
+          renderActiveSection();
+          showToast('اطلاعیه حذف شد', 'اطلاعیه مورد نظر از دیتابیس حذف گردید.', 'info');
+        } catch (err) {
+          showToast('خطا در حذف اطلاعیه', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+        }
       },
     });
   });
 
-  // Open Announcement Readers Modal (#admin-announcement-readers-modal)
+  // Open Announcement Readers Modal (#admin-announcement-readers-modal) - Requirement #4: Wider, clean table layout
   $(document).on('click', '.js-open-ann-readers-modal', function () {
     const id = Number($(this).attr('data-id'));
     const state = loadDbState();
@@ -3306,33 +3839,57 @@ export function initAdminPanelEvents(): void {
     $('#ann-readers-modal-count-badge').text(`${toPersianDigits(readers.length)} نفر`);
 
     if (readers.length > 0) {
-      const listHtml = readers
-        .map((r) => {
+      const rowsHtml = readers
+        .map((r, idx) => {
           const stObj = state.students.find((s) => s.id === r.studentId) || {
             id: r.studentId,
             firstName: r.studentName,
             lastName: '',
           };
           return `
-            <div class="flex items-center justify-between gap-3 p-3 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] text-xs">
-              <div class="flex items-center gap-2.5">
-                ${renderStudentAvatarHtml(stObj, 'sm')}
-                <div>
-                  <div class="font-extrabold text-[#251B15]">${toPersianDigits(r.studentName)}</div>
-                  <div class="text-[11px] text-[#1B5E5A] font-bold mt-0.5">کلاس ${toPersianDigits(r.classCode)}</div>
+            <tr class="border-b border-[#EFE6D8] last:border-b-0 hover:bg-[#F7F2E9]/60 transition-colors">
+              <td class="py-3 px-4 text-xs font-bold text-[#6E5D4F] tabular-nums w-12 text-center">${toPersianDigits(idx + 1)}</td>
+              <td class="py-3 px-4">
+                <div class="flex items-center gap-3 min-w-[200px]">
+                  ${renderStudentAvatarHtml(stObj, 'sm')}
+                  <span class="font-extrabold text-xs sm:text-sm text-[#251B15] whitespace-nowrap">${toPersianDigits(r.studentName)}</span>
                 </div>
-              </div>
-              <div class="text-[11px] font-bold text-[#6E5D4F] tabular-nums">
-                خوانده در: ${toPersianDigits(r.readAt)}
-              </div>
-            </div>
+              </td>
+              <td class="py-3 px-4 whitespace-nowrap">
+                <span class="inline-flex items-center px-2.5 py-1 rounded-lg bg-[#1B5E5A]/10 text-[#1B5E5A] text-xs font-extrabold">
+                  کلاس ${toPersianDigits(r.classCode || '—')}
+                </span>
+              </td>
+              <td class="py-3 px-4 text-left whitespace-nowrap">
+                <span class="inline-flex items-center gap-1.5 text-xs font-bold text-[#4A3E35] tabular-nums bg-[#FDFBF7] border border-[#E5DBCB] px-3 py-1 rounded-lg">
+                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>
+                  ${toPersianDigits(r.readAt)}
+                </span>
+              </td>
+            </tr>
           `;
         })
         .join('');
-      $('#ann-readers-modal-list').html(listHtml);
+      $('#ann-readers-modal-list').html(`
+        <div class="overflow-x-auto rounded-xl border border-[#E5DBCB] bg-[#FDFBF7]">
+          <table class="w-full text-right border-collapse">
+            <thead>
+              <tr class="bg-[#F4ECE1] border-b border-[#E5DBCB] text-[11px] font-extrabold text-[#6E5D4F]">
+                <th class="py-2.5 px-4 w-12 text-center">ردیف</th>
+                <th class="py-2.5 px-4">نام و نام خانوادگی دانش‌آموز</th>
+                <th class="py-2.5 px-4">کلاس</th>
+                <th class="py-2.5 px-4 text-left">زمان ثبت مطالعه</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+          </table>
+        </div>
+      `);
     } else {
       $('#ann-readers-modal-list').html(`
-        <div class="p-6 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] text-center text-xs text-[#6E5D4F]">
+        <div class="p-8 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] text-center text-xs sm:text-sm text-[#6E5D4F]">
           هنوز هیچ دانش‌آموزی گزینه «خوانده شد» را برای این اطلاعیه ثبت نکرده است.
         </div>
       `);
@@ -3342,7 +3899,7 @@ export function initAdminPanelEvents(): void {
   });
 
   /* --------------------------------------------------------------------------
-     Tickets Section + Downloadable File Attachments
+     Tickets Section + Downloadable File Attachments (Requirement #9: >1 MB + progress bar)
      -------------------------------------------------------------------------- */
   $(document).on('click', '.js-ticket-filter', function () {
     ticketFilter = String($(this).attr('data-filter') || 'all') as typeof ticketFilter;
@@ -3353,26 +3910,82 @@ export function initAdminPanelEvents(): void {
     activeTicketId = Number($(this).attr('data-id'));
     pendingTicketAttachmentName = '';
     pendingTicketAttachmentDataUrl = '';
+    lastAdminTicketFile = null;
+    isUploadingAdminTicketFile = false;
     renderActiveSection();
   });
+
+  async function startAdminTicketFileUpload(file: File): Promise<void> {
+    lastAdminTicketFile = file;
+    isUploadingAdminTicketFile = true;
+    pendingTicketAttachmentName = file.name;
+    pendingTicketAttachmentDataUrl = '';
+    $('#ticket-attached-filename').text(`در حال آپلود: ${toPersianDigits(file.name)}`);
+    $('#btn-admin-reply-ticket-submit').prop('disabled', true);
+
+    renderAdminUploadProgressWidget('#admin-ticket-upload-progress', {
+      fileName: file.name,
+      percent: 0,
+      status: 'uploading',
+    });
+
+    try {
+      const uploaded = await uploadFileWithProgress(file, (pct) => {
+        renderAdminUploadProgressWidget('#admin-ticket-upload-progress', {
+          fileName: file.name,
+          percent: pct,
+          status: 'uploading',
+        });
+      });
+      pendingTicketAttachmentName = uploaded.fileName || file.name;
+      pendingTicketAttachmentDataUrl = uploaded.fileUrl || '';
+      isUploadingAdminTicketFile = false;
+      $('#ticket-attached-filename').text(`پیوست آماده ارسال: ${toPersianDigits(pendingTicketAttachmentName)}`);
+      $('#btn-admin-reply-ticket-submit').prop('disabled', false);
+      renderAdminUploadProgressWidget('#admin-ticket-upload-progress', {
+        fileName: pendingTicketAttachmentName,
+        percent: 100,
+        status: 'success',
+      });
+    } catch (err) {
+      isUploadingAdminTicketFile = false;
+      pendingTicketAttachmentDataUrl = '';
+      $('#ticket-attached-filename').text('خطا در آپلود فایل پیوست');
+      $('#btn-admin-reply-ticket-submit').prop('disabled', false);
+      renderAdminUploadProgressWidget('#admin-ticket-upload-progress', {
+        fileName: file.name,
+        percent: 0,
+        status: 'error',
+        errorMessage: err instanceof Error ? err.message : 'خطا در آپلود فایل پیوست تیکت.',
+        retryActionClass: 'js-retry-admin-ticket-upload',
+      });
+      showToast('خطا در آپلود پیوست تیکت', err instanceof Error ? err.message : 'آپلود فایل ناموفق بود.', 'error');
+    }
+  }
 
   $(document).on('change', '#ticket-reply-file', function (this: HTMLInputElement) {
     const file = this.files && this.files[0];
     if (!file) {
       pendingTicketAttachmentName = '';
       pendingTicketAttachmentDataUrl = '';
+      lastAdminTicketFile = null;
+      isUploadingAdminTicketFile = false;
       $('#ticket-attached-filename').text('فایلی انتخاب نشده');
+      renderAdminUploadProgressWidget('#admin-ticket-upload-progress', {
+        fileName: '',
+        percent: 0,
+        status: 'idle',
+      });
       return;
     }
 
-    pendingTicketAttachmentName = file.name;
-    $('#ticket-attached-filename').text(`پیوست: ${toPersianDigits(file.name)}`);
+    void startAdminTicketFileUpload(file);
+  });
 
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      pendingTicketAttachmentDataUrl = String(ev.target?.result || '');
-    };
-    reader.readAsDataURL(file);
+  $(document).on('click', '.js-retry-admin-ticket-upload', function () {
+    if (lastAdminTicketFile) {
+      void startAdminTicketFileUpload(lastAdminTicketFile);
+    }
   });
 
   // Download attached file from any Ticket Message
@@ -3392,20 +4005,38 @@ export function initAdminPanelEvents(): void {
     );
   });
 
-  $(document).on('click', '.js-toggle-ticket-close', function () {
-    const id = Number($(this).attr('data-id'));
+  $(document).on('click', '.js-toggle-ticket-close', async function () {
+    const $btn = $(this);
+    if ($btn.prop('disabled')) return;
+
+    const id = Number($btn.attr('data-id'));
     const state = loadDbState();
     const tk = state.tickets.find((t) => t.id === id);
     if (!tk) return;
 
     tk.status = tk.status === 'بسته شده' ? 'در انتظار پاسخ' : 'بسته شده';
-    saveDbState(state);
-    renderActiveSection();
-    showToast('وضعیت تیکت تغییر کرد', `وضعیت تیکت به «${tk.status}» تغییر یافت.`, 'info');
+    $btn.prop('disabled', true);
+    try {
+      await persistDbState(state);
+      renderActiveSection();
+      showToast('وضعیت تیکت تغییر کرد', `وضعیت تیکت به «${tk.status}» تغییر یافت.`, 'info');
+    } catch (err) {
+      showToast('خطا در تغییر وضعیت تیکت', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+    } finally {
+      $btn.prop('disabled', false);
+    }
   });
 
-  $(document).on('submit', '#form-reply-ticket', function (e) {
+  $(document).on('submit', '#form-reply-ticket', async function (e) {
     e.preventDefault();
+    if (isUploadingAdminTicketFile) {
+      showToast('در حال آپلود پیوست', 'لطفاً تا تکمیل آپلود فایل پیوست تیکت صبر کنید.', 'info');
+      return;
+    }
+
+    const $btn = $('#btn-admin-reply-ticket-submit');
+    if ($btn.prop('disabled')) return;
+
     const id = Number($(this).attr('data-id'));
     const replyText = String($('#ticket-reply-text').val() || '').trim();
     if (!replyText) return;
@@ -3424,8 +4055,6 @@ export function initAdminPanelEvents(): void {
       attachmentDataUrl: pendingTicketAttachmentDataUrl || undefined,
     });
     tk.status = 'پاسخ داده شده';
-    pendingTicketAttachmentName = '';
-    pendingTicketAttachmentDataUrl = '';
 
     logAdminActivity(
       state,
@@ -3433,80 +4062,188 @@ export function initAdminPanelEvents(): void {
       `موضوع: ${tk.subject}`,
       'ticket'
     );
-    saveDbState(state);
-    renderActiveSection();
-    showToast('پاسخ ارسال شد', `پاسخ شما برای ${tk.studentName} ثبت گردید.`, 'success');
+
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال ارسال...');
+    try {
+      await persistDbState(state);
+      pendingTicketAttachmentName = '';
+      pendingTicketAttachmentDataUrl = '';
+      lastAdminTicketFile = null;
+      renderActiveSection();
+      showToast('پاسخ ارسال شد', `پاسخ شما برای ${tk.studentName} در دیتابیس ثبت گردید.`, 'success');
+    } catch (err) {
+      showToast('خطا در ارسال پاسخ تیکت', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 
   /* --------------------------------------------------------------------------
-     Admin Profile Section + Custom Profile Image Upload
+     Admin Profile Section + Custom Profile Image Upload (Requirement #3)
      -------------------------------------------------------------------------- */
-  $(document).on('change', '#prof-avatar-upload', function (this: HTMLInputElement) {
+  $(document).on('change', '#prof-avatar-upload', async function (this: HTMLInputElement) {
     const file = this.files && this.files[0];
     if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      showToast('فرمت نامعتبر', 'لطفاً یک فایل تصویری معتبر انتخاب کنید.', 'error');
+      this.value = '';
+      return;
+    }
 
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const dataUrl = String(ev.target?.result || '');
-      if (!dataUrl) return;
+    try {
+      const uploaded = await uploadFileWithProgress(file);
+      const cacheBustedUrl = `${uploaded.fileUrl}?v=${Date.now()}`;
       const state = loadDbState();
-      state.admin.avatarUrl = dataUrl;
-      saveDbState(state);
+      const res = await updateAdminProfileApi({
+        firstName: state.admin.firstName,
+        lastName: state.admin.lastName,
+        phone: state.admin.phone,
+        email: state.admin.email,
+        roleTitle: state.admin.roleTitle,
+        bio: state.admin.bio,
+        avatarUrl: cacheBustedUrl,
+      });
+      if (!res.success) {
+        showToast('خطا در ذخیره تصویر پروفایل', res.message || 'تصویر ذخیره نشد.', 'error');
+        return;
+      }
+      state.admin.avatarUrl = cacheBustedUrl;
+      await persistDbState(state);
       renderActiveSection();
-      showToast('تصویر پروفایل بروزرسانی شد', 'عکس جدید پروفایل شما در سامانه ثبت گردید.', 'success');
-    };
-    reader.readAsDataURL(file);
+      showToast('تصویر پروفایل بروزرسانی شد', 'عکس جدید پروفایل شما در دیتابیس ثبت گردید.', 'success');
+    } catch (err) {
+      showToast('خطا در آپلود تصویر', err instanceof Error ? err.message : 'خطا در آپلود فایل', 'error');
+    } finally {
+      this.value = '';
+    }
   });
 
-  $(document).on('click', '#btn-reset-admin-avatar', function () {
-    const state = loadDbState();
-    state.admin.avatarUrl = '';
-    saveDbState(state);
-    renderActiveSection();
-    showToast('تصویر پیش‌فرض فعال شد', 'آواتار پیش‌فرض مجدداً جایگزین گردید.', 'info');
+  $(document).on('click', '#btn-reset-admin-avatar', async function () {
+    const $btn = $(this);
+    if ($btn.prop('disabled')) return;
+    $btn.prop('disabled', true);
+    try {
+      const state = loadDbState();
+      const res = await updateAdminProfileApi({
+        firstName: state.admin.firstName,
+        lastName: state.admin.lastName,
+        phone: state.admin.phone,
+        email: state.admin.email,
+        roleTitle: state.admin.roleTitle,
+        bio: state.admin.bio,
+        avatarUrl: '',
+      });
+      if (!res.success) {
+        showToast('خطا در بازنشانی تصویر', res.message || 'خطا در ارتباط با سرور', 'error');
+        return;
+      }
+      state.admin.avatarUrl = '';
+      await persistDbState(state);
+      renderActiveSection();
+      showToast('تصویر پیش‌فرض فعال شد', 'آواتار پیش‌فرض مجدداً جایگزین گردید.', 'info');
+    } catch (err) {
+      showToast('خطا در بازنشانی تصویر', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+    } finally {
+      $btn.prop('disabled', false);
+    }
   });
 
-  $(document).on('submit', '#form-admin-profile', function (e) {
+  $(document).on('submit', '#form-admin-profile', async function (e) {
     e.preventDefault();
-    const state = loadDbState();
-    state.admin.firstName = String($('#prof-firstname').val() || '').trim();
-    state.admin.lastName = String($('#prof-lastname').val() || '').trim();
-    state.admin.phone = normalizeDigits(String($('#prof-phone').val() || ''));
-    state.admin.roleTitle = String($('#prof-role').val() || '').trim();
-    state.admin.bio = String($('#prof-bio').val() || '').trim();
+    const $btn = $(this).find('button[type="submit"]');
+    if ($btn.prop('disabled')) return;
 
-    saveDbState(state);
-    renderActiveSection();
-    showToast('پروفایل مدیر ذخیره شد', 'مشخصات شما با موفقیت بروزرسانی گردید.', 'success');
+    const firstName = String($('#prof-firstname').val() || '').trim();
+    const lastName = String($('#prof-lastname').val() || '').trim();
+    const phone = normalizeDigits(String($('#prof-phone').val() || ''));
+    const roleTitle = String($('#prof-role').val() || '').trim();
+    const bio = String($('#prof-bio').val() || '').trim();
+
+    if (!firstName || !lastName || phone.length < 10) {
+      showToast('اطلاعات ناقص', 'لطفاً نام، نام خانوادگی و شماره همراه معتبر وارد کنید.', 'error');
+      return;
+    }
+
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال ذخیره...');
+    try {
+      const state = loadDbState();
+      const res = await updateAdminProfileApi({
+        firstName,
+        lastName,
+        phone,
+        email: state.admin.email,
+        roleTitle,
+        bio,
+        avatarUrl: state.admin.avatarUrl || '',
+      });
+      if (!res.success) {
+        showToast('خطا در ذخیره پروفایل', res.message || 'خطا در ثبت مشخصات مدیر.', 'error');
+        return;
+      }
+
+      state.admin.firstName = firstName;
+      state.admin.lastName = lastName;
+      state.admin.phone = phone;
+      state.admin.roleTitle = roleTitle;
+      state.admin.bio = bio;
+
+      await persistDbState(state);
+      renderActiveSection();
+      showToast('پروفایل مدیر ذخیره شد', 'مشخصات شما با موفقیت در دیتابیس بروزرسانی گردید.', 'success');
+    } catch (err) {
+      showToast('خطا در ذخیره پروفایل', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 
-  $(document).on('submit', '#form-admin-password', function (e) {
+  $(document).on('submit', '#form-admin-password', async function (e) {
     e.preventDefault();
+    const $btn = $(this).find('button[type="submit"]');
+    if ($btn.prop('disabled')) return;
+
     const currentPass = String($('#prof-current-pass').val() || '');
     const newPass = String($('#prof-new-pass').val() || '');
     const confirmPass = String($('#prof-confirm-pass').val() || '');
 
-    const state = loadDbState();
-    if (currentPass !== state.admin.password) {
-      showToast('خطا در رمز فعلی', 'رمز عبور فعلی واردشده صحیح نیست.', 'error');
-      return;
-    }
     if (newPass.length < 6 || newPass !== confirmPass) {
       showToast('خطا در رمز جدید', 'رمز عبور جدید باید حداقل ۶ کاراکتر و با تکرار آن یکسان باشد.', 'error');
       return;
     }
 
-    state.admin.password = newPass;
-    saveDbState(state);
-    renderActiveSection();
-    showToast('رمز عبور تغییر کرد', 'رمز عبور حساب مدیریت با موفقیت بروزرسانی شد.', 'success');
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال تغییر رمز...');
+    try {
+      const res = await changeAdminPasswordApi({
+        currentPassword: currentPass,
+        newPassword: newPass,
+      });
+      if (!res.success) {
+        showToast('خطا در تغییر رمز عبور', res.message || 'رمز عبور فعلی صحیح نیست.', 'error');
+        return;
+      }
+      const state = loadDbState();
+      state.admin.password = newPass;
+      await persistDbState(state);
+      renderActiveSection();
+      showToast('رمز عبور تغییر کرد', 'رمز عبور حساب مدیریت با موفقیت در دیتابیس بروزرسانی شد.', 'success');
+    } catch (err) {
+      showToast('خطا در تغییر رمز عبور', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 
   /* --------------------------------------------------------------------------
      System & Classes Settings Section
      -------------------------------------------------------------------------- */
-  $(document).on('submit', '#form-system-settings', function (e) {
+  $(document).on('submit', '#form-system-settings', async function (e) {
     e.preventDefault();
+    const $btn = $(this).find('button[type="submit"]');
+    if ($btn.prop('disabled')) return;
+
     const state = loadDbState();
     state.settings.platformName = String($('#set-platform-name').val() || '').trim();
     state.settings.academicYear = String($('#set-academic-year').val() || '').trim();
@@ -3516,13 +4253,24 @@ export function initAdminPanelEvents(): void {
     state.settings.allowNewRegistrations = $('#set-allow-reg').is(':checked');
     state.settings.requireAdminApproval = $('#set-require-approval').is(':checked');
 
-    saveDbState(state);
-    renderActiveSection();
-    showToast('تنظیمات ذخیره شد', 'تنظیمات کلی سامانه بروزرسانی گردید.', 'success');
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال ذخیره...');
+    try {
+      await persistDbState(state);
+      renderActiveSection();
+      showToast('تنظیمات ذخیره شد', 'تنظیمات کلی سامانه در دیتابیس بروزرسانی گردید.', 'success');
+    } catch (err) {
+      showToast('خطا در ذخیره تنظیمات', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 
-  $(document).on('submit', '#form-all-classes-settings', function (e) {
+  $(document).on('submit', '#form-all-classes-settings', async function (e) {
     e.preventDefault();
+    const $btn = $(this).find('button[type="submit"]');
+    if ($btn.prop('disabled')) return;
+
     const state = loadDbState();
 
     $('.js-cls-set-title').each(function () {
@@ -3543,9 +4291,17 @@ export function initAdminPanelEvents(): void {
       if (cls) cls.scheduleSummary = String($(this).val() || '').trim();
     });
 
-    saveDbState(state);
-    renderActiveSection();
-    showToast('مشخصات کلاس‌ها بروزرسانی شد', 'اطلاعات کلاس‌ها ذخیره گردید.', 'success');
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال ذخیره...');
+    try {
+      await persistDbState(state);
+      renderActiveSection();
+      showToast('مشخصات کلاس‌ها بروزرسانی شد', 'اطلاعات کلاس‌ها در دیتابیس ذخیره گردید.', 'success');
+    } catch (err) {
+      showToast('خطا در ذخیره مشخصات کلاس‌ها', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 
   $(document).on('click', '#btn-reset-demo-db', () => {
@@ -3605,8 +4361,11 @@ export function initAdminPanelEvents(): void {
     $('#admin-gradebook-session-modal').addClass('is-open').attr('aria-hidden', 'false');
   });
 
-  $(document).on('submit', '#form-add-gb-session', function (e) {
+  $(document).on('submit', '#form-add-gb-session', async function (e) {
     e.preventDefault();
+    const $btn = $(this).find('button[type="submit"]');
+    if ($btn.prop('disabled')) return;
+
     const targetClassCode = String($('#gb-session-class').val() || '901');
     const title = String($('#gb-session-title').val() || '').trim();
     const date = String($('#gb-session-date').val() || '').trim();
@@ -3650,14 +4409,23 @@ export function initAdminPanelEvents(): void {
       `${title} (${date})`,
       'assignment'
     );
-    saveDbState(state);
-    $('#admin-gradebook-session-modal').removeClass('is-open').attr('aria-hidden', 'true');
-    renderActiveSection();
-    showToast(
-      'جلسه جدید ثبت شد',
-      `«${toPersianDigits(title)}» به دفتر نمره کلاس ${toPersianDigits(targetClassCode)} اضافه شد.`,
-      'success'
-    );
+
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال ثبت...');
+    try {
+      await persistDbState(state);
+      $('#admin-gradebook-session-modal').removeClass('is-open').attr('aria-hidden', 'true');
+      renderActiveSection();
+      showToast(
+        'جلسه جدید ثبت شد',
+        `«${toPersianDigits(title)}» به دفتر نمره کلاس ${toPersianDigits(targetClassCode)} اضافه شد.`,
+        'success'
+      );
+    } catch (err) {
+      showToast('خطا در ثبت جلسه', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 
   // Helper to get or create a GradebookEntry for (sessionId, studentId)
@@ -3797,26 +4565,58 @@ export function initAdminPanelEvents(): void {
   });
 
   // Save all scores, attendance, positive/negative counts and teacher notes for the active session
-  $(document).on('click', '#btn-save-gradebook-session', function () {
-    const sessionId = Number($(this).attr('data-session-id'));
+  $(document).on('click', '#btn-save-gradebook-session', async function () {
+    const $btn = $(this);
+    if ($btn.prop('disabled')) return;
+
+    const sessionId = Number($btn.attr('data-session-id'));
     if (!sessionId) return;
 
     const state = loadDbState();
     const session = (state.gradebookSessions || []).find((s) => Number(s.id) === Number(sessionId));
 
+    // Track previous notes/scores before syncing from DOM so we only notify students whose feedback/score changed
+    const previousSnapshot = new Map<number, { note: string; score: number | null }>();
+    (state.gradebookEntries || [])
+      .filter((e) => Number(e.sessionId) === Number(sessionId))
+      .forEach((e) => {
+        previousSnapshot.set(Number(e.studentId), {
+          note: String(e.teacherNote || '').trim(),
+          score: e.classScore,
+        });
+      });
+
     syncGradebookInputsFromDom(state, sessionId);
 
-    // Ensure every approved student in this session's class has a persisted entry
+    let feedbackNotifiedCount = 0;
     if (session) {
       const classStudents = state.students.filter(
         (st) => String(st.classCode) === String(session.classCode) && st.status === 'approved'
       );
-      classStudents.forEach((st) => {
+      classStudents.forEach((st, idx) => {
         const en = ensureGradebookEntry(state, sessionId, st.id);
         if (en.attendance === 'absent') {
           en.classScore = null;
           en.positiveCount = 0;
           en.negativeCount = 0;
+        }
+        const prev = previousSnapshot.get(st.id);
+        const currentNote = String(en.teacherNote || '').trim();
+        const noteChanged = Boolean(currentNote && (!prev || prev.note !== currentNote));
+        const scoreChanged = Boolean(en.classScore !== null && (!prev || prev.score !== en.classScore));
+        if (noteChanged || scoreChanged) {
+          feedbackNotifiedCount++;
+          state.announcements.unshift({
+            id: Date.now() + idx + 1,
+            title: `بازخورد و نمره کلاسی (${session.title})`,
+            targetClasses: session.classCode,
+            targetStudentId: st.id,
+            notificationType: 'feedback',
+            priority: 'عادی',
+            content: `دانش‌آموز گرامی ${st.firstName} ${st.lastName}، در جلسه «${session.title}» (${session.sessionDate})${en.classScore !== null ? ` نمره کلاسی ${toPersianDigits(en.classScore)} ثبت شد.` : ''}${currentNote ? ` یادداشت و بازخورد دبیر: «${currentNote}»` : ''}`,
+            createdAt: '۱۴۰۵/۰۸/۱۵ · هم‌اکنون',
+            readers: [],
+          });
         }
       });
     }
@@ -3827,13 +4627,24 @@ export function initAdminPanelEvents(): void {
       session ? `${session.title} (${session.sessionDate})` : 'بروزرسانی نمرات جلسه',
       'assignment'
     );
-    saveDbState(state);
-    renderActiveSection();
-    showToast(
-      'دفتر نمره ذخیره شد',
-      `حضور و غیاب، امتیازات مثبت/منفی و نمرات کلاسی با موفقیت ثبت گردید.`,
-      'success'
-    );
+
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال ذخیره...');
+    try {
+      await persistDbState(state);
+      renderActiveSection();
+      showToast(
+        'دفتر نمره ذخیره شد',
+        feedbackNotifiedCount > 0
+          ? `حضور و غیاب و نمرات ثبت شد و اعلان بازخورد برای ${toPersianDigits(feedbackNotifiedCount)} دانش‌آموز ارسال گردید.`
+          : `حضور و غیاب، امتیازات مثبت/منفی و نمرات کلاسی با موفقیت در دیتابیس ثبت گردید.`,
+        'success'
+      );
+    } catch (err) {
+      showToast('خطا در ذخیره دفتر نمره', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
   });
 }
 

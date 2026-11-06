@@ -4,7 +4,8 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k \"tsx server/index.ts\" \"vite --port=3000 --host=0.0.0.0\"",
+    "dev": "vite --port=3000 --host=0.0.0.0",
+    "dev:both": "concurrently -k \"tsx server/index.ts\" \"vite --port=3000 --host=0.0.0.0\"",
     "dev:server": "tsx server/index.ts",
     "dev:client": "vite --port=3000 --host=0.0.0.0",
     "db:migrate": "tsx server/scripts/migrate.ts",
