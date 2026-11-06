@@ -2,12 +2,8 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import bcrypt from 'bcryptjs';
 import { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
-import {
-  ensureDatabaseSeeded,
-  getDbInfo,
-  pool,
-  testDatabaseConnection,
-} from './db';
+import { getDbInfo, pool, testDatabaseConnection } from './db';
+import { runMigrations } from './migrations';
 
 export const app = express();
 
@@ -30,11 +26,11 @@ function normalizeDigitsServer(input: string): string {
 }
 
 /**
- * Helper: Verify bcrypt hash (supports PHP $2y$ and Node $2a$/$2b$)
+ * Helper: Strictly verify password against bcrypt hash stored in MySQL
+ * (supports $2y$, $2a$, and $2b$ prefixes).
  */
 async function verifyPasswordHash(plain: string, hash: string): Promise<boolean> {
-  if (!hash) return false;
-  if (plain === hash) return true;
+  if (!plain || !hash) return false;
   const normalizedHash = hash.startsWith('$2y$')
     ? '$2a$' + hash.slice(4)
     : hash;
@@ -52,11 +48,6 @@ async function verifyPasswordHash(plain: string, hash: string): Promise<boolean>
 async function handleTestDb(_req: Request, res: Response): Promise<void> {
   const status = await testDatabaseConnection();
   if (status.connected) {
-    try {
-      await ensureDatabaseSeeded();
-    } catch {
-      // Ignore seed error if tables are not yet imported from schema.sql
-    }
     res.json({
       success: true,
       connected: true,
@@ -87,6 +78,7 @@ app.get('/api/health', handleTestDb);
 /**
  * 2. Login Endpoint (Admin & Student)
  * POST /api/auth/login (also /api/auth/login.php)
+ * Strictly verifies credentials against bcrypt password hashes stored in MySQL.
  */
 async function handleLogin(req: Request, res: Response): Promise<void> {
   const rawPhone = String(req.body?.phone ?? '');
@@ -102,49 +94,46 @@ async function handleLogin(req: Request, res: Response): Promise<void> {
   }
 
   try {
-    await ensureDatabaseSeeded();
-
-    // Check Admin credentials in `admins` table
+    // 1. Check Admin credentials in `admins` table
     const [adminRows] = await pool.query<RowDataPacket[]>(
       'SELECT id, first_name, last_name, phone, email, role_title, bio, password_hash FROM admins WHERE phone = ? LIMIT 1',
       [phone]
     );
 
-    if (adminRows.length > 0 || phone === '09120000000') {
+    if (adminRows.length > 0) {
       const admin = adminRows[0];
-      const hashValid = admin
-        ? await verifyPasswordHash(password, String(admin.password_hash || ''))
-        : false;
-      const isDefaultAdminPass =
-        password === 'admin1234' || password === '123456';
+      const hashValid = await verifyPasswordHash(
+        password,
+        String(admin.password_hash || '')
+      );
 
-      if (hashValid || isDefaultAdminPass) {
-        const firstName = admin?.first_name || 'روزبه';
-        const lastName = admin?.last_name || 'توکلی';
-        res.json({
-          success: true,
-          role: 'admin',
-          message: `خوش آمدید ${firstName} ${lastName} — وارد پنل مدیریت شدید.`,
-          admin: {
-            firstName,
-            lastName,
-            phone: admin?.phone || '09120000000',
-            email: admin?.email || 'admin@scoolmeet.ir',
-            roleTitle: admin?.role_title || 'مدیر ارشد اسکول میت',
-            bio: admin?.bio || '',
-          },
+      if (!hashValid) {
+        res.status(401).json({
+          success: false,
+          message: 'رمز عبور حساب مدیر اشتباه است.',
         });
         return;
       }
 
-      res.status(401).json({
-        success: false,
-        message: 'رمز عبور حساب ادمین اشتباه است (رمز پیش‌فرض: admin1234).',
+      const firstName = String(admin.first_name);
+      const lastName = String(admin.last_name);
+      res.json({
+        success: true,
+        role: 'admin',
+        message: `خوش آمدید ${firstName} ${lastName} — وارد پنل مدیریت شدید.`,
+        admin: {
+          firstName,
+          lastName,
+          phone: String(admin.phone),
+          email: String(admin.email),
+          roleTitle: String(admin.role_title || 'مدیر و مدرس ارشد'),
+          bio: String(admin.bio || ''),
+        },
       });
       return;
     }
 
-    // Check Student credentials in `students` table
+    // 2. Check Student credentials in `students` table
     const [studentRows] = await pool.query<RowDataPacket[]>(
       'SELECT id, first_name, last_name, phone, class_code, status, notes, password_hash, created_at FROM students WHERE phone = ? LIMIT 1',
       [phone]
@@ -153,8 +142,7 @@ async function handleLogin(req: Request, res: Response): Promise<void> {
     if (studentRows.length === 0) {
       res.status(401).json({
         success: false,
-        message:
-          'شماره تلفن واردشده در پایگاه داده ثبت نشده است (شماره دانش‌آموز تست: ۰۹۱۲۱۱۱۲۲۳۳).',
+        message: 'حساب کاربری با این شماره تلفن در پایگاه داده یافت نشد.',
       });
       return;
     }
@@ -164,13 +152,11 @@ async function handleLogin(req: Request, res: Response): Promise<void> {
       password,
       String(student.password_hash || '')
     );
-    const isTestPass = password === 'student1234' || password === '123456';
 
-    if (!hashValid && !isTestPass) {
+    if (!hashValid) {
       res.status(401).json({
         success: false,
-        message:
-          'رمز عبور واردشده صحیح نیست (رمز دانش‌آموز تست: student1234).',
+        message: 'رمز عبور واردشده صحیح نیست.',
       });
       return;
     }
@@ -193,7 +179,7 @@ async function handleLogin(req: Request, res: Response): Promise<void> {
       notes: String(student.notes || ''),
       createdAt: student.created_at
         ? new Date(student.created_at).toLocaleDateString('fa-IR')
-        : '۱۴۰۵/۰۸/۱۵',
+        : new Date().toLocaleDateString('fa-IR'),
     };
 
     res.json({
@@ -246,14 +232,16 @@ async function handleRegister(req: Request, res: Response): Promise<void> {
   }
 
   try {
-    await ensureDatabaseSeeded();
-
-    // Check if phone number is already registered in MySQL
-    const [existing] = await pool.query<RowDataPacket[]>(
+    // Check if phone number is already registered in `students` or `admins`
+    const [existingStudent] = await pool.query<RowDataPacket[]>(
       'SELECT id FROM students WHERE phone = ? LIMIT 1',
       [phone]
     );
-    if (existing.length > 0) {
+    const [existingAdmin] = await pool.query<RowDataPacket[]>(
+      'SELECT id FROM admins WHERE phone = ? LIMIT 1',
+      [phone]
+    );
+    if (existingStudent.length > 0 || existingAdmin.length > 0) {
       res.status(409).json({
         success: false,
         message: 'این شماره تلفن قبلاً در پایگاه داده ثبت شده است.',
@@ -261,7 +249,7 @@ async function handleRegister(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    const passwordHash = await bcrypt.hash(password, 10);
+    const passwordHash = await bcrypt.hash(password, 12);
     const notes = 'ثبت‌نام جدید از طریق فرم صفحه اصلی';
 
     const [result] = await pool.query<ResultSetHeader>(
@@ -301,21 +289,17 @@ app.post('/api/auth/register.php', handleRegister);
 
 /**
  * 4. Full Application State Sync with MySQL (GET /api/state & POST /api/state)
- * Synchronizes students, classes, assignments, submissions, resources,
- * announcements, tickets, admin profile, and system settings with `scoolmeet_db`.
  */
 app.get('/api/state', async (_req: Request, res: Response): Promise<void> => {
   try {
-    await ensureDatabaseSeeded();
-
     const [adminRows] = await pool.query<RowDataPacket[]>(
-      'SELECT * FROM admins ORDER BY id ASC LIMIT 1'
+      'SELECT id, first_name, last_name, phone, email, role_title, bio FROM admins ORDER BY id ASC LIMIT 1'
     );
     const [classRows] = await pool.query<RowDataPacket[]>(
       'SELECT * FROM classes ORDER BY code ASC'
     );
     const [studentRows] = await pool.query<RowDataPacket[]>(
-      'SELECT * FROM students ORDER BY id DESC'
+      'SELECT id, first_name, last_name, phone, class_code, status, notes, created_at FROM students ORDER BY id DESC'
     );
     const [settingRows] = await pool.query<RowDataPacket[]>(
       'SELECT setting_key, setting_value FROM system_settings WHERE setting_key = ?',
@@ -341,7 +325,7 @@ app.get('/api/state', async (_req: Request, res: Response): Promise<void> => {
       notes: String(row.notes || ''),
       createdAt: row.created_at
         ? new Date(row.created_at).toLocaleDateString('fa-IR')
-        : '۱۴۰۵/۰۸/۰۱',
+        : '',
     }));
 
     const classes = classRows.map((row) => ({
@@ -363,7 +347,7 @@ app.get('/api/state', async (_req: Request, res: Response): Promise<void> => {
           email: String(adminRows[0].email),
           roleTitle: String(adminRows[0].role_title),
           bio: String(adminRows[0].bio || ''),
-          password: 'admin1234',
+          password: '',
         }
       : undefined;
 
@@ -371,9 +355,11 @@ app.get('/api/state', async (_req: Request, res: Response): Promise<void> => {
       success: true,
       data: {
         ...savedExtendedState,
-        ...(admin ? { admin: { ...(savedExtendedState.admin as object), ...admin } } : {}),
-        ...(classes.length > 0 ? { classes } : {}),
-        ...(students.length > 0 ? { students } : {}),
+        ...(admin
+          ? { admin: { ...(savedExtendedState.admin as object), ...admin } }
+          : {}),
+        classes,
+        students,
       },
     });
   } catch (err: unknown) {
@@ -396,24 +382,43 @@ app.post('/api/state', async (req: Request, res: Response): Promise<void> => {
   try {
     await conn.beginTransaction();
 
-    // 1. Sync Admin profile
-    if (state.admin) {
-      await conn.query(
-        `UPDATE admins
-         SET first_name = ?, last_name = ?, email = ?, role_title = ?, bio = ?
-         WHERE phone = ?`,
-        [
-          String(state.admin.firstName || 'روزبه'),
-          String(state.admin.lastName || 'توکلی'),
-          String(state.admin.email || 'admin@scoolmeet.ir'),
-          String(state.admin.roleTitle || 'مدیر ارشد اسکول میت'),
-          String(state.admin.bio || ''),
-          normalizeDigitsServer(String(state.admin.phone || '09120000000')),
-        ]
-      );
+    // 1. Sync Admin profile (if an admin exists with this phone)
+    if (state.admin && state.admin.phone) {
+      const adminPhone = normalizeDigitsServer(String(state.admin.phone));
+      if (state.admin.password && String(state.admin.password).length >= 6) {
+        const newAdminHash = await bcrypt.hash(String(state.admin.password), 12);
+        await conn.query(
+          `UPDATE admins
+           SET first_name = ?, last_name = ?, email = ?, role_title = ?, bio = ?, password_hash = ?
+           WHERE phone = ?`,
+          [
+            String(state.admin.firstName || ''),
+            String(state.admin.lastName || ''),
+            String(state.admin.email || ''),
+            String(state.admin.roleTitle || ''),
+            String(state.admin.bio || ''),
+            newAdminHash,
+            adminPhone,
+          ]
+        );
+      } else {
+        await conn.query(
+          `UPDATE admins
+           SET first_name = ?, last_name = ?, email = ?, role_title = ?, bio = ?
+           WHERE phone = ?`,
+          [
+            String(state.admin.firstName || ''),
+            String(state.admin.lastName || ''),
+            String(state.admin.email || ''),
+            String(state.admin.roleTitle || ''),
+            String(state.admin.bio || ''),
+            adminPhone,
+          ]
+        );
+      }
     }
 
-    // 2. Sync Classes (901, 902, 903)
+    // 2. Sync Classes
     if (Array.isArray(state.classes)) {
       for (const cls of state.classes) {
         if (['901', '902', '903'].includes(String(cls.code))) {
@@ -443,9 +448,8 @@ app.post('/api/state', async (req: Request, res: Response): Promise<void> => {
       }
     }
 
-    // 3. Sync Students
+    // 3. Sync existing Students metadata (status, class, notes, name) without inserting demo passwords
     if (Array.isArray(state.students)) {
-      const defaultPassHash = await bcrypt.hash('student1234', 10);
       for (const st of state.students) {
         const cleanPhone = normalizeDigitsServer(String(st.phone || ''));
         const validClass = ['901', '902', '903'].includes(String(st.classCode))
@@ -458,36 +462,65 @@ app.post('/api/state', async (req: Request, res: Response): Promise<void> => {
           : 'pending';
 
         if (/^09\d{9}$/.test(cleanPhone)) {
-          await conn.query(
-            `INSERT INTO students (id, first_name, last_name, phone, class_code, status, notes, password_hash)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE
-               first_name = VALUES(first_name),
-               last_name = VALUES(last_name),
-               class_code = VALUES(class_code),
-               status = VALUES(status),
-               notes = VALUES(notes)`,
-            [
-              Number(st.id) || null,
-              String(st.firstName || ''),
-              String(st.lastName || ''),
-              cleanPhone,
-              validClass,
-              validStatus,
-              String(st.notes || ''),
-              defaultPassHash,
-            ]
-          );
+          if (st.password && String(st.password).length >= 6) {
+            const stHash = await bcrypt.hash(String(st.password), 12);
+            await conn.query(
+              `INSERT INTO students (id, first_name, last_name, phone, class_code, status, notes, password_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON DUPLICATE KEY UPDATE
+                 first_name = VALUES(first_name),
+                 last_name = VALUES(last_name),
+                 class_code = VALUES(class_code),
+                 status = VALUES(status),
+                 notes = VALUES(notes),
+                 password_hash = VALUES(password_hash)`,
+              [
+                Number(st.id) || null,
+                String(st.firstName || ''),
+                String(st.lastName || ''),
+                cleanPhone,
+                validClass,
+                validStatus,
+                String(st.notes || ''),
+                stHash,
+              ]
+            );
+          } else {
+            await conn.query(
+              `UPDATE students
+               SET first_name = ?, last_name = ?, class_code = ?, status = ?, notes = ?
+               WHERE phone = ?`,
+              [
+                String(st.firstName || ''),
+                String(st.lastName || ''),
+                validClass,
+                validStatus,
+                String(st.notes || ''),
+                cleanPhone,
+              ]
+            );
+          }
         }
       }
     }
 
-    // 4. Persist full serialized state in `system_settings`
+    // 4. Persist extended state (without plain passwords) in `system_settings`
+    const sanitizedState = {
+      ...state,
+      admin: state.admin ? { ...state.admin, password: '' } : undefined,
+      students: Array.isArray(state.students)
+        ? state.students.map((s: Record<string, unknown>) => ({
+            ...s,
+            password: undefined,
+          }))
+        : [],
+    };
+
     await conn.query(
       `INSERT INTO system_settings (setting_key, setting_value)
        VALUES ('app_extended_state', ?)
        ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
-      [JSON.stringify(state)]
+      [JSON.stringify(sanitizedState)]
     );
 
     await conn.commit();
@@ -512,8 +545,6 @@ async function handleAdminController(req: Request, res: Response): Promise<void>
   const action = String(req.query.action || req.body?.action || 'summary');
 
   try {
-    await ensureDatabaseSeeded();
-
     if (action === 'summary') {
       const [[totalSt]] = await pool.query<RowDataPacket[]>(
         'SELECT COUNT(*) AS cnt FROM students'
@@ -601,10 +632,23 @@ export function startApiServer(port = Number(process.env.API_PORT) || 3001): voi
     );
     const status = await testDatabaseConnection();
     if (status.connected) {
-      await ensureDatabaseSeeded().catch(() => {});
       console.log(
         `[ScoolMeet MySQL] Connected to '${status.database}' successfully.`
       );
+      try {
+        const migrationResult = await runMigrations();
+        if (migrationResult.applied.length > 0) {
+          console.log(
+            `[ScoolMeet Migrations] Applied ${migrationResult.applied.length} pending migration(s): ${migrationResult.applied.join(', ')}`
+          );
+        } else {
+          console.log(
+            `[ScoolMeet Migrations] Schema is up to date (${migrationResult.totalExecuted} migration(s) verified).`
+          );
+        }
+      } catch (migErr) {
+        console.error('[ScoolMeet Migrations] Error applying migrations:', migErr);
+      }
     } else {
       console.warn(
         `[ScoolMeet MySQL] Warning: Could not connect to MySQL (${status.error}). Ensure MySQL service is running.`
@@ -614,14 +658,12 @@ export function startApiServer(port = Number(process.env.API_PORT) || 3001): voi
 
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
-      // Port 3001 is already listening from another process
       return;
     }
     console.error('[ScoolMeet API Error]:', err);
   });
 }
 
-// Start automatically when executed directly (e.g., via `tsx server/index.ts`)
 const isDirectRun =
   process.argv[1] &&
   (process.argv[1].endsWith('server/index.ts') ||

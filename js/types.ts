@@ -220,4 +220,6 @@ export interface ApiAuthResponse {
   role?: 'admin' | 'student';
   message: string;
   student?: StudentRecord;
+  admin?: Partial<AdminProfile>;
 }
+

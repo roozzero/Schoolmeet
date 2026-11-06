@@ -7,6 +7,9 @@
     "dev": "concurrently -k \"tsx server/index.ts\" \"vite --port=3000 --host=0.0.0.0\"",
     "dev:server": "tsx server/index.ts",
     "dev:client": "vite --port=3000 --host=0.0.0.0",
+    "db:migrate": "tsx server/scripts/migrate.ts",
+    "db:reset-demo": "tsx server/scripts/reset-demo-data.ts",
+    "db:create-admin": "tsx server/scripts/create-admin.ts",
     "build": "vite build",
     "preview": "vite preview --port=3000 --host=0.0.0.0",
     "lint": "tsc --noEmit"

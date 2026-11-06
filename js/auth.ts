@@ -119,41 +119,20 @@ $(function () {
   $('#tab-btn-login').on('click', () => switchAuthTab('login', true));
   $('#tab-btn-register').on('click', () => switchAuthTab('register', true));
 
-  // Quick Admin Fill / Login Helper Button
+  // Quick Admin Fill Helper Button (submits through real MySQL authentication)
   $('#btn-admin-quick-login').on('click', () => {
     $('#login-phone').val('۰۹۱۲۰۰۰۰۰۰۰');
-    $('#login-password').val('admin1234');
     clearFieldError($('#login-phone'), true);
-    clearFieldError($('#login-password'), true);
-    enterAdminWorkspace('dashboard', true);
-    showToast(
-      'ورود به پنل مدیریت',
-      'با حساب مدیر سامانه (۰۹۱۲۰۰۰۰۰۰۰) وارد پنل مدیریت شدید.',
-      'success'
-    );
+    $('#login-password').trigger('focus');
+    $('#form-login').trigger('submit');
   });
 
-  // Quick Test Student Fill / Login Helper Button
+  // Quick Student Fill Helper Button (submits through real MySQL authentication)
   $('#btn-student-quick-login').on('click', () => {
     $('#login-phone').val('۰۹۱۲۱۱۱۲۲۳۳');
-    $('#login-password').val('student1234');
     clearFieldError($('#login-phone'), true);
-    clearFieldError($('#login-password'), true);
-
-    const state = loadDbState();
-    const testSt =
-      state.students.find((s) => s.phone === '09121112233') || state.students[0];
-    if (testSt) {
-      state.activeStudentId = testSt.id;
-      saveDbState(state);
-    }
-
-    enterStudentWorkspace('dashboard', true);
-    showToast(
-      'ورود به پنل دانش‌آموز',
-      'با حساب دانش‌آموز تست (امیرحسین رضایی — ۰۹۱۲۱۱۱۲۲۳۳) وارد پنل دانش‌آموزی شدید.',
-      'success'
-    );
+    $('#login-password').trigger('focus');
+    $('#form-login').trigger('submit');
   });
 
   // 2. Password Visibility Toggle
