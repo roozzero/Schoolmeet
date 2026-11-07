@@ -447,11 +447,10 @@ export function renderActiveStudentSection(preserveInputSelector?: string): void
    ============================================================================ */
 function renderStudentDashboard($container: JQuery<HTMLElement>, state: DatabaseState): void {
   const student = getActiveStudent(state);
-  const myClassInfo = state.classes.find((c) => c.code === student.classCode);
   const myAssignments = state.assignments.filter((a) =>
     isAssignmentForStudent(a, student)
   );
-  const mySubmissions = state.submissions.filter((s) => s.studentId === student.id);
+  const mySubmissions = state.submissions.filter((s) => Number(s.studentId) === Number(student.id));
   const myGradebookEntries = state.gradebookEntries.filter((e) => e.studentId === student.id);
   const myAnnouncements = state.announcements.filter((an) =>
     isAnnouncementForStudent(an, student)
@@ -484,7 +483,7 @@ function renderStudentDashboard($container: JQuery<HTMLElement>, state: Database
               ${student.classCode ? `کلاس ${toPersianDigits(student.classCode)}` : 'بدون کلاس'}
             </div>
             <div class="text-[10.5px] font-semibold text-[#059669] mt-0.5 truncate">
-              ${myClassInfo ? toPersianDigits(myClassInfo.scheduleSummary) : 'عضو فعال دوره'}
+              عضو فعال دوره
             </div>
           </div>
           <div class="kpi-icon-box bg-[#EADCCA] text-[#5A3A22]">
@@ -709,7 +708,9 @@ function renderStudentAssignments($container: JQuery<HTMLElement>, state: Databa
   const myAssignments = state.assignments.filter((a) =>
     isAssignmentForStudent(a, student)
   );
-  const mySubmissions = state.submissions.filter((s) => s.studentId === student.id);
+  const mySubmissions = state.submissions.filter(
+    (s) => Number(s.studentId) === Number(student.id)
+  );
 
   $container.html(`
     <div class="space-y-4">
@@ -732,7 +733,9 @@ function renderStudentAssignments($container: JQuery<HTMLElement>, state: Databa
           myAssignments.length
             ? myAssignments
                 .map((hw) => {
-                  const sub = mySubmissions.find((s) => s.assignmentId === hw.id);
+                  const sub = mySubmissions.find(
+                    (s) => Number(s.assignmentId) === Number(hw.id)
+                  );
                   const lockInfo = getAssignmentLockState(hw, getAuthoritativeNowMs());
                   const recipientLabel = formatStudentItemRecipient(
                     state,
@@ -748,7 +751,7 @@ function renderStudentAssignments($container: JQuery<HTMLElement>, state: Databa
                           <div class="flex items-center gap-1.5 flex-wrap">
                             <span class="text-[11px] font-extrabold px-2.5 py-1 rounded-lg ${
                               sub
-                                ? sub.score !== null
+                                ? sub.score !== null && sub.score !== undefined
                                   ? 'bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0]'
                                   : 'bg-[#E2EFEA] text-[#1B5E5A]'
                                 : lockInfo.isLocked
@@ -757,7 +760,7 @@ function renderStudentAssignments($container: JQuery<HTMLElement>, state: Databa
                             }">
                               ${
                                 sub
-                                  ? sub.score !== null
+                                  ? sub.score !== null && sub.score !== undefined
                                     ? `نمره کسب‌شده: ${toPersianDigits(sub.score)} از ${toPersianDigits(hw.maxScore)}`
                                     : 'تحویل داده شده (در انتظار نمره)'
                                   : lockInfo.isClosedByAdmin
@@ -796,7 +799,7 @@ function renderStudentAssignments($container: JQuery<HTMLElement>, state: Databa
                           <strong class="${lockInfo.isDeadlineExpired ? 'text-[#E11D48]' : 'text-[#251B15]'}">${toPersianDigits(hw.dueDate)}</strong>
                         </div>
                         ${
-                          sub && sub.score !== null
+                          sub && sub.score !== null && sub.score !== undefined
                             ? `<div class="p-2.5 rounded-xl bg-[#ECFDF5] border border-[#A7F3D0] flex items-center justify-between gap-2">
                                 <span class="text-[11px] font-extrabold text-[#065F46]">نمره نهایی مدرس:</span>
                                 <span class="text-xs font-black text-[#059669] tabular-nums">${toPersianDigits(sub.score)} از ${toPersianDigits(hw.maxScore)}</span>
@@ -827,79 +830,6 @@ function renderStudentAssignments($container: JQuery<HTMLElement>, state: Databa
             : `<div class="col-span-full admin-surface-card text-center py-8 text-xs text-[#6E5D4F]">تکلیفی برای کلاس شما ثبت نشده است.</div>`
         }
       </div>
-
-      <!-- جدول تکالیف پاسخ داده شده همراه با نام دانش‌آموز -->
-      <div class="admin-surface-card space-y-3">
-        <div class="flex items-center justify-between gap-2 flex-wrap">
-          <h3 class="text-sm font-extrabold text-[#251B15] m-0">
-            جدول تکالیف پاسخ داده شده (${toPersianDigits(mySubmissions.length)} مورد)
-          </h3>
-          <span class="text-xs font-bold text-[#6E5D4F]">
-            سوابق پاسخ‌های ثبت‌شده و نمرات دریافتی
-          </span>
-        </div>
-
-        <div class="admin-table-wrap">
-          <table class="admin-table">
-            <thead>
-              <tr>
-                <th>ردیف</th>
-                <th>نام دانش‌آموز</th>
-                <th>عنوان تکلیف</th>
-                <th>فایل پیوست</th>
-                <th>زمان ثبت پاسخ</th>
-                <th>نمره مدرس</th>
-                <th>عملیات</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${
-                mySubmissions.length
-                  ? mySubmissions
-                      .map((sub, idx) => {
-                        const hw = state.assignments.find((a) => a.id === sub.assignmentId);
-                        const stFullName =
-                          (sub.studentName || '').trim() ||
-                          `${student.firstName} ${student.lastName}`.trim();
-                        return `
-                          <tr>
-                            <td class="tabular-nums font-bold">${toPersianDigits(idx + 1)}</td>
-                            <td class="font-extrabold text-[#251B15]">${toPersianDigits(stFullName)}</td>
-                            <td class="font-bold text-[#5A3A22]">${toPersianDigits(hw ? hw.title : `تکلیف #${sub.assignmentId}`)}</td>
-                            <td>
-                              ${
-                                sub.fileName
-                                  ? `<span class="text-xs font-bold text-[#1B5E5A]">${toPersianDigits(sub.fileName)}</span>`
-                                  : `<span class="text-xs text-[#6E5D4F]">بدون فایل پیوست</span>`
-                              }
-                            </td>
-                            <td class="tabular-nums text-xs text-[#6E5D4F]">${toPersianDigits(sub.submittedAt)}</td>
-                            <td class="tabular-nums">
-                              ${
-                                sub.score !== null && sub.score !== undefined
-                                  ? `<span class="inline-flex items-center px-2.5 py-1 rounded-lg bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0] text-xs font-black">${toPersianDigits(sub.score)} از ${toPersianDigits(hw ? hw.maxScore : 20)}</span>`
-                                  : `<span class="inline-flex items-center px-2.5 py-1 rounded-lg bg-[#FFFBEB] text-[#D97706] border border-[#FDE68A] text-[11px] font-bold">در انتظار نمره</span>`
-                              }
-                            </td>
-                            <td>
-                              <button
-                                type="button"
-                                class="btn-admin-action !h-8 !px-3 !text-xs js-st-open-hw-detail"
-                                data-id="${sub.assignmentId}"
-                              >
-                                مشاهده جزئیات
-                              </button>
-                            </td>
-                          </tr>
-                        `;
-                      })
-                      .join('')
-                  : `<tr><td colspan="7" class="text-center py-6 text-xs text-[#6E5D4F]">هنوز پاسخی برای تکالیف ثبت نشده است.</td></tr>`
-              }
-            </tbody>
-          </table>
-        </div>
-      </div>
     </div>
   `);
 }
@@ -910,7 +840,7 @@ function renderStudentAssignmentDetailPage(
   student: StudentRecord,
   assignmentId: number
 ): void {
-  const hw = state.assignments.find((a) => a.id === assignmentId);
+  const hw = state.assignments.find((a) => Number(a.id) === Number(assignmentId));
   if (!hw) {
     studentHwSubView = 'list';
     renderStudentAssignments($container, state);
@@ -918,10 +848,14 @@ function renderStudentAssignmentDetailPage(
   }
 
   const existingSub = state.submissions.find(
-    (s) => s.assignmentId === hw.id && s.studentId === student.id
+    (s) => Number(s.assignmentId) === Number(hw.id) && Number(s.studentId) === Number(student.id)
   );
   const lockInfo = getAssignmentLockState(hw, getAuthoritativeNowMs());
-  const isGraded = Boolean(existingSub && existingSub.score !== null);
+  const isGraded = Boolean(
+    existingSub && existingSub.score !== null && existingSub.score !== undefined
+  );
+  const actualFeedback = existingSub ? String(existingSub.teacherFeedback || '').trim() : '';
+  const hasFeedback = actualFeedback.length > 0;
   const isSubmissionBlocked = lockInfo.isLocked || isGraded;
   const studentDisplayName =
     existingSub && existingSub.studentName
@@ -979,7 +913,7 @@ function renderStudentAssignmentDetailPage(
             existingSub
               ? `
               <div class="admin-surface-card space-y-3.5 ${
-                existingSub.score !== null ? 'border-[#A7F3D0] bg-[#FAFDFC]' : ''
+                isGraded ? 'border-[#A7F3D0] bg-[#FAFDFC]' : ''
               }">
                 <div class="flex items-center justify-between gap-3 flex-wrap pb-3 border-b border-[#E6D8C5]">
                   <div>
@@ -989,11 +923,11 @@ function renderStudentAssignmentDetailPage(
                     </div>
                   </div>
                   ${
-                    existingSub.score !== null
+                    isGraded
                       ? `<div class="px-3.5 py-2 rounded-xl bg-[#ECFDF5] border border-[#A7F3D0] text-center shrink-0">
                           <div class="text-[10.5px] font-bold text-[#047857]">نمره کسب‌شده</div>
                           <div class="text-base font-black text-[#059669] tabular-nums mt-0.5">
-                            ${toPersianDigits(existingSub.score)} <span class="text-xs font-bold">از ${toPersianDigits(hw.maxScore)}</span>
+                            ${toPersianDigits(existingSub.score!)} <span class="text-xs font-bold">از ${toPersianDigits(hw.maxScore)}</span>
                           </div>
                         </div>`
                       : `<span class="px-3 py-1.5 rounded-xl bg-[#FFFBEB] border border-[#FDE68A] text-xs font-extrabold text-[#D97706]">
@@ -1029,32 +963,68 @@ function renderStudentAssignmentDetailPage(
                 </div>
 
                 ${
-                  existingSub.score !== null || existingSub.teacherFeedback
-                    ? `<div class="p-3.5 rounded-xl bg-[#ECFDF5] border border-[#A7F3D0] space-y-1.5">
-                        <div class="flex items-center justify-between gap-2">
-                          <span class="text-xs font-black text-[#065F46]">بازخورد و نظر مدرس:</span>
-                          <span class="text-[11px] font-extrabold text-[#059669]">تصحیح شده</span>
+                  isGraded || hasFeedback
+                    ? `<div class="p-3.5 rounded-xl bg-[#ECFDF5] border border-[#A7F3D0] space-y-2">
+                        <div class="flex items-center justify-between gap-2 flex-wrap">
+                          <span class="text-xs font-black text-[#065F46]">نمره و بازخورد مدرس:</span>
+                          ${
+                            isGraded
+                              ? `<span class="text-xs font-black text-[#059669] tabular-nums">نمره: ${toPersianDigits(existingSub.score!)} از ${toPersianDigits(hw.maxScore)}</span>`
+                              : ''
+                          }
                         </div>
-                        <p class="text-xs text-[#064E3B] m-0 leading-relaxed whitespace-pre-line">
-                          ${toPersianDigits(existingSub.teacherFeedback || 'تکلیف شما بررسی و نمره نهایی ثبت گردید.')}
-                        </p>
+                        ${
+                          hasFeedback
+                            ? `<p class="text-xs text-[#064E3B] m-0 leading-relaxed whitespace-pre-line">${toPersianDigits(actualFeedback)}</p>`
+                            : `<p class="text-xs text-[#6E5D4F] m-0">بازخورد متنی برای این تکلیف ثبت نشده است.</p>`
+                        }
                       </div>`
-                    : `<p class="text-xs text-[#6E5D4F] m-0">تکلیف شما در تاریخ ${toPersianDigits(existingSub.submittedAt)} ارسال شده است و پس از تصحیح مدرس، نمره و بازخورد در این بخش قرار می‌گیرد.</p>`
+                    : `<p class="text-xs text-[#6E5D4F] m-0">تکلیف شما در تاریخ ${toPersianDigits(existingSub.submittedAt)} ارسال شده است و پس از تصحیح مدرس، نمره و بازخورد در این بخش نمایش داده می‌شود.</p>`
                 }
               </div>`
               : ''
           }
         </div>
 
-        <!-- ستون چپ: فرم ارسال یا بروزرسانی پاسخ و فایل تکلیف (یا پیام قفل شدن تکلیف) -->
+        <!-- ستون چپ: فرم ارسال یا بروزرسانی پاسخ و فایل تکلیف (یا جزئیات نمره نهایی و قفل ارسال) -->
         <div class="lg:col-span-6 admin-surface-card">
           ${
             isSubmissionBlocked
               ? `
-              <div class="space-y-3">
+              <div class="space-y-3.5">
                 <h3 class="text-sm font-extrabold text-[#251B15] m-0">
-                  وضعیت ارسال و ویرایش پاسخ تکلیف
+                  ${isGraded ? 'نمره نهایی و بازخورد مدرس' : 'وضعیت ارسال و ویرایش پاسخ تکلیف'}
                 </h3>
+                ${
+                  isGraded && existingSub
+                    ? `
+                    <div class="p-4 rounded-xl bg-[#ECFDF5] border border-[#A7F3D0] space-y-3">
+                      <div class="flex items-center justify-between gap-3 flex-wrap">
+                        <div>
+                          <div class="text-xs font-extrabold text-[#065F46]">وضعیت ارزیابی تکلیف</div>
+                          <div class="text-[11px] font-bold text-[#047857] mt-0.5">
+                            تصحیح و نمره‌دهی شده توسط مدرس
+                          </div>
+                        </div>
+                        <div class="px-4 py-2 rounded-xl bg-white border border-[#A7F3D0] text-center">
+                          <div class="text-[10.5px] font-bold text-[#047857]">نمره شما</div>
+                          <div class="text-lg font-black text-[#059669] tabular-nums">
+                            ${toPersianDigits(existingSub.score!)} <span class="text-xs font-bold">از ${toPersianDigits(hw.maxScore)}</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="pt-2.5 border-t border-[#A7F3D0]/70 space-y-1">
+                        <div class="text-xs font-black text-[#065F46]">بازخورد مدرس:</div>
+                        ${
+                          hasFeedback
+                            ? `<p class="text-xs text-[#064E3B] m-0 leading-relaxed whitespace-pre-line">${toPersianDigits(actualFeedback)}</p>`
+                            : `<p class="text-xs text-[#6E5D4F] m-0">بازخورد متنی برای این تکلیف ثبت نشده است.</p>`
+                        }
+                      </div>
+                    </div>
+                    `
+                    : ''
+                }
                 <div class="p-4 rounded-xl bg-[#FFF1F2] border border-[#FECDD3] space-y-2">
                   <div class="text-xs font-extrabold text-[#E11D48]">
                     ${
@@ -2154,10 +2124,27 @@ async function startReplyTicketFileUpload(file: File): Promise<void> {
 }
 
 export function initStudentPanelEvents(): void {
-  // Automatically re-render Student Panel when initial MySQL state finishes loading
+  // Automatically re-render Student Panel when MySQL state finishes syncing
   onDbStateSynced(() => {
     if (!$('#student-workspace-view').hasClass('view-hidden')) {
-      renderActiveStudentSection();
+      const activeEl = document.activeElement as HTMLElement | null;
+      const isTypingInForm =
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+          activeEl.tagName === 'TEXTAREA' ||
+          activeEl.tagName === 'SELECT') &&
+        activeEl.id !== 'st-resource-search-input' &&
+        activeEl.id !== 'st-announcement-search';
+      if (!isTypingInForm) {
+        renderActiveStudentSection();
+      }
+    }
+  });
+
+  // Sync latest grades/feedback from MySQL when returning focus to the student window/tab
+  $(window).on('focus', () => {
+    if (!$('#student-workspace-view').hasClass('view-hidden')) {
+      void syncStateFromBackend();
     }
   });
 
@@ -2165,6 +2152,7 @@ export function initStudentPanelEvents(): void {
     const sec = $(this).data('section') as StudentSectionId;
     if (sec) {
       navigateStudentSection(sec);
+      void syncStateFromBackend();
     }
   });
 
@@ -2190,12 +2178,14 @@ export function initStudentPanelEvents(): void {
     $('.student-nav-btn[data-section="assignments"]').addClass('is-active');
     updateBrowserUrl('/student/assignments/detail');
     renderActiveStudentSection();
+    void syncStateFromBackend();
   });
 
   $(document).on('click', '.js-st-back-to-hw-list', function () {
     studentHwSubView = 'list';
     updateBrowserUrl('/student/assignments');
     renderActiveStudentSection();
+    void syncStateFromBackend();
   });
 
   $(document).on('click', '.js-st-download-hw-guide', function () {
