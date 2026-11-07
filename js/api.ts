@@ -1,9 +1,8 @@
 import {
   API_BASE_URL,
+  getActiveStudentSessionId,
   getActiveUserRole,
   loadDbState,
-  logAdminActivity,
-  persistDbState,
   setActiveStudentSessionId,
   setActiveUserRole,
   syncStateFromBackend,
@@ -19,16 +18,20 @@ import {
   StudentStatus,
   TicketItem,
 } from './types';
-import { normalizeDigits } from './validation';
+import { normalizeDigits, normalizeIranianPhone } from './validation';
 
 function buildJsonHeaders(explicitRole?: 'admin' | 'student'): Record<string, string> {
   const role = explicitRole || getActiveUserRole();
+  const studentId = getActiveStudentSessionId();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: 'application/json',
   };
   if (role) {
     headers['X-User-Role'] = role;
+  }
+  if (studentId > 0) {
+    headers['X-Student-Id'] = String(studentId);
   }
   return headers;
 }
@@ -60,9 +63,10 @@ export async function testDatabaseConnectionApi(): Promise<{
 /**
  * Authenticate Admin or Student strictly against Node.js + MySQL Backend (/api/auth/login).
  * Verifies credentials against the bcrypt password hash stored in MySQL (`scoolmeet_db`).
+ * Blocks pending or rejected students on the backend (`403 ACCOUNT_PENDING_APPROVAL`).
  */
 export async function loginStudentApi(payload: LoginPayload): Promise<ApiAuthResponse> {
-  const normalizedPhone = normalizeDigits(payload.phone);
+  const normalizedPhone = normalizeIranianPhone(payload.phone);
 
   try {
     const res = await fetch(`${API_BASE_URL}/auth/login`, {
@@ -79,12 +83,23 @@ export async function loginStudentApi(payload: LoginPayload): Promise<ApiAuthRes
     if (data.success) {
       if (data.role === 'admin') {
         setActiveUserRole('admin');
+        setActiveStudentSessionId(0);
       } else if (data.role === 'student' && data.student) {
+        if (data.student.status !== 'approved') {
+          setActiveUserRole('');
+          setActiveStudentSessionId(0);
+          return {
+            success: false,
+            code: 'ACCOUNT_PENDING_APPROVAL',
+            message:
+              'حساب کاربری شما در انتظار تأیید مدیر سامانه است. پس از تأیید مدیریت می‌توانید وارد پنل شوید.',
+          };
+        }
         setActiveUserRole('student');
         setActiveStudentSessionId(data.student.id);
       }
 
-      // Ensure we have the latest backend state before merging login session info
+      // Synchronize relational MySQL state after setting active session
       await syncStateFromBackend();
       const state = loadDbState();
 
@@ -95,19 +110,6 @@ export async function loginStudentApi(payload: LoginPayload): Promise<ApiAuthRes
           password: '',
         };
       } else if (data.role === 'student' && data.student) {
-        const existingIdx = state.students.findIndex(
-          (s) =>
-            s.id === data.student!.id ||
-            normalizeDigits(s.phone) === normalizeDigits(data.student!.phone)
-        );
-        if (existingIdx >= 0) {
-          state.students[existingIdx] = {
-            ...state.students[existingIdx],
-            ...data.student,
-          };
-        } else {
-          state.students.unshift(data.student);
-        }
         state.activeStudentId = data.student.id;
         setActiveStudentSessionId(data.student.id);
       }
@@ -123,21 +125,25 @@ export async function loginStudentApi(payload: LoginPayload): Promise<ApiAuthRes
 }
 
 /**
- * Register New Student via Node.js + MySQL Backend (/api/auth/register)
+ * Register New Student via Node.js + MySQL Backend (/api/auth/register).
+ * Newly registered students with `status === 'pending'` are NOT logged into the student workspace
+ * until an administrator approves their account.
  */
 export async function registerStudentApi(
   payload: StudentRegistrationPayload
 ): Promise<ApiAuthResponse> {
-  const normalizedPhone = normalizeDigits(payload.phone);
+  const normalizedPhone = normalizeIranianPhone(payload.phone);
+  const normalizedEmail = normalizeDigits(payload.email || '').trim();
 
   try {
     const res = await fetch(`${API_BASE_URL}/auth/register`, {
       method: 'POST',
-      headers: buildJsonHeaders('student'),
+      headers: buildJsonHeaders(),
       body: JSON.stringify({
         firstName: payload.firstName.trim(),
         lastName: payload.lastName.trim(),
         phone: normalizedPhone,
+        email: normalizedEmail,
         classCode: payload.classCode,
         password: payload.password,
       }),
@@ -146,28 +152,15 @@ export async function registerStudentApi(
     const data = (await res.json()) as ApiAuthResponse;
 
     if (data.success && data.student) {
-      setActiveUserRole('student');
-      setActiveStudentSessionId(data.student.id);
-      await syncStateFromBackend();
-      const state = loadDbState();
-      const createdStudent: StudentRecord = {
-        ...data.student,
-      };
-      const existingIdx = state.students.findIndex((s) => s.id === createdStudent.id);
-      if (existingIdx >= 0) {
-        state.students[existingIdx] = createdStudent;
+      if (data.student.status === 'approved') {
+        setActiveUserRole('student');
+        setActiveStudentSessionId(data.student.id);
+        await syncStateFromBackend();
       } else {
-        state.students.unshift(createdStudent);
+        // Pending approval: ensure student session is NOT activated
+        setActiveUserRole('');
+        setActiveStudentSessionId(0);
       }
-      state.activeStudentId = createdStudent.id;
-      logAdminActivity(
-        state,
-        `ثبت‌نام دانش‌آموز جدید (${createdStudent.firstName} ${createdStudent.lastName} — کلاس ${createdStudent.classCode})`,
-        `شماره تماس: ${createdStudent.phone} · ثبت‌شده در پایگاه داده MySQL`,
-        'student',
-        true
-      );
-      await persistDbState(state);
     }
 
     return data;
@@ -181,13 +174,13 @@ export async function registerStudentApi(
 
 /**
  * Update Student Profile (firstName, lastName, email, bio, avatarUrl, avatarRemoved) via PUT /api/student/profile
- * Strictly enforces phone immutability on backend.
+ * Strictly enforces phone immutability and mandatory email on backend.
  */
 export async function updateStudentProfileApi(payload: {
   id: number;
   firstName: string;
   lastName: string;
-  email?: string;
+  email: string;
   bio?: string;
   avatarUrl?: string;
   avatarRemoved?: boolean;
@@ -256,7 +249,10 @@ export async function updateAdminProfileApi(payload: {
     const res = await fetch(`${API_BASE_URL}/admin/profile`, {
       method: 'PUT',
       headers: buildJsonHeaders('admin'),
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        ...payload,
+        phone: normalizeIranianPhone(payload.phone),
+      }),
     });
     return await res.json();
   } catch {
@@ -299,7 +295,7 @@ export async function adminCreateStudentApi(payload: {
   firstName: string;
   lastName: string;
   phone: string;
-  email?: string;
+  email: string;
   bio?: string;
   classCode: string;
   status: StudentStatus;
@@ -314,7 +310,10 @@ export async function adminCreateStudentApi(payload: {
     const res = await fetch(`${API_BASE_URL}/admin/students`, {
       method: 'POST',
       headers: buildJsonHeaders('admin'),
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        ...payload,
+        phone: normalizeIranianPhone(payload.phone),
+      }),
     });
     return await res.json();
   } catch {
@@ -349,10 +348,16 @@ export async function adminUpdateStudentApi(
   student?: StudentRecord;
 }> {
   try {
+    const normalizedPayload = {
+      ...payload,
+      ...(payload.phone !== undefined
+        ? { phone: normalizeIranianPhone(payload.phone) }
+        : {}),
+    };
     const res = await fetch(`${API_BASE_URL}/admin/students/${studentId}`, {
       method: 'PUT',
       headers: buildJsonHeaders('admin'),
-      body: JSON.stringify(payload),
+      body: JSON.stringify(normalizedPayload),
     });
     return await res.json();
   } catch {
@@ -365,7 +370,6 @@ export async function adminUpdateStudentApi(
 
 /**
  * Admin: Remove Student Custom Profile Picture via DELETE /api/admin/students/:id/avatar
- * Reverts student's profile picture to the default account icon and cleans up unreferenced file.
  */
 export async function adminRemoveStudentAvatarApi(studentId: number): Promise<{
   success: boolean;
@@ -416,7 +420,6 @@ export async function adminSetAssignmentStatusApi(
 
 /**
  * Student: Submit or Edit Assignment Response via POST /api/student/assignments/:id/submit
- * Enforces closed assignment and expired deadline restrictions on the backend.
  */
 export async function studentSubmitAssignmentApi(
   assignmentId: number,
@@ -454,7 +457,6 @@ export async function studentSubmitAssignmentApi(
 
 /**
  * Student: Reply to a Ticket via POST /api/student/tickets/:id/reply
- * Enforces closed ticket restriction on the backend.
  */
 export async function studentReplyTicketApi(
   ticketId: number,
@@ -481,7 +483,7 @@ export async function studentReplyTicketApi(
   } catch {
     return {
       success: false,
-      message: 'خطا در ارتباط با سرور جهت ارسال پیام تیکت.',
+      message: 'خطا در برقراری ارتباط با سرور جهت ارسال پیام تیکت.',
     };
   }
 }

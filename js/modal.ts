@@ -25,8 +25,8 @@ export function showToast(
       svg: '<svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg>',
     },
     info: {
-      bg: '#EEF2FF',
-      color: '#4F46E5',
+      bg: '#EADCCA',
+      color: '#5A3A22',
       svg: '<svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>',
     },
   };
@@ -34,13 +34,13 @@ export function showToast(
   const conf = styles[type];
 
   const $toast = $(`
-    <div class="scool-toast" role="status" aria-live="polite" dir="rtl">
+    <div class="scool-toast scool-toast-item" role="status" aria-live="polite" dir="rtl">
       <div class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style="background:${conf.bg}; color:${conf.color}">
         ${conf.svg}
       </div>
       <div class="flex-1 min-w-0">
-        <div class="text-xs font-extrabold text-[#1E293B] leading-snug">${toPersianDigits(title)}</div>
-        <div class="text-[11px] text-[#475569] mt-0.5 leading-relaxed">${toPersianDigits(message)}</div>
+        <div class="text-xs font-extrabold text-[#251B15] leading-snug">${toPersianDigits(title)}</div>
+        <div class="text-[11px] text-[#6E5D4F] mt-0.5 leading-relaxed">${toPersianDigits(message)}</div>
       </div>
     </div>
   `);
@@ -76,7 +76,7 @@ export function closeCongratulationModal(): void {
  */
 export function openForgotPasswordModal(): void {
   $('#forgot-modal').addClass('is-open').attr('aria-hidden', 'false');
-  $('#recovery-phone-input').trigger('focus');
+  $('#btn-close-forgot-modal').trigger('focus');
 }
 
 export function closeForgotPasswordModal(): void {

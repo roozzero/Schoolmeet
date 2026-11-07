@@ -313,6 +313,257 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    name: '006_full_relational_persistence_and_recipients',
+    up: async (conn: PoolConnection) => {
+      async function hasCol(table: string, col: string): Promise<boolean> {
+        const [rows] = await conn.query<RowDataPacket[]>(
+          `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1`,
+          [table, col]
+        );
+        return rows.length > 0;
+      }
+
+      async function dropFkIfExists(table: string, fkName: string): Promise<void> {
+        const [rows] = await conn.query<RowDataPacket[]>(
+          `SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS
+           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND CONSTRAINT_NAME = ? AND CONSTRAINT_TYPE = 'FOREIGN KEY' LIMIT 1`,
+          [table, fkName]
+        );
+        if (rows.length > 0) {
+          await conn.query(`ALTER TABLE \`${table}\` DROP FOREIGN KEY \`${fkName}\``);
+        }
+      }
+
+      await dropFkIfExists('assignment_submissions', 'fk_sub_assignment');
+      await dropFkIfExists('assignment_submissions', 'fk_sub_student');
+      await dropFkIfExists('tickets', 'fk_tickets_student');
+      await dropFkIfExists('ticket_messages', 'fk_msg_ticket');
+
+      // 1. Upgrade assignments
+      await conn.query(
+        `ALTER TABLE \`assignments\`
+         MODIFY COLUMN \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+         MODIFY COLUMN \`class_code\` VARCHAR(20) NOT NULL DEFAULT 'all',
+         MODIFY COLUMN \`due_date\` VARCHAR(80) NOT NULL`
+      );
+      if (!(await hasCol('assignments', 'attachment_url'))) {
+        await conn.query(
+          `ALTER TABLE \`assignments\` ADD COLUMN \`attachment_url\` LONGTEXT NULL AFTER \`attachment_name\``
+        );
+      }
+      if (!(await hasCol('assignments', 'target_student_id'))) {
+        await conn.query(
+          `ALTER TABLE \`assignments\` ADD COLUMN \`target_student_id\` BIGINT UNSIGNED NULL AFTER \`class_code\``
+        );
+      }
+      if (!(await hasCol('assignments', 'target_student_name'))) {
+        await conn.query(
+          `ALTER TABLE \`assignments\` ADD COLUMN \`target_student_name\` VARCHAR(150) NULL AFTER \`target_student_id\``
+        );
+      }
+      if (!(await hasCol('assignments', 'closed_at'))) {
+        await conn.query(
+          `ALTER TABLE \`assignments\` ADD COLUMN \`closed_at\` VARCHAR(80) NULL AFTER \`status\``
+        );
+      }
+      if (!(await hasCol('assignments', 'created_at_fa'))) {
+        await conn.query(
+          `ALTER TABLE \`assignments\` ADD COLUMN \`created_at_fa\` VARCHAR(80) NULL AFTER \`closed_at\``
+        );
+      }
+
+      // 2. Upgrade assignment_submissions
+      await conn.query(
+        `ALTER TABLE \`assignment_submissions\`
+         MODIFY COLUMN \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+         MODIFY COLUMN \`assignment_id\` BIGINT UNSIGNED NOT NULL,
+         MODIFY COLUMN \`student_id\` INT UNSIGNED NOT NULL,
+         MODIFY COLUMN \`submitted_at\` VARCHAR(80) NOT NULL`
+      );
+      if (!(await hasCol('assignment_submissions', 'student_name'))) {
+        await conn.query(
+          `ALTER TABLE \`assignment_submissions\` ADD COLUMN \`student_name\` VARCHAR(150) NULL AFTER \`student_id\``
+        );
+      }
+      if (!(await hasCol('assignment_submissions', 'class_code'))) {
+        await conn.query(
+          `ALTER TABLE \`assignment_submissions\` ADD COLUMN \`class_code\` VARCHAR(20) NULL AFTER \`student_name\``
+        );
+      }
+      if (!(await hasCol('assignment_submissions', 'file_url'))) {
+        await conn.query(
+          `ALTER TABLE \`assignment_submissions\` ADD COLUMN \`file_url\` LONGTEXT NULL AFTER \`file_content\``
+        );
+      }
+      if (!(await hasCol('assignment_submissions', 'created_at_ts'))) {
+        await conn.query(
+          `ALTER TABLE \`assignment_submissions\` ADD COLUMN \`created_at_ts\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP`
+        );
+      }
+
+      // 3. Upgrade educational_resources
+      await conn.query(
+        `ALTER TABLE \`educational_resources\`
+         MODIFY COLUMN \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+         MODIFY COLUMN \`class_code\` VARCHAR(20) NOT NULL DEFAULT 'all',
+         MODIFY COLUMN \`created_at\` VARCHAR(80) NOT NULL`
+      );
+      if (!(await hasCol('educational_resources', 'target_student_id'))) {
+        await conn.query(
+          `ALTER TABLE \`educational_resources\` ADD COLUMN \`target_student_id\` BIGINT UNSIGNED NULL AFTER \`class_code\``
+        );
+      }
+      if (!(await hasCol('educational_resources', 'target_student_name'))) {
+        await conn.query(
+          `ALTER TABLE \`educational_resources\` ADD COLUMN \`target_student_name\` VARCHAR(150) NULL AFTER \`target_student_id\``
+        );
+      }
+      if (!(await hasCol('educational_resources', 'file_url'))) {
+        await conn.query(
+          `ALTER TABLE \`educational_resources\` ADD COLUMN \`file_url\` LONGTEXT NULL AFTER \`url_or_filename\``
+        );
+      }
+      if (!(await hasCol('educational_resources', 'viewers_json'))) {
+        await conn.query(
+          `ALTER TABLE \`educational_resources\` ADD COLUMN \`viewers_json\` LONGTEXT NULL AFTER \`description\``
+        );
+      }
+      if (!(await hasCol('educational_resources', 'created_at_ts'))) {
+        await conn.query(
+          `ALTER TABLE \`educational_resources\` ADD COLUMN \`created_at_ts\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP`
+        );
+      }
+
+      // 4. Upgrade announcements
+      await conn.query(
+        `ALTER TABLE \`announcements\`
+         MODIFY COLUMN \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+         MODIFY COLUMN \`target_classes\` VARCHAR(50) NOT NULL DEFAULT 'all',
+         MODIFY COLUMN \`created_at\` VARCHAR(80) NOT NULL`
+      );
+      if (!(await hasCol('announcements', 'target_student_id'))) {
+        await conn.query(
+          `ALTER TABLE \`announcements\` ADD COLUMN \`target_student_id\` BIGINT UNSIGNED NULL AFTER \`target_classes\``
+        );
+      }
+      if (!(await hasCol('announcements', 'target_student_name'))) {
+        await conn.query(
+          `ALTER TABLE \`announcements\` ADD COLUMN \`target_student_name\` VARCHAR(150) NULL AFTER \`target_student_id\``
+        );
+      }
+      if (!(await hasCol('announcements', 'assignment_id'))) {
+        await conn.query(
+          `ALTER TABLE \`announcements\` ADD COLUMN \`assignment_id\` BIGINT UNSIGNED NULL AFTER \`target_student_name\``
+        );
+      }
+      if (!(await hasCol('announcements', 'notification_type'))) {
+        await conn.query(
+          `ALTER TABLE \`announcements\` ADD COLUMN \`notification_type\` VARCHAR(30) NOT NULL DEFAULT 'general' AFTER \`assignment_id\``
+        );
+      }
+      if (!(await hasCol('announcements', 'readers_json'))) {
+        await conn.query(
+          `ALTER TABLE \`announcements\` ADD COLUMN \`readers_json\` LONGTEXT NULL AFTER \`created_at\``
+        );
+      }
+      if (!(await hasCol('announcements', 'created_at_ts'))) {
+        await conn.query(
+          `ALTER TABLE \`announcements\` ADD COLUMN \`created_at_ts\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP`
+        );
+      }
+
+      // 5. Upgrade tickets & ticket_messages
+      await conn.query(
+        `ALTER TABLE \`tickets\`
+         MODIFY COLUMN \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+         MODIFY COLUMN \`class_code\` VARCHAR(20) NOT NULL DEFAULT '',
+         MODIFY COLUMN \`created_at\` VARCHAR(80) NOT NULL`
+      );
+      if (!(await hasCol('tickets', 'student_name'))) {
+        await conn.query(
+          `ALTER TABLE \`tickets\` ADD COLUMN \`student_name\` VARCHAR(150) NULL AFTER \`student_id\``
+        );
+      }
+      if (!(await hasCol('tickets', 'student_phone'))) {
+        await conn.query(
+          `ALTER TABLE \`tickets\` ADD COLUMN \`student_phone\` VARCHAR(20) NULL AFTER \`student_name\``
+        );
+      }
+      if (!(await hasCol('tickets', 'created_at_ts'))) {
+        await conn.query(
+          `ALTER TABLE \`tickets\` ADD COLUMN \`created_at_ts\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP`
+        );
+      }
+
+      await conn.query(
+        `ALTER TABLE \`ticket_messages\`
+         MODIFY COLUMN \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+         MODIFY COLUMN \`ticket_id\` BIGINT UNSIGNED NOT NULL,
+         MODIFY COLUMN \`sent_at\` VARCHAR(80) NOT NULL`
+      );
+      if (!(await hasCol('ticket_messages', 'attachment_name'))) {
+        await conn.query(
+          `ALTER TABLE \`ticket_messages\` ADD COLUMN \`attachment_name\` VARCHAR(255) NULL AFTER \`sent_at\``
+        );
+      }
+      if (!(await hasCol('ticket_messages', 'attachment_url'))) {
+        await conn.query(
+          `ALTER TABLE \`ticket_messages\` ADD COLUMN \`attachment_url\` LONGTEXT NULL AFTER \`attachment_name\``
+        );
+      }
+      if (!(await hasCol('ticket_messages', 'created_at_ts'))) {
+        await conn.query(
+          `ALTER TABLE \`ticket_messages\` ADD COLUMN \`created_at_ts\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP`
+        );
+      }
+
+      // 6. Create gradebook_sessions, gradebook_entries, and activity_logs tables
+      await conn.query(`
+        CREATE TABLE IF NOT EXISTS \`gradebook_sessions\` (
+          \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          \`class_code\` VARCHAR(20) NOT NULL,
+          \`title\` VARCHAR(180) NOT NULL,
+          \`session_date\` VARCHAR(60) NOT NULL,
+          \`topic\` TEXT NOT NULL,
+          \`created_at\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (\`id\`),
+          KEY \`idx_gb_sessions_class\` (\`class_code\`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_persian_ci;
+      `);
+
+      await conn.query(`
+        CREATE TABLE IF NOT EXISTS \`gradebook_entries\` (
+          \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          \`session_id\` BIGINT UNSIGNED NOT NULL,
+          \`student_id\` INT UNSIGNED NOT NULL,
+          \`class_code\` VARCHAR(20) NOT NULL,
+          \`attendance\` ENUM('present', 'absent', 'late') NOT NULL DEFAULT 'present',
+          \`positive_count\` INT NOT NULL DEFAULT 0,
+          \`negative_count\` INT NOT NULL DEFAULT 0,
+          \`class_score\` DECIMAL(5,2) NULL,
+          \`teacher_note\` TEXT NULL,
+          \`updated_at\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (\`id\`),
+          UNIQUE KEY \`idx_gb_entry_session_student\` (\`session_id\`, \`student_id\`),
+          KEY \`idx_gb_entry_student\` (\`student_id\`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_persian_ci;
+      `);
+
+      await conn.query(`
+        CREATE TABLE IF NOT EXISTS \`activity_logs\` (
+          \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          \`title\` VARCHAR(255) NOT NULL,
+          \`detail\` TEXT NOT NULL,
+          \`time_ago\` VARCHAR(80) NOT NULL,
+          \`category\` VARCHAR(30) NOT NULL DEFAULT 'student',
+          \`created_at\` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (\`id\`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_persian_ci;
+      `);
+    },
+  },
 ];
 
 /**

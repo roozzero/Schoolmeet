@@ -1,5 +1,9 @@
 import $ from 'jquery';
-import { initAdminPanelEvents, navigateAdminSection } from './admin';
+import {
+  initAdminPanelEvents,
+  navigateAdminSection,
+  renderActiveSection,
+} from './admin';
 import { loginStudentApi, registerStudentApi } from './api';
 import {
   closeCongratulationModal,
@@ -8,260 +12,348 @@ import {
   openForgotPasswordModal,
   showToast,
 } from './modal';
-import { parseCurrentLocation, updateBrowserUrl } from './router';
 import {
+  parseCurrentLocation,
+  updateBrowserUrl,
+} from './router';
+import {
+  getActiveUserRole,
   loadDbState,
-  saveDbState,
+  onDbStateSynced,
+  setActiveStudentSessionId,
   setActiveUserRole,
   syncStateFromBackend,
 } from './store';
-import { initStudentPanelEvents, navigateStudentSection } from './student';
-import { AdminSectionId, StudentSectionId } from './types';
 import {
-  clearFieldError,
+  initStudentPanelEvents,
+  navigateStudentSection,
+  renderActiveStudentSection,
+} from './student';
+import {
+  AdminSectionId,
+  ClassRoomCode,
+  StudentRegistrationPayload,
+  StudentSectionId,
+} from './types';
+import {
   isValidClassCode,
+  isValidFullName,
+  isValidPassword,
   isValidPhone,
-  setFieldError,
+  normalizeDigits,
+  normalizeIranianPhone,
   toPersianDigits,
 } from './validation';
 
+function setFieldInvalid($input: JQuery<HTMLElement>, message: string): void {
+  const $group = $input.closest('.scool-input-group');
+  $input.addClass('has-error');
+  $group.addClass('is-invalid');
+  $group.find('.field-error-msg').text(message);
+}
+
+function clearFieldInvalid($input: JQuery<HTMLElement>): void {
+  const $group = $input.closest('.scool-input-group');
+  $input.removeClass('has-error');
+  $group.removeClass('is-invalid');
+  $group.find('.field-error-msg').text('');
+}
+
+function showPendingApprovalBanner(customMessage?: string): void {
+  const $banner = $('#auth-pending-approval-banner');
+  if (customMessage) {
+    $('#auth-pending-approval-text').text(customMessage);
+  }
+  $banner.removeClass('hidden');
+}
+
+function hidePendingApprovalBanner(): void {
+  $('#auth-pending-approval-banner').addClass('hidden');
+}
+
 /**
- * Switch between the 2 tabs: 'login' and 'register' and update browser URL
+ * Populate registration class select dynamically from backend classes
  */
-function switchAuthTab(targetTab: 'login' | 'register', updateHistory = true): void {
-  $('#admin-workspace-view').addClass('view-hidden');
-  $('#student-workspace-view').addClass('view-hidden');
-  $('#public-auth-view').removeClass('view-hidden');
+function syncRegistrationClassOptions(): void {
+  const state = loadDbState();
+  const $select = $('#reg-class');
+  if (!$select.length) return;
+  const currentVal = String($select.val() || '');
 
-  $('.mode-tab-btn').removeClass('is-active').attr('aria-selected', 'false');
-
-  if (targetTab === 'login') {
-    $('#tab-btn-login').addClass('is-active').attr('aria-selected', 'true');
-    $('#panel-register').hide();
-    $('#panel-login').stop(true, true).fadeIn(160);
-    if (updateHistory) {
-      updateBrowserUrl('/login');
-    }
-  } else {
-    $('#tab-btn-register').addClass('is-active').attr('aria-selected', 'true');
-    $('#panel-login').hide();
-    $('#panel-register').stop(true, true).fadeIn(160);
-    if (updateHistory) {
-      updateBrowserUrl('/register');
+  if (state.classes.length > 0) {
+    const optionsHtml =
+      `<option value="">انتخاب کلاس</option>` +
+      state.classes
+        .map(
+          (c) =>
+            `<option value="${c.code}">${toPersianDigits(c.code)} — ${toPersianDigits(c.title)}</option>`
+        )
+        .join('');
+    $select.html(optionsHtml);
+    if (currentVal) {
+      $select.val(currentVal);
     }
   }
 }
 
-/**
- * Open the Admin Panel Workspace at a specific section and update browser URL
- */
-function enterAdminWorkspace(
-  section: AdminSectionId = 'dashboard',
-  updateHistory = true,
+export function switchPublicTab(
+  mode: 'login' | 'register',
+  updateUrl = true
+): void {
+  const isLogin = mode === 'login';
+
+  $('#tab-btn-login')
+    .toggleClass('is-active', isLogin)
+    .attr('aria-selected', String(isLogin));
+  $('#tab-btn-register')
+    .toggleClass('is-active', !isLogin)
+    .attr('aria-selected', String(!isLogin));
+
+  $('#panel-login').toggleClass('hidden', !isLogin);
+  $('#panel-register').toggleClass('hidden', isLogin);
+
+  if (updateUrl) {
+    updateBrowserUrl(isLogin ? '/login' : '/register');
+  }
+}
+
+export function enterAdminWorkspace(
+  sectionId: AdminSectionId = 'dashboard',
+  updateUrl = true,
   subPage?: string
 ): void {
   setActiveUserRole('admin');
+  hidePendingApprovalBanner();
   $('#public-auth-view').addClass('view-hidden');
   $('#student-workspace-view').addClass('view-hidden');
   $('#admin-workspace-view').removeClass('view-hidden');
-  navigateAdminSection(section, updateHistory, subPage);
-  void syncStateFromBackend();
+
+  navigateAdminSection(sectionId, updateUrl, subPage);
+  renderActiveSection();
 }
 
-/**
- * Open the Student Panel Workspace at a specific section and update browser URL
- */
-function enterStudentWorkspace(
-  section: StudentSectionId = 'dashboard',
-  updateHistory = true,
+export function enterStudentWorkspace(
+  sectionId: StudentSectionId = 'dashboard',
+  updateUrl = true,
   subPage?: string
 ): void {
+  const state = loadDbState();
+  const activeSt = state.students.find((s) => s.id === state.activeStudentId);
+
+  // Enforce student approval restriction before entering student workspace
+  if (!activeSt || activeSt.status !== 'approved') {
+    setActiveUserRole('');
+    setActiveStudentSessionId(0);
+    $('#admin-workspace-view').addClass('view-hidden');
+    $('#student-workspace-view').addClass('view-hidden');
+    $('#public-auth-view').removeClass('view-hidden');
+    switchPublicTab('login', true);
+    showPendingApprovalBanner(
+      'حساب کاربری شما هنوز توسط مدیر سامانه تأیید نشده است. پس از تأیید مدیریت می‌توانید وارد پنل دانش‌آموزی شوید.'
+    );
+    return;
+  }
+
   setActiveUserRole('student');
+  hidePendingApprovalBanner();
   $('#public-auth-view').addClass('view-hidden');
   $('#admin-workspace-view').addClass('view-hidden');
   $('#student-workspace-view').removeClass('view-hidden');
-  navigateStudentSection(section, updateHistory, subPage);
-  void syncStateFromBackend();
+
+  navigateStudentSection(sectionId, updateUrl, subPage);
+  renderActiveStudentSection();
 }
 
 /**
- * Synchronize UI view with current browser URL (initial load + Back/Forward buttons)
+ * Apply any route path (`/login`, `/register`, `/admin/*`, `/student/*`)
  */
-function syncRouteWithLocation(): void {
-  const route = parseCurrentLocation();
-  if (route.view === 'admin') {
-    enterAdminWorkspace(route.section, false, route.subPage);
-  } else if (route.view === 'student') {
-    enterStudentWorkspace(route.section, false, route.subPage);
-  } else {
-    switchAuthTab(route.tab, false);
-    updateBrowserUrl(route.tab === 'register' ? '/register' : '/login', true);
+export function applyRouteState(updateHistory = false): void {
+  const resolved = parseCurrentLocation();
+
+  if (resolved.view === 'admin') {
+    if (getActiveUserRole() !== 'admin') {
+      $('#admin-workspace-view').addClass('view-hidden');
+      $('#student-workspace-view').addClass('view-hidden');
+      $('#public-auth-view').removeClass('view-hidden');
+      switchPublicTab('login', true);
+      return;
+    }
+    enterAdminWorkspace(
+      resolved.section || 'dashboard',
+      updateHistory,
+      resolved.subPage
+    );
+    return;
   }
+
+  if (resolved.view === 'student') {
+    const state = loadDbState();
+    const activeSt = state.students.find((s) => s.id === state.activeStudentId);
+    if (
+      getActiveUserRole() !== 'student' ||
+      !activeSt ||
+      activeSt.status !== 'approved'
+    ) {
+      setActiveUserRole('');
+      setActiveStudentSessionId(0);
+      $('#admin-workspace-view').addClass('view-hidden');
+      $('#student-workspace-view').addClass('view-hidden');
+      $('#public-auth-view').removeClass('view-hidden');
+      switchPublicTab('login', true);
+      if (activeSt && activeSt.status === 'pending') {
+        showPendingApprovalBanner();
+      }
+      return;
+    }
+    enterStudentWorkspace(
+      resolved.section || 'dashboard',
+      updateHistory,
+      resolved.subPage
+    );
+    return;
+  }
+
+  // Public Login / Register View
+  $('#admin-workspace-view').addClass('view-hidden');
+  $('#student-workspace-view').addClass('view-hidden');
+  $('#public-auth-view').removeClass('view-hidden');
+  switchPublicTab(resolved.tab || 'login', updateHistory);
 }
 
-$(function () {
-  // Initialize Admin & Student Panel Event Listeners
-  initAdminPanelEvents();
-  initStudentPanelEvents();
+let isAppInitialized = false;
 
-  // Sync initial route and bind browser Back/Forward history navigation
-  syncRouteWithLocation();
-  window.addEventListener('popstate', () => {
-    syncRouteWithLocation();
+export function initScoolMeetApp(): void {
+  if (isAppInitialized) return;
+  isAppInitialized = true;
+
+  // Synchronize relational state from Node.js + MySQL backend on startup
+  void syncStateFromBackend().then(() => {
+    syncRegistrationClassOptions();
+    const resolved = parseCurrentLocation();
+    if (resolved.view === 'student') {
+      applyRouteState(false);
+    }
   });
 
-  // Live conversion of numeric fields to Persian numerals across the whole app
+  onDbStateSynced(() => {
+    syncRegistrationClassOptions();
+  });
+
+  // Tab buttons
+  $(document).on('click', '#tab-btn-login', (e) => {
+    e.preventDefault();
+    switchPublicTab('login', true);
+  });
+
+  $(document).on('click', '#tab-btn-register', (e) => {
+    e.preventDefault();
+    switchPublicTab('register', true);
+  });
+
+  // Clear field errors on input/change
   $(document).on(
-    'input',
-    'input[type="tel"], #prof-modal-national, #grade-modal-score, .js-gb-score-input',
+    'input change',
+    '.school-input, .school-select, .school-textarea',
     function () {
-      const $el = $(this);
-      const currentVal = String($el.val() || '');
-      const persianVal = toPersianDigits(currentVal);
-      if (currentVal !== persianVal) {
-        $el.val(persianVal);
-      }
+      clearFieldInvalid($(this));
     }
   );
 
-  // 1. Tab Switching (ورود به حساب [/login] | ثبت‌نام دانش‌آموز [/register])
-  $('#tab-btn-login').on('click', () => switchAuthTab('login', true));
-  $('#tab-btn-register').on('click', () => switchAuthTab('register', true));
+  // Convert English digits to Persian digits inside phone inputs while typing
+  $(document).on(
+    'input',
+    '#login-phone, #reg-phone, #recovery-phone-input, #add-st-phone, #prof-modal-phone, #prof-phone',
+    function () {
+      const $el = $(this);
+      const raw = String($el.val() || '');
+      const clean = normalizeDigits(raw).replace(/[^\d+]/g, '');
+      $el.val(toPersianDigits(clean));
+    }
+  );
 
-  // Quick Admin Fill Helper Button (submits through real MySQL authentication)
-  $('#btn-admin-quick-login').on('click', () => {
-    $('#login-phone').val('۰۹۱۲۰۰۰۰۰۰۰');
-    clearFieldError($('#login-phone'), true);
-    $('#login-password').trigger('focus');
-    $('#form-login').trigger('submit');
-  });
-
-  // Quick Student Fill Helper Button (submits through real MySQL authentication)
-  $('#btn-student-quick-login').on('click', () => {
-    $('#login-phone').val('۰۹۱۲۱۱۱۲۲۳۳');
-    clearFieldError($('#login-phone'), true);
-    $('#login-password').trigger('focus');
-    $('#form-login').trigger('submit');
-  });
-
-  // 2. Password Visibility Toggle
-  $('.school-password-toggle').on('click', function () {
+  // Password visibility toggle
+  $(document).on('click', '.school-password-toggle', function (e) {
+    e.preventDefault();
     const $btn = $(this);
-    const targetSelector = $btn.data('target') as string;
+    const targetSelector = String($btn.attr('data-target') || '');
     const $input = $(targetSelector);
     if (!$input.length) return;
 
     const isPassword = $input.attr('type') === 'password';
     $input.attr('type', isPassword ? 'text' : 'password');
-    $btn.attr('aria-pressed', isPassword ? 'true' : 'false');
-    $btn.find('.icon-eye-open').toggleClass('hidden', !isPassword);
+    $btn.attr('aria-pressed', String(isPassword));
     $btn.find('.icon-eye-closed').toggleClass('hidden', isPassword);
+    $btn.find('.icon-eye-open').toggleClass('hidden', !isPassword);
   });
 
-  // 3. Clear Validation Errors on Input
-  $('.school-input, .school-select').on('input change', function () {
-    const val = String($(this).val() || '').trim();
-    if (val.length > 0) {
-      clearFieldError($(this));
-    }
-  });
-
-  // 4. Forgot Password Modal
-  $('#btn-forgot-password').on('click', () => {
-    openForgotPasswordModal();
-  });
-
-  $('#btn-close-forgot-modal, #forgot-modal').on('click', function (e) {
-    if (e.target === this) {
-      closeForgotPasswordModal();
-    }
-  });
-
-  $('#form-forgot-password').on('submit', function (e) {
-    e.preventDefault();
-    const phoneVal = String($('#recovery-phone-input').val() || '').trim();
-    if (!isValidPhone(phoneVal)) {
-      showToast('شماره تلفن نامعتبر', 'لطفاً شماره موبایل ۱۱ رقمی معتبر وارد کنید.', 'error');
-      return;
-    }
-    closeForgotPasswordModal();
-    $('#recovery-phone-input').val('');
-    showToast(
-      'کد بازیابی ارسال شد',
-      `کد بازنشانی رمز عبور به شماره ${toPersianDigits(phoneVal)} پیامک شد.`,
-      'success'
-    );
-  });
-
-  // 5. Congratulatory Modal Controls
-  $('#btn-congrats-go-login, #congrats-modal').on('click', function (e) {
-    if (e.target === this || $(this).attr('id') === 'btn-congrats-go-login') {
-      const registeredPhone = toPersianDigits($('#modal-student-phone').text().trim());
-      closeCongratulationModal();
-      switchAuthTab('login', true);
-      if (registeredPhone) {
-        $('#login-phone').val(registeredPhone);
-        $('#login-password').trigger('focus');
-      }
-    }
-  });
-
-  // 6. Login Form Submission (Admin or Student)
-  $('#form-login').on('submit', async function (e) {
+  // Login Form Submission
+  $(document).on('submit', '#form-login', async (e) => {
     e.preventDefault();
 
-    const $phoneInput = $('#login-phone');
-    const $passInput = $('#login-password');
-    const phone = String($phoneInput.val() || '').trim();
-    const password = String($passInput.val() || '');
+    const $phone = $('#login-phone');
+    const $password = $('#login-password');
+    const rawPhone = String($phone.val() || '');
+    const password = String($password.val() || '');
 
-    let isValid = true;
+    clearFieldInvalid($phone);
+    clearFieldInvalid($password);
 
-    if (!isValidPhone(phone)) {
-      setFieldError($phoneInput, 'شماره تلفن همراه را به‌درستی وارد کنید (مثال: ۰۹۱۲۰۰۰۰۰۰۰).');
-      isValid = false;
-    } else {
-      clearFieldError($phoneInput, true);
+    let valid = true;
+    if (!isValidPhone(rawPhone)) {
+      setFieldInvalid(
+        $phone,
+        'شماره موبایل معتبر ایران وارد کنید (مثال: ۰۹۱۲۳۴۵۶۷۸۹).'
+      );
+      valid = false;
     }
-
-    if (!password || password.length < 6) {
-      setFieldError($passInput, 'رمز عبور باید حداقل ۶ کاراکتر باشد.');
-      isValid = false;
-    } else {
-      clearFieldError($passInput, true);
+    if (!isValidPassword(password)) {
+      setFieldInvalid($password, 'رمز عبور باید حداقل ۶ کاراکتر باشد.');
+      valid = false;
     }
+    if (!valid) return;
 
-    if (!isValid) return;
-
-    const $submitBtn = $('#btn-submit-login');
-    const originalHtml = $submitBtn.html();
-    $submitBtn
-      .prop('disabled', true)
-      .html('<span class="btn-spinner" aria-hidden="true"></span><span>در حال ورود...</span>');
+    const normalizedPhone = normalizeIranianPhone(rawPhone);
+    const $btn = $('#btn-submit-login');
+    const origHtml = $btn.html();
+    $btn.prop('disabled', true).html('<span>در حال بررسی...</span>');
 
     try {
-      const response = await loginStudentApi({ phone, password });
-      if (response.success) {
-        if (response.role === 'admin') {
-          enterAdminWorkspace('dashboard', true);
-          showToast('ورود مدیر سامانه', response.message, 'success');
-        } else if (response.role === 'student') {
-          enterStudentWorkspace('dashboard', true);
-          showToast('ورود به پنل دانش‌آموز', response.message, 'success');
+      const response = await loginStudentApi({
+        phone: normalizedPhone,
+        password,
+      });
+
+      if (!response.success) {
+        if (response.code === 'ACCOUNT_PENDING_APPROVAL') {
+          showPendingApprovalBanner(response.message);
+          showToast('در انتظار تأیید مدیر', response.message, 'info');
         } else {
-          showToast('وضعیت حساب دانش‌آموز', response.message, 'info');
+          showToast('خطا در ورود', response.message, 'error');
         }
-      } else {
-        setFieldError($passInput, response.message);
-        showToast('خطا در ورود', response.message, 'error');
+        return;
       }
+
+      hidePendingApprovalBanner();
+      showToast('خوش آمدید', response.message, 'success');
+
+      if (response.role === 'admin') {
+        enterAdminWorkspace('dashboard', true);
+      } else {
+        enterStudentWorkspace('dashboard', true);
+      }
+    } catch {
+      showToast(
+        'خطا در ارتباط با سرور',
+        'امکان برقراری ارتباط با سرور وجود ندارد. لطفاً دوباره تلاش کنید.',
+        'error'
+      );
     } finally {
-      $submitBtn.prop('disabled', false).html(originalHtml);
+      $btn.prop('disabled', false).html(origHtml);
     }
   });
 
-  // 7. Student Registration Form Submission
-  $('#form-student-register').on('submit', async function (e) {
+  // Student Registration Form Submission (All fields mandatory; email is only in profile)
+  $(document).on('submit', '#form-student-register', async (e) => {
     e.preventDefault();
 
     const $firstName = $('#reg-firstname');
@@ -269,89 +361,139 @@ $(function () {
     const $phone = $('#reg-phone');
     const $classCode = $('#reg-class');
     const $password = $('#reg-password');
-    const $passwordConfirm = $('#reg-password-confirm');
+    const $confirm = $('#reg-password-confirm');
 
-    const firstName = String($firstName.val() || '').trim();
-    const lastName = String($lastName.val() || '').trim();
-    const phone = String($phone.val() || '').trim();
-    const classCodeVal = String($classCode.val() || '').trim();
-    const password = String($password.val() || '');
-    const passwordConfirmation = String($passwordConfirm.val() || '');
+    clearFieldInvalid($firstName);
+    clearFieldInvalid($lastName);
+    clearFieldInvalid($phone);
+    clearFieldInvalid($classCode);
+    clearFieldInvalid($password);
+    clearFieldInvalid($confirm);
 
-    let isValid = true;
+    const rawPhoneInput = String($phone.val() || '').trim();
+    const payload: StudentRegistrationPayload = {
+      firstName: String($firstName.val() || '').trim(),
+      lastName: String($lastName.val() || '').trim(),
+      phone: normalizeIranianPhone(rawPhoneInput),
+      classCode: String($classCode.val() || '').trim() as ClassRoomCode,
+      password: String($password.val() || ''),
+      passwordConfirmation: String($confirm.val() || ''),
+    };
 
-    if (firstName.length < 2) {
-      setFieldError($firstName, 'لطفاً نام خود را وارد کنید.');
-      isValid = false;
-    } else {
-      clearFieldError($firstName, true);
+    let valid = true;
+    if (!payload.firstName) {
+      setFieldInvalid($firstName, 'وارد کردن نام الزامی است.');
+      valid = false;
+    } else if (!isValidFullName(payload.firstName)) {
+      setFieldInvalid($firstName, 'نام باید حداقل ۲ کاراکتر باشد.');
+      valid = false;
     }
 
-    if (lastName.length < 2) {
-      setFieldError($lastName, 'لطفاً نام خانوادگی خود را وارد کنید.');
-      isValid = false;
-    } else {
-      clearFieldError($lastName, true);
+    if (!payload.lastName) {
+      setFieldInvalid($lastName, 'وارد کردن نام خانوادگی الزامی است.');
+      valid = false;
+    } else if (!isValidFullName(payload.lastName)) {
+      setFieldInvalid($lastName, 'نام خانوادگی باید حداقل ۲ کاراکتر باشد.');
+      valid = false;
     }
 
-    if (!isValidPhone(phone)) {
-      setFieldError($phone, 'شماره تلفن همراه ۱۱ رقمی معتبر وارد کنید.');
-      isValid = false;
-    } else {
-      clearFieldError($phone, true);
+    if (!rawPhoneInput) {
+      setFieldInvalid($phone, 'وارد کردن شماره موبایل الزامی است.');
+      valid = false;
+    } else if (!isValidPhone(payload.phone)) {
+      setFieldInvalid(
+        $phone,
+        'شماره موبایل معتبر ایران وارد کنید (مثال: ۰۹۱۲۳۴۵۶۷۸۹).'
+      );
+      valid = false;
     }
 
-    if (!isValidClassCode(classCodeVal)) {
-      setFieldError($classCode, 'لطفاً یکی از کلاس‌های ۹۰۱، ۹۰۲ یا ۹۰۳ را انتخاب کنید.');
-      isValid = false;
-    } else {
-      clearFieldError($classCode, true);
+    if (!isValidClassCode(payload.classCode)) {
+      setFieldInvalid($classCode, 'انتخاب کلاس الزامی است.');
+      valid = false;
     }
 
-    if (password.length < 6) {
-      setFieldError($password, 'رمز عبور باید حداقل ۶ کاراکتر باشد.');
-      isValid = false;
-    } else {
-      clearFieldError($password, true);
+    if (!payload.password) {
+      setFieldInvalid($password, 'وارد کردن رمز عبور الزامی است.');
+      valid = false;
+    } else if (!isValidPassword(payload.password)) {
+      setFieldInvalid($password, 'رمز عبور باید حداقل ۶ کاراکتر باشد.');
+      valid = false;
     }
 
-    if (!passwordConfirmation || passwordConfirmation !== password) {
-      setFieldError($passwordConfirm, 'تکرار رمز عبور با رمز عبور مطابقت ندارد.');
-      isValid = false;
-    } else {
-      clearFieldError($passwordConfirm, true);
+    if (!payload.passwordConfirmation) {
+      setFieldInvalid($confirm, 'وارد کردن تکرار رمز عبور الزامی است.');
+      valid = false;
+    } else if (payload.password !== payload.passwordConfirmation) {
+      setFieldInvalid($confirm, 'تکرار رمز عبور با رمز عبور یکسان نیست.');
+      valid = false;
     }
 
-    if (!isValid || !isValidClassCode(classCodeVal)) return;
+    if (!valid) return;
 
-    const $submitBtn = $('#btn-submit-register');
-    const originalHtml = $submitBtn.html();
-    $submitBtn
-      .prop('disabled', true)
-      .html('<span class="btn-spinner" aria-hidden="true"></span><span>در حال ایجاد حساب...</span>');
+    const $btn = $('#btn-submit-register');
+    const origHtml = $btn.html();
+    $btn.prop('disabled', true).html('<span>در حال ثبت‌نام...</span>');
 
     try {
-      const response = await registerStudentApi({
-        firstName,
-        lastName,
-        phone,
-        classCode: classCodeVal,
-        password,
-        passwordConfirmation,
-      });
-
-      if (response.success && response.student) {
-        ($('#form-student-register')[0] as HTMLFormElement | undefined)?.reset();
-        $('#form-student-register .school-input, #form-student-register .school-select').removeClass(
-          'is-valid has-error'
-        );
-        openCongratulationModal(response.student);
-      } else {
-        setFieldError($phone, response.message || 'خطا در ثبت‌نام دانش‌آموز.');
-        showToast('خطا در ثبت‌نام', response.message || 'خطا در ثبت‌نام دانش‌آموز.', 'error');
+      const response = await registerStudentApi(payload);
+      if (!response.success || !response.student) {
+        showToast('خطا در ثبت‌نام', response.message, 'error');
+        return;
       }
+
+      openCongratulationModal(response.student);
+      showPendingApprovalBanner(response.message);
+      (document.getElementById('form-student-register') as HTMLFormElement).reset();
+    } catch {
+      showToast(
+        'خطا در ارتباط با سرور',
+        'امکان برقراری ارتباط با سرور وجود ندارد. لطفاً دوباره تلاش کنید.',
+        'error'
+      );
     } finally {
-      $submitBtn.prop('disabled', false).html(originalHtml);
+      $btn.prop('disabled', false).html(origHtml);
     }
   });
+
+  // Congrats Modal Button -> Switch to Login Tab (Pending Admin Approval)
+  $(document).on('click', '#btn-congrats-go-login', (e) => {
+    e.preventDefault();
+    closeCongratulationModal();
+    const state = loadDbState();
+    const activeSt = state.students.find((s) => s.id === state.activeStudentId);
+    if (activeSt && activeSt.status === 'approved' && getActiveUserRole() === 'student') {
+      enterStudentWorkspace('dashboard', true);
+    } else {
+      switchPublicTab('login', true);
+      showPendingApprovalBanner();
+    }
+  });
+
+  // Forgot Password Modal
+  $(document).on('click', '#btn-forgot-password', (e) => {
+    e.preventDefault();
+    openForgotPasswordModal();
+  });
+
+  $(document).on('click', '#btn-close-forgot-modal', (e) => {
+    e.preventDefault();
+    closeForgotPasswordModal();
+  });
+
+  // Initialize Admin Panel & Student Panel Event Listeners
+  initAdminPanelEvents();
+  initStudentPanelEvents();
+
+  // Initialize URL History Router
+  window.addEventListener('popstate', () => {
+    applyRouteState(false);
+  });
+  applyRouteState(false);
+}
+
+// Automatically initialize the application when the module loads
+$(function () {
+  initScoolMeetApp();
 });
+

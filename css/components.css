@@ -1,82 +1,82 @@
-/* Brand Logo Lockup (Without Subtitle) */
+/* ==========================================================================
+   Components: Brand Logo, Mode Tabs, Form Inputs, Buttons & Modals
+   (Unified with Student & Admin Dashboard Warm Palette)
+   ========================================================================== */
+
+/* SchoolMeet Brand Lockup */
 .brand-logo-lockup {
   display: inline-flex;
   align-items: center;
-  gap: 12px;
-  padding: 6px 12px 6px 6px;
-  background-color: #F9FCFF;
-  border-radius: 14px;
+  gap: 0.75rem;
 }
 
 .brand-school-icon {
-  width: 57px;
+  width: 48px;
   height: 48px;
-  border-radius: 10px;
-  background-color: var(--color-sky-blue);
+  border-radius: 14px;
+  background-color: #EADCCA;
   background-image: url('/assets/aistudio/image_af6b658b.png');
-  background-size: 987px 620px;
-  background-position: -552px -81px;
+  background-size: 270%;
+  background-position: 86% 18%;
   background-repeat: no-repeat;
+  border: 1.5px solid #D9CBB8;
+  box-shadow: 0 6px 16px -4px rgba(90, 58, 34, 0.16);
   flex-shrink: 0;
 }
 
-/* Two-Tab Switcher (ورود به حساب | ثبت‌نام دانش‌آموز) */
+/* Segmented Mode Switcher (Login / Student Registration) */
 .mode-tabs-bar {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px;
-  background-color: var(--color-box-ice);
-  padding: 5px;
-  border-radius: 12px;
-  border: 1px solid #DCEEF9;
+  gap: 0.4rem;
+  padding: 0.35rem;
+  background-color: var(--admin-surface-alt);
+  border: 1px solid #DFD2C0;
+  border-radius: 14px;
 }
 
 .mode-tab-btn {
-  border: none;
+  padding: 0.6rem 0.75rem;
+  border-radius: 10px;
+  font-size: 0.84rem;
+  font-weight: 800;
+  color: var(--admin-text-muted);
   background: transparent;
-  color: var(--color-slate-navy);
-  font-family: var(--font-vazir);
-  font-size: 0.86rem;
-  font-weight: 700;
-  padding: 9px 14px;
-  border-radius: 9px;
+  border: none;
   cursor: pointer;
-  transition: all 0.16s ease;
-  text-align: center;
-  text-align-last: center;
-  white-space: nowrap;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
 }
 
 .mode-tab-btn:hover {
-  color: var(--color-deep-navy);
+  color: var(--admin-text-main);
 }
 
 .mode-tab-btn.is-active {
-  background-color: var(--color-white);
-  color: var(--color-deep-navy);
-  box-shadow: 0 2px 8px rgba(16, 55, 92, 0.08);
+  background: var(--admin-gradient);
+  color: #FFFFFF;
+  box-shadow: 0 6px 16px -4px rgba(90, 58, 34, 0.28);
 }
 
-/* Soft Ice-Blue Form Box (#EEF7FD) */
+/* Form Container Card */
 .ice-steps-card {
-  background-color: var(--color-box-ice);
+  background-color: #FDFBF7;
+  border: 1.5px solid var(--admin-border);
   border-radius: 16px;
-  padding: 18px 20px;
+  padding: 1.2rem;
+  box-shadow: 0 10px 24px -14px rgba(62, 41, 24, 0.1);
 }
 
-/* Form Controls */
-.scool-input-group {
-  position: relative;
-}
-
+/* Form Labels & Inputs */
 .scool-field-label {
   display: block;
-  font-size: 0.82rem;
+  font-size: 0.78rem;
   font-weight: 800;
-  color: var(--color-deep-navy);
-  margin-bottom: 5px;
-  text-align: justify;
-  text-align-last: right;
+  color: var(--admin-text-main);
+  margin-bottom: 0.32rem;
 }
 
 .school-input-wrapper {
@@ -86,188 +86,191 @@
 }
 
 .school-input,
-.school-select {
+.school-select,
+.school-textarea {
   width: 100%;
-  height: 40px;
-  padding: 0 12px;
-  background-color: var(--color-white);
-  border: 1px solid var(--color-border-blue);
-  border-radius: 9px;
-  font-family: var(--font-vazir);
-  font-size: 0.85rem;
-  color: var(--color-deep-navy);
+  height: 41px;
+  padding: 0 0.85rem;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--admin-text-main);
+  background-color: var(--admin-surface);
+  border: 1.5px solid #D9CBB8;
+  border-radius: 11px;
   outline: none;
-  transition: border-color 0.16s ease, box-shadow 0.16s ease;
-  text-align: right;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease;
 }
 
-.school-input::placeholder {
-  color: #88A4BC;
-  font-size: 0.8rem;
+.school-textarea {
+  height: auto;
+  min-height: 76px;
+  padding: 0.6rem 0.85rem;
+  resize: vertical;
+}
+
+.school-input::placeholder,
+.school-textarea::placeholder {
+  color: #8C7A6B;
+  font-weight: 400;
 }
 
 .school-input:focus,
-.school-select:focus {
-  border-color: var(--color-deep-navy);
-  box-shadow: 0 0 0 3px rgba(125, 191, 229, 0.28);
+.school-select:focus,
+.school-textarea:focus {
+  border-color: var(--admin-primary);
+  background-color: #FFFFFF;
+  box-shadow: 0 0 0 3px rgba(90, 58, 34, 0.14);
 }
 
 .school-input.has-error,
-.school-select.has-error {
-  border-color: var(--color-error);
-  background-color: #FFFBFB;
-}
-
-.school-input.is-valid,
-.school-select.is-valid {
-  border-color: var(--color-success);
+.school-select.has-error,
+.school-textarea.has-error {
+  border-color: var(--color-danger);
+  background-color: #FFF8F9;
 }
 
 .school-password-toggle {
   position: absolute;
-  left: 7px;
-  width: 28px;
-  height: 28px;
+  left: 0.65rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--admin-text-muted);
+  background: none;
   border: none;
-  background: transparent;
-  color: #6B8BA4;
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  padding: 0.25rem;
   cursor: pointer;
 }
 
 .school-password-toggle:hover {
-  color: var(--color-deep-navy);
-  background-color: var(--color-box-ice);
+  color: var(--admin-text-main);
 }
 
 .field-error-msg {
-  display: none;
   font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--color-error);
-  margin-top: 3px;
+  font-weight: 700;
+  color: var(--color-danger);
+  margin-top: 0.25rem;
+  display: none;
 }
 
-/* Primary Submit Button */
+.scool-input-group.is-invalid .field-error-msg {
+  display: block;
+}
+
+/* Primary Action Button (Matches Dashboard Primary Button) */
 .btn-primary-school {
   width: 100%;
-  height: 44px;
-  padding: 0 20px;
-  background-color: var(--color-deep-navy);
-  color: var(--color-white);
-  border: none;
-  border-radius: 10px;
-  font-family: var(--font-vazir);
+  height: 45px;
+  border-radius: 12px;
+  background: var(--admin-gradient);
+  color: #FFFFFF;
   font-size: 0.9rem;
-  font-weight: 700;
+  font-weight: 800;
+  border: none;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  transition: background-color 0.16s ease, transform 0.15s ease;
-  box-shadow: 0 8px 18px -6px rgba(16, 55, 92, 0.32);
+  gap: 0.5rem;
+  transition: transform 0.15s ease, box-shadow 0.18s ease, background 0.18s ease;
+  box-shadow: 0 10px 22px -6px rgba(90, 58, 34, 0.3);
 }
 
-.btn-primary-school span {
-  text-align: center;
-  text-align-last: center;
-}
-
-.btn-primary-school:hover:not(:disabled) {
-  background-color: #174978;
+.btn-primary-school:hover {
+  background: var(--admin-primary-hover);
   transform: translateY(-1px);
 }
 
-.btn-primary-school:disabled {
-  opacity: 0.7;
-  cursor: not-allowed;
+.btn-primary-school:active {
+  transform: translateY(0);
 }
 
-/* Spinner */
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+/* Status Badges */
+.badge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.22rem 0.6rem;
+  border-radius: 9999px;
+  font-size: 0.72rem;
+  font-weight: 800;
 }
 
-.btn-spinner {
-  width: 16px;
-  height: 16px;
-  border: 2.2px solid rgba(255, 255, 255, 0.35);
-  border-top-color: #FFFFFF;
-  border-radius: 50%;
-  animation: spin 0.7s linear infinite;
+.badge-pending {
+  background-color: #FEF3C7;
+  color: #B45309;
 }
 
-/* Modal Backdrop & Card */
+.badge-approved {
+  background-color: #D1FAE5;
+  color: #047857;
+}
+
+.badge-rejected {
+  background-color: #FFE4E6;
+  color: #BE123C;
+}
+
+.badge-class {
+  background-color: #EADCCA;
+  color: #5A3A22;
+}
+
+/* Modal Backdrop & Dialog */
 .scool-modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 90;
-  background-color: rgba(13, 43, 73, 0.55);
-  backdrop-filter: blur(4px);
-  display: none;
+  z-index: 60;
+  background-color: rgba(37, 27, 21, 0.48);
+  backdrop-filter: blur(3px);
+  display: flex;
   align-items: center;
   justify-content: center;
-  padding: 16px;
+  padding: 1rem;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
 }
 
 .scool-modal-backdrop.is-open {
-  display: flex;
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .scool-modal-card {
   width: 100%;
-  max-width: 420px;
-  background-color: var(--color-white);
-  border-radius: 20px;
-  padding: 26px 24px;
-  box-shadow: 0 24px 60px rgba(13, 43, 73, 0.32);
-  border: 1px solid #DCEEF9;
-  transform: scale(0.95);
-  opacity: 0;
-  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.18s ease;
+  max-width: 440px;
+  background-color: var(--admin-surface);
+  border-radius: 18px;
+  border: 1.5px solid var(--admin-border);
+  padding: 1.5rem;
+  box-shadow: 0 24px 48px -12px rgba(37, 27, 21, 0.25);
 }
 
-.scool-modal-backdrop.is-open .scool-modal-card {
-  transform: scale(1);
-  opacity: 1;
-}
-
-/* Toast Notifications */
+/* Toast Notification Stack */
 .toast-stack {
   position: fixed;
-  top: 16px;
-  left: 16px;
-  z-index: 100;
+  top: 1rem;
+  left: 1rem;
+  z-index: 80;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  max-width: 360px;
-  width: calc(100% - 32px);
+  gap: 0.5rem;
+  max-width: 350px;
+  width: calc(100% - 2rem);
   pointer-events: none;
 }
 
-.scool-toast {
+.scool-toast-item {
   pointer-events: auto;
-  background: var(--color-white);
+  background-color: var(--admin-surface);
   border-radius: 12px;
-  padding: 12px 14px;
-  box-shadow: 0 14px 32px -8px rgba(16, 55, 92, 0.22);
-  border: 1px solid #D5E8F7;
+  padding: 0.8rem 1rem;
+  border: 1.5px solid var(--admin-border);
+  border-right-width: 5px;
+  box-shadow: 0 12px 28px -6px rgba(37, 27, 21, 0.18);
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  transform: translateY(-8px);
-  opacity: 0;
-  transition: transform 0.18s ease, opacity 0.18s ease;
+  gap: 0.65rem;
 }
 
-.scool-toast.is-visible {
-  transform: translateY(0);
-  opacity: 1;
-}

@@ -1,16 +1,21 @@
 :root {
-  --color-outer-navy: #0D2B49;
-  --color-deep-navy: #10375C;
-  --color-slate-navy: #274C6E;
-  --color-ice-bg: #EDF7FD;
-  --color-box-ice: #EEF7FD;
-  --color-sky-blue: #7DBFE5;
-  --color-border-blue: #C6DDF0;
-  --color-white: #FFFFFF;
+  --color-outer-navy: #EDE8D6;
+  --color-deep-navy: #251B15;
+  --color-slate-navy: #6E5D4F;
+  --color-ice-bg: #F3ECE0;
+  --color-box-ice: #FDFBF7;
+  --color-sky-blue: #1B5E5A;
+  --color-border-blue: #E5DBCB;
+  --color-white: #FAF5EC;
   --color-error: #E11D48;
+  --color-danger: #E11D48;
   --color-success: #10B981;
+  --bg-right-white: #FAF5EC;
+  --text-navy: #251B15;
+  --text-slate: #6E5D4F;
+  --text-muted: #8C7A6B;
 
-  /* Reference Image Palette (Warm Oatmeal, Ivory Cream & Roast Espresso Brown) */
+  /* Dashboard Palette (Warm Oatmeal, Ivory Cream & Roast Espresso Brown) */
   --admin-bg: #EDE8D6;
   --admin-surface: #FAF5EC;
   --admin-surface-alt: #F3ECE0;
@@ -47,8 +52,8 @@ body {
   direction: rtl;
   font-family: var(--font-vazir);
   font-feature-settings: "ss01" 1;
-  background-color: var(--color-outer-navy);
-  color: var(--color-deep-navy);
+  background-color: var(--admin-bg);
+  color: var(--admin-text-main);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -63,3 +68,4 @@ div {
 .view-hidden {
   display: none !important;
 }
+

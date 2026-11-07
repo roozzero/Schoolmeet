@@ -1,42 +1,47 @@
-/* Full-Screen Non-Scrolling Split Layout */
+/* ==========================================================================
+   Split Viewport Layout for Public Auth View (Matching Dashboard Palette)
+   ========================================================================== */
+
 .reference-viewport-shell {
-  width: 100%;
-  height: 100vh;
-  max-height: 100vh;
-  overflow: hidden;
-  background-color: var(--color-outer-navy);
+  width: 100vw;
+  min-height: 100vh;
   display: flex;
   align-items: stretch;
   justify-content: center;
+  background-color: var(--admin-bg);
 }
 
 .reference-split-container {
   width: 100%;
-  height: 100vh;
-  max-height: 100vh;
-  background-color: var(--color-white);
-  border-top-left-radius: 22px;
-  border-top-right-radius: 22px;
-  overflow: hidden;
+  min-height: 100vh;
   display: grid;
   grid-template-columns: 1fr;
+  background-color: var(--admin-surface);
 }
 
 @media (min-width: 1024px) {
+  .reference-viewport-shell {
+    height: 100vh;
+    overflow: hidden;
+  }
+
   .reference-split-container {
-    grid-template-columns: 1fr 1fr;
+    height: 100vh;
+    grid-template-columns: 50% 50%;
   }
 }
 
-/* Left Side (#EDF7FD): Centered Student Collage Only (No Text) */
+/* Left Half: Warm Dashboard Surface with Original 4-Student Collage Shape */
 .collage-showcase-half {
-  background-color: var(--color-ice-bg);
+  background-color: var(--admin-surface-alt);
+  position: relative;
   display: none;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 100vh;
-  padding: 24px;
+  padding: 2.5rem;
   overflow: hidden;
+  border-right: 1px solid var(--admin-border);
 }
 
 @media (min-width: 1024px) {
@@ -46,36 +51,100 @@
 }
 
 .student-collage-graphic {
-  width: 340px;
-  height: 360px;
-  background-color: var(--color-ice-bg);
-  background-image: url('/assets/aistudio/image_af6b658b.png');
-  background-size: 987px 620px;
-  background-position: -70px -62px;
-  background-repeat: no-repeat;
+  position: relative;
+  z-index: 1;
+  width: 382px;
+  height: 380px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
 }
 
-/* Right Side (#FFFFFF): Authentication Area */
-.auth-white-half {
-  background-color: var(--color-white);
-  height: 100vh;
-  max-height: 100vh;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 20px 24px;
+.collage-decor-circle {
+  position: absolute;
+  border-radius: 9999px;
+  pointer-events: none;
+  z-index: 0;
 }
 
-@media (min-width: 640px) {
+.collage-decor-circle-top {
+  width: 120px;
+  height: 120px;
+  top: -36px;
+  right: -36px;
+  background-color: #F5DF82;
+}
+
+.collage-decor-circle-bottom {
+  width: 118px;
+  height: 118px;
+  bottom: -36px;
+  left: -36px;
+  background-color: #CBE8F8;
+}
+
+.collage-student-grid {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 182px 182px;
+  grid-template-rows: 180px 180px;
+  gap: 18px;
+  direction: ltr;
+}
+
+.collage-student-tile {
+  width: 182px;
+  height: 180px;
+  background-image: url('/assets/aistudio/image_af6b658b.png');
+  background-repeat: no-repeat;
+  background-size: 1381.8px 868px;
+  box-shadow: 0 12px 26px -10px rgba(37, 27, 21, 0.14);
+}
+
+.collage-student-tile-tl {
+  background-position: -126px -149.8px;
+  border-radius: 999px 6px 6px 999px;
+}
+
+.collage-student-tile-tr {
+  background-position: -330.4px -149.8px;
+  border-radius: 20px;
+}
+
+.collage-student-tile-bl {
+  background-position: -126px -352.8px;
+  border-radius: 20px;
+}
+
+.collage-student-tile-br {
+  background-position: -330.4px -352.8px;
+  border-radius: 6px 999px 999px 6px;
+}
+
+/* Right Half: Form Panel Matching Dashboard Card Surface */
+.auth-white-half {
+  background-color: var(--admin-surface);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 1.5rem 1.5rem;
+  position: relative;
+  overflow-y: auto;
+}
+
+@media (min-width: 1024px) {
   .auth-white-half {
-    padding: 24px 44px;
+    height: 100vh;
+    padding: 1.5rem 2.5rem;
   }
 }
 
 .auth-content-column {
   width: 100%;
-  max-width: 460px;
+  max-width: 440px;
 }
+

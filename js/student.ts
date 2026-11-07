@@ -20,14 +20,18 @@ import {
 } from './store';
 import {
   AnnouncementItem,
+  AssignmentItem,
   AttendanceStatus,
   DatabaseState,
+  EducationalResource,
   StudentRecord,
   StudentSectionId,
 } from './types';
 import {
+  formatPersianDateTime,
+  formatRecipientLabel,
   getAssignmentLockState,
-  isValidEmail,
+  isValidRequiredEmail,
   normalizeDigits,
   toPersianDigits,
 } from './validation';
@@ -87,6 +91,46 @@ function isAnnouncementForStudent(
     return Number(ann.targetStudentId) === Number(student.id);
   }
   return ann.targetClasses === 'all' || ann.targetClasses === student.classCode;
+}
+
+function isAssignmentForStudent(
+  hw: AssignmentItem,
+  student: StudentRecord
+): boolean {
+  if (hw.targetStudentId && Number(hw.targetStudentId) > 0) {
+    return Number(hw.targetStudentId) === Number(student.id);
+  }
+  return hw.classCode === 'all' || hw.classCode === student.classCode;
+}
+
+function isResourceForStudent(
+  res: EducationalResource,
+  student: StudentRecord
+): boolean {
+  if (res.targetStudentId && Number(res.targetStudentId) > 0) {
+    return Number(res.targetStudentId) === Number(student.id);
+  }
+  return res.classCode === 'all' || res.classCode === student.classCode;
+}
+
+function formatStudentItemRecipient(
+  state: DatabaseState,
+  student: StudentRecord,
+  classCodeOrTarget: string,
+  targetStudentId?: number,
+  targetStudentName?: string
+): string {
+  return formatRecipientLabel({
+    classCodeOrTarget,
+    targetStudentId,
+    targetStudentName:
+      targetStudentName ||
+      (targetStudentId && Number(targetStudentId) === Number(student.id)
+        ? `${student.firstName} ${student.lastName}`.trim()
+        : undefined),
+    students: state.students,
+    classes: state.classes,
+  });
 }
 
 function formatAttendanceBadge(status: AttendanceStatus): string {
@@ -181,7 +225,7 @@ function markResourceViewedByStudent(
       studentId: student.id,
       studentName: `${student.firstName} ${student.lastName}`,
       classCode: student.classCode || '901',
-      viewedAt: `${new Date().toLocaleDateString('fa-IR')} · هم‌اکنون`,
+      viewedAt: formatPersianDateTime(new Date()),
     });
     void persistDbState(state);
   }
@@ -289,12 +333,12 @@ function syncStudentChrome(state: DatabaseState): void {
       );
   }
 
-  const myAssignments = state.assignments.filter(
-    (a) => a.classCode === 'all' || a.classCode === student.classCode
+  const myAssignments = state.assignments.filter((a) =>
+    isAssignmentForStudent(a, student)
   );
   const myGrades = state.gradebookEntries.filter((e) => e.studentId === student.id);
-  const myResources = state.resources.filter(
-    (r) => r.classCode === 'all' || r.classCode === student.classCode
+  const myResources = state.resources.filter((r) =>
+    isResourceForStudent(r, student)
   );
   const myAnnouncements = state.announcements.filter((an) =>
     isAnnouncementForStudent(an, student)
@@ -404,8 +448,8 @@ export function renderActiveStudentSection(preserveInputSelector?: string): void
 function renderStudentDashboard($container: JQuery<HTMLElement>, state: DatabaseState): void {
   const student = getActiveStudent(state);
   const myClassInfo = state.classes.find((c) => c.code === student.classCode);
-  const myAssignments = state.assignments.filter(
-    (a) => a.classCode === 'all' || a.classCode === student.classCode
+  const myAssignments = state.assignments.filter((a) =>
+    isAssignmentForStudent(a, student)
   );
   const mySubmissions = state.submissions.filter((s) => s.studentId === student.id);
   const myGradebookEntries = state.gradebookEntries.filter((e) => e.studentId === student.id);
@@ -619,6 +663,9 @@ function renderStudentDashboard($container: JQuery<HTMLElement>, state: Database
                       <div class="flex items-center justify-between gap-2 flex-wrap">
                         <div class="flex items-center gap-2 flex-wrap">
                           <span class="text-xs font-extrabold text-[#251B15]">${toPersianDigits(ann.title)}</span>
+                          <span class="text-[10.5px] font-bold px-2 py-0.5 rounded-md bg-[#E2EFEA] text-[#1B5E5A]">
+                            ${formatStudentItemRecipient(state, student, ann.targetClasses, ann.targetStudentId, ann.targetStudentName)}
+                          </span>
                           ${
                             ann.notificationType === 'feedback'
                               ? `<span class="text-[10.5px] font-extrabold px-2 py-0.5 rounded-md bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0]">بازخورد اختصاصی مدرس</span>`
@@ -627,7 +674,7 @@ function renderStudentDashboard($container: JQuery<HTMLElement>, state: Database
                               : ''
                           }
                         </div>
-                        <span class="text-[11px] text-[#6E5D4F] tabular-nums">${toPersianDigits(ann.createdAt)}</span>
+                        <span class="text-[11px] text-[#6E5D4F] tabular-nums">${toPersianDigits(formatPersianDateTime(ann.createdAt))}</span>
                       </div>
                       <p class="text-xs text-[#6E5D4F] mt-1.5 m-0 leading-relaxed">${toPersianDigits(ann.content)}</p>
                     </div>`
@@ -652,8 +699,8 @@ function renderStudentAssignments($container: JQuery<HTMLElement>, state: Databa
     return;
   }
 
-  const myAssignments = state.assignments.filter(
-    (a) => a.classCode === 'all' || a.classCode === student.classCode
+  const myAssignments = state.assignments.filter((a) =>
+    isAssignmentForStudent(a, student)
   );
   const mySubmissions = state.submissions.filter((s) => s.studentId === student.id);
 
@@ -680,6 +727,13 @@ function renderStudentAssignments($container: JQuery<HTMLElement>, state: Databa
                 .map((hw) => {
                   const sub = mySubmissions.find((s) => s.assignmentId === hw.id);
                   const lockInfo = getAssignmentLockState(hw, getAuthoritativeNowMs());
+                  const recipientLabel = formatStudentItemRecipient(
+                    state,
+                    student,
+                    hw.classCode,
+                    hw.targetStudentId,
+                    hw.targetStudentName
+                  );
                   return `
                     <div class="modern-class-card">
                       <div>
@@ -714,7 +768,7 @@ function renderStudentAssignments($container: JQuery<HTMLElement>, state: Databa
                                 : ''
                             }
                           </div>
-                          <span class="text-[11px] text-[#6E5D4F] tabular-nums">${toPersianDigits(hw.createdAt)}</span>
+                          <span class="text-[11px] text-[#6E5D4F] tabular-nums">${toPersianDigits(formatPersianDateTime(hw.createdAt))}</span>
                         </div>
 
                         <h3 class="text-sm font-black text-[#251B15] mt-2.5 m-0 leading-snug">
@@ -727,8 +781,12 @@ function renderStudentAssignments($container: JQuery<HTMLElement>, state: Databa
 
                       <div class="mt-4 pt-3 border-t border-[#E6D8C5] space-y-2.5">
                         <div class="flex items-center justify-between text-[11px] text-[#6E5D4F]">
-                          <span>مهلت تحویل: <strong class="${lockInfo.isDeadlineExpired ? 'text-[#E11D48]' : 'text-[#251B15]'}">${toPersianDigits(hw.dueDate)}</strong></span>
+                          <span>مخاطب: <strong class="text-[#5A3A22]">${recipientLabel}</strong></span>
                           <span>بارم: <strong class="text-[#251B15]">${toPersianDigits(hw.maxScore)}</strong></span>
+                        </div>
+                        <div class="flex items-center justify-between text-[11px] text-[#6E5D4F]">
+                          <span>مهلت تحویل:</span>
+                          <strong class="${lockInfo.isDeadlineExpired ? 'text-[#E11D48]' : 'text-[#251B15]'}">${toPersianDigits(hw.dueDate)}</strong>
                         </div>
 
                         <button
@@ -1092,7 +1150,7 @@ function renderStudentResources($container: JQuery<HTMLElement>, state: Database
   const normalizedQuery = normalizeDigits(studentResSearchQuery.trim()).toLowerCase();
 
   const myResources = state.resources.filter((res) => {
-    const inClass = res.classCode === 'all' || res.classCode === student.classCode;
+    const inClass = isResourceForStudent(res, student);
     const matchesCat =
       studentResCategoryFilter === 'all' ? true : res.category === studentResCategoryFilter;
     const matchesQuery =
@@ -1155,9 +1213,9 @@ function renderStudentResources($container: JQuery<HTMLElement>, state: Database
                     <div>
                       <div class="flex items-center justify-between gap-2">
                         <span class="text-[11px] font-extrabold text-[#1B5E5A] bg-[#E2EFEA] px-2.5 py-1 rounded-lg">
-                          ${res.category}
+                          ${res.category} · ${formatStudentItemRecipient(state, student, res.classCode, res.targetStudentId, res.targetStudentName)}
                         </span>
-                        <span class="text-[11px] text-[#6E5D4F] tabular-nums">${toPersianDigits(res.createdAt)}</span>
+                        <span class="text-[11px] text-[#6E5D4F] tabular-nums">${toPersianDigits(formatPersianDateTime(res.createdAt))}</span>
                       </div>
 
                       <h3 class="text-sm font-black text-[#251B15] mt-2.5 m-0 leading-snug">
@@ -1306,11 +1364,14 @@ function renderStudentAnnouncements($container: JQuery<HTMLElement>, state: Data
             ? list
                 .map((ann) => {
                   const readLog = (ann.readers || []).find((r) => r.studentId === student.id);
-                  const targetLabel = ann.targetStudentId
-                    ? `اختصاصی برای ${student.firstName} ${student.lastName}`
-                    : ann.targetClasses === 'all'
-                    ? 'همه کلاس‌ها'
-                    : `کلاس ${toPersianDigits(ann.targetClasses)}`;
+                  const targetLabel = formatStudentItemRecipient(
+                    state,
+                    student,
+                    ann.targetClasses,
+                    ann.targetStudentId,
+                    ann.targetStudentName
+                  );
+                  const createdLabel = formatPersianDateTime(ann.createdAt);
 
                   return `
                     <div class="admin-surface-card ${readLog ? 'opacity-95' : 'border-[#5A3A22]'}">
@@ -1339,7 +1400,7 @@ function renderStudentAnnouncements($container: JQuery<HTMLElement>, state: Data
                               : ''
                           }
                         </div>
-                        <span class="text-xs text-[#6E5D4F] tabular-nums">${toPersianDigits(ann.createdAt)}</span>
+                        <span class="text-xs text-[#6E5D4F] tabular-nums">${toPersianDigits(createdLabel)}</span>
                       </div>
                       <p class="text-xs text-[#3E3027] mt-2 m-0 leading-relaxed whitespace-pre-line">${toPersianDigits(ann.content)}</p>
 
@@ -1768,7 +1829,7 @@ function renderStudentProfile($container: JQuery<HTMLElement>, state: DatabaseSt
           </div>
 
           <div>
-            <label class="scool-field-label">پست الکترونیکی (Email)</label>
+            <label class="scool-field-label">پست الکترونیکی (Email — الزامی)</label>
             <input
               type="email"
               id="st-prof-email"
@@ -1776,6 +1837,7 @@ function renderStudentProfile($container: JQuery<HTMLElement>, state: DatabaseSt
               dir="ltr"
               placeholder="student@example.com"
               value="${student.email || ''}"
+              required
             />
           </div>
 
@@ -2202,7 +2264,7 @@ export function initStudentPanelEvents(): void {
         studentId: student.id,
         studentName: `${student.firstName} ${student.lastName}`,
         classCode: student.classCode || '901',
-        readAt: `${new Date().toLocaleDateString('fa-IR')} · هم‌اکنون`,
+        readAt: formatPersianDateTime(new Date()),
       });
     }
 
@@ -2289,7 +2351,7 @@ export function initStudentPanelEvents(): void {
       const state = loadDbState();
       const student = getActiveStudent(state);
       const newTicketId = Date.now();
-      const nowFa = `${new Date().toLocaleDateString('fa-IR')} · هم‌اکنون`;
+      const nowFa = formatPersianDateTime(new Date());
 
       state.tickets.unshift({
         id: newTicketId,
@@ -2506,8 +2568,8 @@ export function initStudentPanelEvents(): void {
       return;
     }
 
-    if (email && !isValidEmail(email)) {
-      showToast('ایمیل نامعتبر', 'لطفاً یک آدرس ایمیل معتبر وارد نمایید.', 'error');
+    if (!isValidRequiredEmail(email)) {
+      showToast('ایمیل الزامی و نامعتبر', 'وارد کردن یک آدرس ایمیل معتبر برای پروفایل دانش‌آموز الزامی است.', 'error');
       return;
     }
 

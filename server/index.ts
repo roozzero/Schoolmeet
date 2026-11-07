@@ -1,13 +1,36 @@
-import express, { Request, Response } from 'express';
-import cors from 'cors';
 import bcrypt from 'bcryptjs';
+import cors from 'cors';
+import express, { Request, Response } from 'express';
 import fs from 'fs';
-import path from 'path';
 import { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
+import path from 'path';
+import { getAssignmentLockState } from '../js/validation';
 import { getDbInfo, pool, testDatabaseConnection } from './db';
 import { runMigrations } from './migrations';
 
-export const app = express();
+const app = express();
+const PORT = Number(process.env.API_PORT || 3001);
+
+function getAssignmentLockStatusServer(
+  hw: { status?: string; dueDate?: string },
+  nowMs: number = Date.now()
+): { locked: boolean; reason: string } {
+  const lock = getAssignmentLockState(hw, nowMs);
+  if (lock.isClosedByAdmin) {
+    return { locked: true, reason: 'ASSIGNMENT_CLOSED' };
+  }
+  if (lock.isDeadlineExpired) {
+    return { locked: true, reason: 'ASSIGNMENT_DEADLINE_EXPIRED' };
+  }
+  return { locked: false, reason: '' };
+}
+
+function formatAssignmentStatusError(reason: string): string {
+  if (reason === 'ASSIGNMENT_CLOSED') {
+    return 'این تکلیف توسط مدرس بسته شده است و امکان ارسال یا ویرایش پاسخ وجود ندارد.';
+  }
+  return 'مهلت تحویل این تکلیف به پایان رسیده است و امکان ارسال یا ویرایش پاسخ وجود ندارد.';
+}
 
 const UPLOADS_DIR = path.resolve(process.cwd(), 'uploads');
 if (!fs.existsSync(UPLOADS_DIR)) {
@@ -18,530 +41,1928 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 /**
- * Safely serve uploaded files from /uploads with nosniff and safe headers
- * so uploaded files can never execute as server-side code.
+ * Serve uploaded files from `/uploads/:filename` with optional `?download=1&name=...`
  */
-app.get('/uploads/:filename', (req: Request, res: Response): void => {
-  const rawName = String(req.params.filename || '');
-  const safeName = path.basename(rawName);
-  if (!safeName || safeName !== rawName || safeName.startsWith('.')) {
-    res.status(400).send('Invalid file name');
-    return;
-  }
-  const filePath = path.join(UPLOADS_DIR, safeName);
-  if (!fs.existsSync(filePath)) {
-    res.status(404).send('File not found');
+app.get('/uploads/:filename', (req: Request, res: Response) => {
+  const safeFile = path.basename(String(req.params.filename || ''));
+  const fullPath = path.join(UPLOADS_DIR, safeFile);
+  if (!safeFile || !fs.existsSync(fullPath)) {
+    res.status(404).json({
+      success: false,
+      message: 'فایل مورد نظر در سرور یافت نشد.',
+    });
     return;
   }
 
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Cache-Control', 'public, max-age=31536000');
+  const downloadName = String(req.query.name || safeFile).replace(/["\r\n]/g, '');
   if (req.query.download === '1') {
-    const downloadName = String(req.query.name || safeName).replace(/["\r\n]/g, '');
     res.setHeader(
       'Content-Disposition',
       `attachment; filename*=UTF-8''${encodeURIComponent(downloadName)}`
     );
   }
-  res.sendFile(filePath);
+  res.sendFile(fullPath);
+});
+
+const PERSIAN_DIGITS = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+const ARABIC_DIGITS = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+
+function normalizeDigitsServer(input: unknown): string {
+  let result = String(input ?? '').trim();
+  PERSIAN_DIGITS.forEach((d, idx) => {
+    result = result.replace(new RegExp(d, 'g'), String(idx));
+  });
+  ARABIC_DIGITS.forEach((d, idx) => {
+    result = result.replace(new RegExp(d, 'g'), String(idx));
+  });
+  return result;
+}
+
+function toPersianDigitsServer(input: string | number): string {
+  return String(input ?? '').replace(/\d/g, (d) => PERSIAN_DIGITS[Number(d)]);
+}
+
+/**
+ * Normalize Iranian mobile phone numbers to canonical 11-digit ASCII `09xxxxxxxxx`.
+ * Accepts `09xxxxxxxxx`, `+989xxxxxxxxx`, `00989xxxxxxxxx`, `989xxxxxxxxx`, `9xxxxxxxxx`
+ * with Persian, Arabic, or ASCII digits.
+ */
+export function normalizeIranianPhoneServer(input: unknown): string {
+  const ascii = normalizeDigitsServer(input).replace(/[\s\-().]/g, '');
+  if (/^\+989\d{9}$/.test(ascii)) {
+    return '0' + ascii.slice(3);
+  }
+  if (/^00989\d{9}$/.test(ascii)) {
+    return '0' + ascii.slice(4);
+  }
+  if (/^989\d{9}$/.test(ascii)) {
+    return '0' + ascii.slice(2);
+  }
+  if (/^9\d{9}$/.test(ascii)) {
+    return '0' + ascii;
+  }
+  return ascii;
+}
+
+export function isValidIranianPhoneServer(input: unknown): boolean {
+  const normalized = normalizeIranianPhoneServer(input);
+  return /^09\d{9}$/.test(normalized);
+}
+
+export function isValidEmailServer(email: string): boolean {
+  const cleaned = normalizeDigitsServer(email).trim();
+  if (!cleaned) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(cleaned);
+}
+
+/**
+ * Format a real Date or MySQL TIMESTAMP into a Persian date + time string (`۱۴۰۵/۰۸/۱۷ · ساعت ۱۴:۳۰`).
+ * Replaces any legacy hardcoded `'۱۴۰۵/۰۸/۱۵'` or `'هم‌اکنون'` with the actual DB timestamp.
+ */
+function formatServerPersianDateTime(
+  dbTimestamp?: Date | string | number | null,
+  storedLabel?: string | null
+): string {
+  const cleanStored = String(storedLabel || '').trim();
+  const hasHardcodedPlaceholder =
+    !cleanStored ||
+    cleanStored.includes('هم‌اکنون') ||
+    cleanStored === '۱۴۰۵/۰۸/۱۵' ||
+    cleanStored === '1405/08/15';
+
+  if (!hasHardcodedPlaceholder && cleanStored.includes('·')) {
+    return toPersianDigitsServer(cleanStored);
+  }
+
+  let dateObj: Date = new Date();
+  if (dbTimestamp instanceof Date && !isNaN(dbTimestamp.getTime())) {
+    dateObj = dbTimestamp;
+  } else if (typeof dbTimestamp === 'string' || typeof dbTimestamp === 'number') {
+    const parsed = new Date(dbTimestamp);
+    if (!isNaN(parsed.getTime())) {
+      dateObj = parsed;
+    }
+  }
+
+  try {
+    const datePart = new Intl.DateTimeFormat('fa-IR-u-ca-persian', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(dateObj);
+    const timePart = new Intl.DateTimeFormat('fa-IR', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(dateObj);
+    return `${toPersianDigitsServer(datePart)} · ساعت ${toPersianDigitsServer(timePart)}`;
+  } catch {
+    const d = dateObj.toLocaleDateString('fa-IR');
+    const hh = String(dateObj.getHours()).padStart(2, '0');
+    const mm = String(dateObj.getMinutes()).padStart(2, '0');
+    return `${toPersianDigitsServer(d)} · ساعت ${toPersianDigitsServer(`${hh}:${mm}`)}`;
+  }
+}
+
+function formatServerPersianDateOnly(dbTimestamp?: Date | string | number | null): string {
+  let dateObj: Date = new Date();
+  if (dbTimestamp instanceof Date && !isNaN(dbTimestamp.getTime())) {
+    dateObj = dbTimestamp;
+  } else if (dbTimestamp) {
+    const parsed = new Date(dbTimestamp);
+    if (!isNaN(parsed.getTime())) dateObj = parsed;
+  }
+  try {
+    return toPersianDigitsServer(
+      new Intl.DateTimeFormat('fa-IR-u-ca-persian', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(dateObj)
+    );
+  } catch {
+    return toPersianDigitsServer(dateObj.toLocaleDateString('fa-IR'));
+  }
+}
+
+/**
+ * Safely delete an uploaded file from `/uploads` if it is no longer referenced by any student or admin
+ */
+async function deleteUnreferencedUploadFile(avatarUrl?: string | null): Promise<boolean> {
+  if (!avatarUrl || typeof avatarUrl !== 'string') return false;
+  const cleanUrl = avatarUrl.split('?')[0].trim();
+  if (!cleanUrl.startsWith('/uploads/')) return false;
+
+  const fileName = path.basename(cleanUrl);
+  if (!fileName) return false;
+
+  const [studentRefs] = await pool.query<RowDataPacket[]>(
+    'SELECT COUNT(*) AS cnt FROM `students` WHERE `avatar_url` LIKE ?',
+    [`/uploads/${fileName}%`]
+  );
+  const [adminRefs] = await pool.query<RowDataPacket[]>(
+    'SELECT COUNT(*) AS cnt FROM `admins` WHERE `avatar_url` LIKE ?',
+    [`/uploads/${fileName}%`]
+  );
+
+  const totalRefs =
+    Number(studentRefs[0]?.cnt || 0) + Number(adminRefs[0]?.cnt || 0);
+  if (totalRefs > 0) {
+    return false;
+  }
+
+  const fullPath = path.join(UPLOADS_DIR, fileName);
+  if (fs.existsSync(fullPath)) {
+    try {
+      await fs.promises.unlink(fullPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Verify that a student exists in MySQL and has `status === 'approved'`.
+ */
+async function verifyApprovedStudent(studentId: number): Promise<{
+  allowed: boolean;
+  httpStatus: number;
+  code?: string;
+  message?: string;
+  studentRow?: RowDataPacket;
+}> {
+  if (!studentId || isNaN(studentId) || studentId <= 0) {
+    return {
+      allowed: false,
+      httpStatus: 401,
+      code: 'STUDENT_AUTH_REQUIRED',
+      message: 'لطفاً ابتدا وارد حساب کاربری دانش‌آموزی خود شوید.',
+    };
+  }
+
+  const [rows] = await pool.query<RowDataPacket[]>(
+    'SELECT * FROM `students` WHERE `id` = ? LIMIT 1',
+    [studentId]
+  );
+  if (rows.length === 0) {
+    return {
+      allowed: false,
+      httpStatus: 404,
+      code: 'STUDENT_NOT_FOUND',
+      message: 'حساب کاربری دانش‌آموز در پایگاه داده یافت نشد.',
+    };
+  }
+
+  const studentRow = rows[0];
+  const stStatus = String(studentRow.status || 'pending');
+  if (stStatus === 'pending') {
+    return {
+      allowed: false,
+      httpStatus: 403,
+      code: 'ACCOUNT_PENDING_APPROVAL',
+      message:
+        'حساب کاربری شما ثبت شده و در انتظار تأیید مدیر سامانه است. پس از تأیید مدیریت می‌توانید به پنل دانش‌آموزی دسترسی داشته باشید.',
+    };
+  }
+
+  if (stStatus !== 'approved') {
+    return {
+      allowed: false,
+      httpStatus: 403,
+      code: 'ACCOUNT_REJECTED',
+      message: 'درخواست عضویت حساب کاربری شما توسط مدیریت تأیید نشده است.',
+    };
+  }
+
+  return {
+    allowed: true,
+    httpStatus: 200,
+    studentRow,
+  };
+}
+
+function safeJsonParse<T>(raw: unknown, fallback: T): T {
+  if (!raw || typeof raw !== 'string') return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * One-time automatic migration of any existing non-demo records from legacy `app_extended_state`
+ * into the relational MySQL tables if the relational tables are currently empty.
+ */
+async function migrateLegacyExtendedStateOnce(): Promise<void> {
+  const [settingsRows] = await pool.query<RowDataPacket[]>(
+    "SELECT `setting_value` FROM `system_settings` WHERE `setting_key` = 'app_extended_state' LIMIT 1"
+  );
+  if (settingsRows.length === 0) return;
+
+  const rawJson = String(settingsRows[0].setting_value || '');
+  const parsed = safeJsonParse<Record<string, unknown>>(rawJson, {});
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    // 1. Assignments
+    const [hwCountRows] = await conn.query<RowDataPacket[]>(
+      'SELECT COUNT(*) AS cnt FROM `assignments`'
+    );
+    if (Number(hwCountRows[0]?.cnt || 0) === 0 && Array.isArray(parsed.assignments)) {
+      for (const a of parsed.assignments as Array<Record<string, unknown>>) {
+        await conn.query(
+          `INSERT IGNORE INTO \`assignments\`
+            (\`id\`, \`title\`, \`description\`, \`class_code\`, \`target_student_id\`, \`target_student_name\`, \`due_date\`, \`max_score\`, \`attachment_name\`, \`attachment_url\`, \`status\`, \`closed_at\`, \`created_at_fa\`)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            Number(a.id) || Date.now(),
+            String(a.title || ''),
+            String(a.description || ''),
+            String(a.classCode || 'all'),
+            a.targetStudentId ? Number(a.targetStudentId) : null,
+            a.targetStudentName ? String(a.targetStudentName) : null,
+            String(a.dueDate || ''),
+            Number(a.maxScore ?? 20),
+            String(a.attachmentName || ''),
+            a.attachmentDataUrl ? String(a.attachmentDataUrl) : null,
+            a.status === 'closed' ? 'closed' : 'active',
+            a.closedAt ? String(a.closedAt) : null,
+            formatServerPersianDateTime(new Date(), String(a.createdAt || '')),
+          ]
+        );
+      }
+    }
+
+    // 2. Submissions
+    const [subCountRows] = await conn.query<RowDataPacket[]>(
+      'SELECT COUNT(*) AS cnt FROM `assignment_submissions`'
+    );
+    if (Number(subCountRows[0]?.cnt || 0) === 0 && Array.isArray(parsed.submissions)) {
+      for (const s of parsed.submissions as Array<Record<string, unknown>>) {
+        await conn.query(
+          `INSERT IGNORE INTO \`assignment_submissions\`
+            (\`id\`, \`assignment_id\`, \`student_id\`, \`student_name\`, \`class_code\`, \`file_name\`, \`file_content\`, \`file_url\`, \`submitted_at\`, \`score\`, \`teacher_feedback\`, \`status\`)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            Number(s.id) || Date.now(),
+            Number(s.assignmentId || 0),
+            Number(s.studentId || 0),
+            String(s.studentName || ''),
+            String(s.classCode || ''),
+            String(s.fileName || ''),
+            String(s.fileContent || ''),
+            s.fileDataUrl ? String(s.fileDataUrl) : null,
+            formatServerPersianDateTime(new Date(), String(s.submittedAt || '')),
+            s.score !== null && s.score !== undefined ? Number(s.score) : null,
+            String(s.teacherFeedback || ''),
+            s.status === 'graded' ? 'graded' : 'pending',
+          ]
+        );
+      }
+    }
+
+    // 3. Resources
+    const [resCountRows] = await conn.query<RowDataPacket[]>(
+      'SELECT COUNT(*) AS cnt FROM `educational_resources`'
+    );
+    if (Number(resCountRows[0]?.cnt || 0) === 0 && Array.isArray(parsed.resources)) {
+      for (const r of parsed.resources as Array<Record<string, unknown>>) {
+        await conn.query(
+          `INSERT IGNORE INTO \`educational_resources\`
+            (\`id\`, \`title\`, \`category\`, \`class_code\`, \`target_student_id\`, \`target_student_name\`, \`url_or_filename\`, \`file_url\`, \`file_size\`, \`description\`, \`viewers_json\`, \`created_at\`)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            Number(r.id) || Date.now(),
+            String(r.title || ''),
+            String(r.category || 'جزوه PDF'),
+            String(r.classCode || 'all'),
+            r.targetStudentId ? Number(r.targetStudentId) : null,
+            r.targetStudentName ? String(r.targetStudentName) : null,
+            String(r.urlOrFileName || ''),
+            r.fileDataUrl ? String(r.fileDataUrl) : null,
+            String(r.fileSize || 'فایل پیوست'),
+            String(r.description || ''),
+            JSON.stringify(Array.isArray(r.viewers) ? r.viewers : []),
+            formatServerPersianDateTime(new Date(), String(r.createdAt || '')),
+          ]
+        );
+      }
+    }
+
+    // 4. Announcements
+    const [annCountRows] = await conn.query<RowDataPacket[]>(
+      'SELECT COUNT(*) AS cnt FROM `announcements`'
+    );
+    if (Number(annCountRows[0]?.cnt || 0) === 0 && Array.isArray(parsed.announcements)) {
+      for (const an of parsed.announcements as Array<Record<string, unknown>>) {
+        await conn.query(
+          `INSERT IGNORE INTO \`announcements\`
+            (\`id\`, \`title\`, \`content\`, \`target_classes\`, \`target_student_id\`, \`target_student_name\`, \`assignment_id\`, \`notification_type\`, \`priority\`, \`created_at\`, \`readers_json\`)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            Number(an.id) || Date.now(),
+            String(an.title || ''),
+            String(an.content || ''),
+            String(an.targetClasses || 'all'),
+            an.targetStudentId ? Number(an.targetStudentId) : null,
+            an.targetStudentName ? String(an.targetStudentName) : null,
+            an.assignmentId ? Number(an.assignmentId) : null,
+            String(an.notificationType || 'general'),
+            String(an.priority || 'عادی'),
+            formatServerPersianDateTime(new Date(), String(an.createdAt || '')),
+            JSON.stringify(Array.isArray(an.readers) ? an.readers : []),
+          ]
+        );
+      }
+    }
+
+    // 5. Tickets & Ticket Messages
+    const [tkCountRows] = await conn.query<RowDataPacket[]>(
+      'SELECT COUNT(*) AS cnt FROM `tickets`'
+    );
+    if (Number(tkCountRows[0]?.cnt || 0) === 0 && Array.isArray(parsed.tickets)) {
+      for (const tk of parsed.tickets as Array<Record<string, unknown>>) {
+        const tkId = Number(tk.id) || Date.now();
+        await conn.query(
+          `INSERT IGNORE INTO \`tickets\`
+            (\`id\`, \`student_id\`, \`student_name\`, \`student_phone\`, \`class_code\`, \`subject\`, \`priority\`, \`status\`, \`created_at\`)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            tkId,
+            Number(tk.studentId || 0),
+            String(tk.studentName || ''),
+            normalizeIranianPhoneServer(tk.studentPhone || ''),
+            String(tk.classCode || ''),
+            String(tk.subject || ''),
+            String(tk.priority || 'عادی'),
+            String(tk.status || 'در انتظار پاسخ'),
+            formatServerPersianDateTime(new Date(), String(tk.createdAt || '')),
+          ]
+        );
+        if (Array.isArray(tk.messages)) {
+          for (const m of tk.messages as Array<Record<string, unknown>>) {
+            await conn.query(
+              `INSERT IGNORE INTO \`ticket_messages\`
+                (\`id\`, \`ticket_id\`, \`sender_role\`, \`sender_name\`, \`message\`, \`sent_at\`, \`attachment_name\`, \`attachment_url\`)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                Number(m.id) || Date.now() + Math.floor(Math.random() * 1000),
+                tkId,
+                m.senderRole === 'admin' ? 'admin' : 'student',
+                String(m.senderName || ''),
+                String(m.message || ''),
+                formatServerPersianDateTime(new Date(), String(m.sentAt || '')),
+                m.attachmentName ? String(m.attachmentName) : null,
+                m.attachmentDataUrl ? String(m.attachmentDataUrl) : null,
+              ]
+            );
+          }
+        }
+      }
+    }
+
+    // 6. Gradebook Sessions & Entries
+    const [gbSesRows] = await conn.query<RowDataPacket[]>(
+      'SELECT COUNT(*) AS cnt FROM `gradebook_sessions`'
+    );
+    if (Number(gbSesRows[0]?.cnt || 0) === 0 && Array.isArray(parsed.gradebookSessions)) {
+      for (const gs of parsed.gradebookSessions as Array<Record<string, unknown>>) {
+        await conn.query(
+          `INSERT IGNORE INTO \`gradebook_sessions\`
+            (\`id\`, \`class_code\`, \`title\`, \`session_date\`, \`topic\`)
+           VALUES (?, ?, ?, ?, ?)`,
+          [
+            Number(gs.id) || Date.now(),
+            String(gs.classCode || '901'),
+            String(gs.title || ''),
+            String(gs.sessionDate || ''),
+            String(gs.topic || ''),
+          ]
+        );
+      }
+    }
+
+    const [gbEntRows] = await conn.query<RowDataPacket[]>(
+      'SELECT COUNT(*) AS cnt FROM `gradebook_entries`'
+    );
+    if (Number(gbEntRows[0]?.cnt || 0) === 0 && Array.isArray(parsed.gradebookEntries)) {
+      for (const ge of parsed.gradebookEntries as Array<Record<string, unknown>>) {
+        await conn.query(
+          `INSERT IGNORE INTO \`gradebook_entries\`
+            (\`id\`, \`session_id\`, \`student_id\`, \`class_code\`, \`attendance\`, \`positive_count\`, \`negative_count\`, \`class_score\`, \`teacher_note\`)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            Number(ge.id) || Date.now(),
+            Number(ge.sessionId || 0),
+            Number(ge.studentId || 0),
+            String(ge.classCode || '901'),
+            ge.attendance === 'absent' || ge.attendance === 'late' ? ge.attendance : 'present',
+            Number(ge.positiveCount || 0),
+            Number(ge.negativeCount || 0),
+            ge.classScore !== null && ge.classScore !== undefined ? Number(ge.classScore) : null,
+            String(ge.teacherNote || ''),
+          ]
+        );
+      }
+    }
+
+    // Remove the legacy blob key so relational tables are the sole source of truth
+    await conn.query(
+      "DELETE FROM `system_settings` WHERE `setting_key` = 'app_extended_state'"
+    );
+
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    console.error('[ScoolMeet] Error migrating legacy app_extended_state:', err);
+  } finally {
+    conn.release();
+  }
+}
+
+/**
+ * 0. Upload File Endpoint (POST /api/upload)
+ */
+app.post('/api/upload', async (req: Request, res: Response) => {
+  try {
+    const fileName = String(req.body?.fileName || 'attachment.bin').trim();
+    const dataUrl = String(req.body?.dataUrl || '');
+
+    if (!dataUrl || !dataUrl.startsWith('data:')) {
+      res.status(400).json({
+        success: false,
+        message: 'فرمت فایل ارسالی نامعتبر است.',
+      });
+      return;
+    }
+
+    const commaIndex = dataUrl.indexOf(',');
+    if (commaIndex === -1) {
+      res.status(400).json({
+        success: false,
+        message: 'محتوای باینری فایل قابل استخراج نیست.',
+      });
+      return;
+    }
+
+    const base64Data = dataUrl.slice(commaIndex + 1);
+    const buffer = Buffer.from(base64Data, 'base64');
+
+    const [settingRows] = await pool.query<RowDataPacket[]>(
+      "SELECT `setting_value` FROM `system_settings` WHERE `setting_key` = 'maxUploadSizeMb' LIMIT 1"
+    );
+    const maxUploadMb = Math.max(
+      1,
+      Number(settingRows[0]?.setting_value || 25) || 25
+    );
+    const maxBytes = maxUploadMb * 1024 * 1024;
+
+    if (buffer.byteLength > maxBytes) {
+      res.status(413).json({
+        success: false,
+        message: `حجم فایل بیش از سقف مجاز سامانه (${maxUploadMb} مگابایت) است.`,
+      });
+      return;
+    }
+
+    const ext = path.extname(fileName).replace(/[^a-zA-Z0-9.]/g, '') || '.bin';
+    const base = path
+      .basename(fileName, path.extname(fileName))
+      .replace(/[^a-zA-Z0-9_\-\u0600-\u06FF]/g, '_')
+      .slice(0, 50);
+    const storedFileName = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}_${base || 'file'}${ext}`;
+    const targetPath = path.join(UPLOADS_DIR, storedFileName);
+
+    await fs.promises.writeFile(targetPath, buffer);
+
+    const sizeMb = Math.round((buffer.byteLength / (1024 * 1024)) * 100) / 100;
+    const formattedSize =
+      sizeMb >= 0.1
+        ? `${sizeMb} مگابایت`
+        : `${Math.max(1, Math.round(buffer.byteLength / 1024))} کیلوبایت`;
+
+    res.json({
+      success: true,
+      fileName,
+      fileUrl: `/uploads/${storedFileName}`,
+      fileSize: formattedSize,
+      bytes: buffer.byteLength,
+      message: 'فایل با موفقیت در سرور ذخیره گردید.',
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message:
+        err instanceof Error ? err.message : 'خطا در ذخیره فایل روی سرور.',
+    });
+  }
 });
 
 /**
- * Helper: Convert Persian/Arabic digits to English ASCII digits
+ * 1. Health & Database Connection Verification Endpoint
+ * GET /api/test-db
  */
-function normalizeDigitsServer(input: string): string {
-  const persian = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
-  const arabic = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
-  let out = String(input || '').trim();
-  for (let i = 0; i < 10; i++) {
-    out = out
-      .replace(new RegExp(persian[i], 'g'), String(i))
-      .replace(new RegExp(arabic[i], 'g'), String(i));
-  }
-  return out;
-}
+app.get('/api/test-db', async (_req: Request, res: Response) => {
+  const result = await testDatabaseConnection();
+  const info = getDbInfo();
 
-/**
- * Helper: Format byte size in Persian human-readable units
- */
-function formatFileSizePersian(bytes: number): string {
-  const toFa = (val: string) =>
-    val.replace(/\d/g, (d) => '۰۱۲۳۴۵۶۷۸۹'[Number(d)] || d);
-  if (bytes < 1024) {
-    return `${toFa(String(bytes))} بایت`;
-  }
-  const kb = bytes / 1024;
-  if (kb < 1024) {
-    return `${toFa(kb.toFixed(1))} کیلوبایت`;
-  }
-  const mb = kb / 1024;
-  return `${toFa(mb.toFixed(1))} مگابایت`;
-}
-
-/**
- * Helper: Strictly verify password against bcrypt hash stored in MySQL
- * (supports $2y$, $2a$, and $2b$ prefixes).
- */
-async function verifyPasswordHash(plain: string, hash: string): Promise<boolean> {
-  if (!plain || !hash) return false;
-  const normalizedHash = hash.startsWith('$2y$')
-    ? '$2a$' + hash.slice(4)
-    : hash;
-  try {
-    return await bcrypt.compare(plain, normalizedHash);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Helper: Read and write `app_extended_state` in `system_settings`
- */
-async function readExtendedState(): Promise<Record<string, unknown>> {
-  try {
-    const [rows] = await pool.query<RowDataPacket[]>(
-      'SELECT setting_value FROM system_settings WHERE setting_key = ? LIMIT 1',
-      ['app_extended_state']
-    );
-    if (rows.length > 0 && rows[0].setting_value) {
-      return JSON.parse(String(rows[0].setting_value)) as Record<string, unknown>;
-    }
-  } catch {
-    return {};
-  }
-  return {};
-}
-
-async function writeExtendedState(stateObj: Record<string, unknown>): Promise<void> {
-  await pool.query(
-    `INSERT INTO system_settings (setting_key, setting_value)
-     VALUES ('app_extended_state', ?)
-     ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
-    [JSON.stringify(stateObj)]
-  );
-}
-
-/**
- * Helper: Validate email format when non-empty (max 150 chars)
- */
-function isValidEmailServer(email: string): boolean {
-  const trimmed = String(email || '').trim();
-  if (!trimmed) return true;
-  if (trimmed.length > 150) return false;
-  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimmed);
-}
-
-/**
- * Helper: Convert Jalali (Solar Hijri) date to Gregorian date on the server
- */
-function jalaliToGregorianServer(
-  jy: number,
-  jm: number,
-  jd: number
-): { gy: number; gm: number; gd: number } {
-  const jyAdj = jy - (jy > 979 ? 979 : 0);
-  let days =
-    365 * jyAdj +
-    Math.floor(jyAdj / 33) * 8 +
-    Math.floor(((jyAdj % 33) + 3) / 4) +
-    78 +
-    jd +
-    (jm < 7 ? (jm - 1) * 31 : (jm - 7) * 30 + 186);
-  let gy = (jy > 979 ? 1600 : 621) + 400 * Math.floor(days / 146097);
-  days %= 146097;
-  if (days > 36524) {
-    gy += 100 * Math.floor(--days / 36524);
-    days %= 36524;
-    if (days >= 365) days++;
-  }
-  gy += 4 * Math.floor(days / 1461);
-  days %= 1461;
-  if (days > 365) {
-    gy += Math.floor((days - 1) / 365);
-    days = (days - 1) % 365;
-  }
-  let gd = days + 1;
-  const monthDays = [
-    0,
-    31,
-    (gy % 4 === 0 && gy % 100 !== 0) || gy % 400 === 0 ? 29 : 28,
-    31,
-    30,
-    31,
-    30,
-    31,
-    31,
-    30,
-    31,
-    30,
-    31,
-  ];
-  let gm = 0;
-  for (gm = 0; gm < 13 && gd > monthDays[gm]; gm++) {
-    gd -= monthDays[gm];
-  }
-  return { gy, gm, gd };
-}
-
-/**
- * Helper: Parse assignment dueDate (Persian Jalali or Gregorian) into Unix ms in Asia/Tehran (+03:30)
- */
-export function parseAssignmentDeadlineMsServer(dueDateStr: string): number | null {
-  const ascii = normalizeDigitsServer(dueDateStr);
-  if (!ascii) return null;
-
-  const dateMatch = ascii.match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
-  if (!dateMatch) {
-    const direct = Date.parse(ascii);
-    return Number.isNaN(direct) ? null : direct;
-  }
-
-  const rawYear = Number(dateMatch[1]);
-  const rawMonth = Number(dateMatch[2]);
-  const rawDay = Number(dateMatch[3]);
-  if (rawMonth < 1 || rawMonth > 12 || rawDay < 1 || rawDay > 31) {
-    return null;
-  }
-
-  const afterDate = ascii.slice((dateMatch.index || 0) + dateMatch[0].length);
-  const timeMatch = afterDate.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-  const hour = timeMatch ? Math.min(23, Math.max(0, Number(timeMatch[1]))) : 23;
-  const minute = timeMatch ? Math.min(59, Math.max(0, Number(timeMatch[2]))) : 59;
-  const second = timeMatch && timeMatch[3] ? Math.min(59, Math.max(0, Number(timeMatch[3]))) : 59;
-
-  let gy = rawYear;
-  let gm = rawMonth;
-  let gd = rawDay;
-
-  if (rawYear >= 1300 && rawYear <= 1600) {
-    const greg = jalaliToGregorianServer(rawYear, rawMonth, rawDay);
-    gy = greg.gy;
-    gm = greg.gm;
-    gd = greg.gd;
-  }
-
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const isoTehran = `${gy}-${pad(gm)}-${pad(gd)}T${pad(hour)}:${pad(minute)}:${pad(second)}+03:30`;
-  const parsed = Date.parse(isoTehran);
-  return Number.isNaN(parsed) ? null : parsed;
-}
-
-export function isAssignmentExpiredServer(
-  dueDateStr: string,
-  nowMs: number = Date.now()
-): boolean {
-  const deadlineMs = parseAssignmentDeadlineMsServer(dueDateStr);
-  return deadlineMs !== null && nowMs > deadlineMs;
-}
-
-/**
- * Helper: Safely delete an uploaded physical file from /uploads only when it is inside UPLOADS_DIR
- * and is not referenced by any other student, admin, or extended state record.
- */
-async function safeDeleteUploadedFileIfUnreferenced(
-  oldUrl: string | null | undefined,
-  excludeStudentId?: number
-): Promise<boolean> {
-  if (!oldUrl || typeof oldUrl !== 'string') return false;
-  const cleanPath = oldUrl.split('?')[0].trim();
-  if (!cleanPath.startsWith('/uploads/')) return false;
-
-  const baseName = path.basename(cleanPath);
-  if (!baseName || baseName.startsWith('.') || cleanPath !== `/uploads/${baseName}`) {
-    return false;
-  }
-
-  const fullPath = path.resolve(UPLOADS_DIR, baseName);
-  if (!fullPath.startsWith(UPLOADS_DIR) || !fs.existsSync(fullPath)) {
-    return false;
-  }
-
-  try {
-    const likePattern = `%/uploads/${baseName}%`;
-    const [otherStudents] = await pool.query<RowDataPacket[]>(
-      excludeStudentId
-        ? 'SELECT id FROM students WHERE id <> ? AND avatar_url LIKE ? LIMIT 1'
-        : 'SELECT id FROM students WHERE avatar_url LIKE ? LIMIT 1',
-      excludeStudentId ? [excludeStudentId, likePattern] : [likePattern]
-    );
-    if (otherStudents.length > 0) return false;
-
-    const [otherAdmins] = await pool.query<RowDataPacket[]>(
-      'SELECT id FROM admins WHERE avatar_url LIKE ? LIMIT 1',
-      [likePattern]
-    );
-    if (otherAdmins.length > 0) return false;
-
-    const extState = await readExtendedState();
-    const extJson = JSON.stringify({
-      assignments: extState.assignments || [],
-      submissions: extState.submissions || [],
-      resources: extState.resources || [],
-      tickets: extState.tickets || [],
-    });
-    if (extJson.includes(`/uploads/${baseName}`)) {
-      return false;
-    }
-
-    fs.unlinkSync(fullPath);
-    return true;
-  } catch (err) {
-    console.warn('[Safe File Cleanup Warning]:', err);
-    return false;
-  }
-}
-
-/**
- * Helper: Synchronize a single updated/created student record inside `app_extended_state`
- */
-async function syncStudentIntoExtendedState(studentObj: Record<string, unknown>): Promise<void> {
-  try {
-    const extState = await readExtendedState();
-    if (!extState || Object.keys(extState).length === 0) return;
-    const list = Array.isArray(extState.students)
-      ? ([...extState.students] as Record<string, unknown>[])
-      : [];
-    const idx = list.findIndex((s) => Number(s.id) === Number(studentObj.id));
-    if (idx >= 0) {
-      list[idx] = { ...list[idx], ...studentObj };
-    } else {
-      list.unshift(studentObj);
-    }
-    extState.students = list;
-    await writeExtendedState(extState);
-  } catch {
-    // Ignore if extended state is not initialized yet
-  }
-}
-
-/**
- * 0. Binary File Upload Endpoint (Supports >1MB up to 100MB with real XHR progress)
- * POST /api/upload
- */
-const FORBIDDEN_EXTENSIONS = new Set([
-  '.php',
-  '.phtml',
-  '.phar',
-  '.exe',
-  '.sh',
-  '.bat',
-  '.cmd',
-  '.cgi',
-  '.pl',
-  '.jsp',
-  '.asp',
-  '.aspx',
-  '.dll',
-  '.msi',
-]);
-
-app.post(
-  '/api/upload',
-  express.raw({
-    type: ['application/octet-stream', '*/*'],
-    limit: '100mb',
-  }),
-  async (req: Request, res: Response): Promise<void> => {
-    try {
-      const rawHeaderName = String(
-        req.headers['x-file-name'] || req.query.fileName || 'file.bin'
-      );
-      let originalName = 'file.bin';
-      try {
-        originalName = decodeURIComponent(rawHeaderName);
-      } catch {
-        originalName = rawHeaderName;
-      }
-      originalName = path.basename(originalName).replace(/[\r\n"<>|:*?\\/]/g, '_');
-
-      const ext = path.extname(originalName).toLowerCase();
-      if (FORBIDDEN_EXTENSIONS.has(ext)) {
-        res.status(415).json({
-          success: false,
-          message: 'فرمت فایل انتخابی به دلایل امنیتی مجاز نیست.',
-        });
-        return;
-      }
-
-      const bodyBuffer = Buffer.isBuffer(req.body)
-        ? req.body
-        : typeof req.body === 'string'
-        ? Buffer.from(req.body)
-        : null;
-
-      if (!bodyBuffer || bodyBuffer.length === 0) {
-        res.status(400).json({
-          success: false,
-          message: 'فایلی دریافت نشد یا حجم فایل صفر است.',
-        });
-        return;
-      }
-
-      // Check configured maxUploadSizeMb from system settings (minimum 25MB allowed for resources/tickets)
-      const extState = await readExtendedState();
-      const settingsObj = (extState.settings || {}) as Record<string, unknown>;
-      const configuredMaxMb = Number(settingsObj.maxUploadSizeMb) || 50;
-      const effectiveMaxMb = Math.max(configuredMaxMb, 25);
-      const maxBytes = effectiveMaxMb * 1024 * 1024;
-
-      if (bodyBuffer.length > maxBytes) {
-        res.status(413).json({
-          success: false,
-          message: `حجم فایل بیش از حد مجاز (${effectiveMaxMb} مگابایت) است.`,
-        });
-        return;
-      }
-
-      const safeBase = path
-        .basename(originalName, ext)
-        .replace(/[^a-zA-Z0-9_\-\u0600-\u06FF]/g, '_')
-        .slice(0, 50) || 'upload';
-      const uniqueFileName = `${Date.now()}_${Math.random()
-        .toString(36)
-        .slice(2, 8)}_${safeBase}${ext}`;
-      const targetPath = path.join(UPLOADS_DIR, uniqueFileName);
-
-      await fs.promises.writeFile(targetPath, bodyBuffer);
-
-      const fileUrl = `/uploads/${encodeURIComponent(uniqueFileName)}`;
-      const fileSize = formatFileSizePersian(bodyBuffer.length);
-
-      res.status(201).json({
-        success: true,
-        fileUrl,
-        fileName: originalName,
-        storedFileName: uniqueFileName,
-        fileSize,
-        sizeBytes: bodyBuffer.length,
-        message: 'فایل با موفقیت در سرور ذخیره شد.',
-      });
-    } catch (err: unknown) {
-      console.error('[Upload Error]:', err);
-      res.status(500).json({
-        success: false,
-        message: 'خطا در آپلود و ذخیره‌سازی فایل در سرور.',
-      });
-    }
-  }
-);
-
-/**
- * 1. Database Connection Test Endpoint
- * GET /api/test-db (also /api/health & /api/test-db.php)
- */
-async function handleTestDb(_req: Request, res: Response): Promise<void> {
-  const status = await testDatabaseConnection();
-  if (status.connected) {
+  if (result.connected) {
     res.json({
       success: true,
       connected: true,
-      database: status.database,
-      host: status.host,
-      port: status.port,
-      message:
-        'اتصال بک‌اند Node.js به پایگاه داده MySQL (scoolmeet_db) با موفقیت برقرار شد.',
+      database: info.database,
+      host: info.host,
+      port: info.port,
+      message: `اتصال بک‌اند Node.js به پایگاه داده MySQL (${info.database}) برقرار است.`,
     });
   } else {
     res.status(500).json({
       success: false,
       connected: false,
-      database: status.database,
-      host: status.host,
-      port: status.port,
+      database: info.database,
+      host: info.host,
+      port: info.port,
+      error: result.error,
       message:
-        'خطا در اتصال به پایگاه داده MySQL. لطفاً روشن بودن سرویس MySQL و تنظیمات فایل .env را بررسی کنید.',
-      error: status.error,
+        'خطا در اتصال به دیتابیس MySQL. لطفاً روشن بودن سرویس MySQL و تنظیمات فایل .env را بررسی کنید.',
     });
   }
-}
-
-app.get('/api/test-db', handleTestDb);
-app.get('/api/test-db.php', handleTestDb);
-app.get('/api/health', handleTestDb);
+});
 
 /**
- * 2. Login Endpoint (Admin & Student)
- * POST /api/auth/login (also /api/auth/login.php)
- * Strictly verifies credentials against bcrypt password hashes stored in MySQL.
+ * 2. Full Relational Application State Endpoint (GET /api/state)
+ * Reconstructs application state directly from relational MySQL tables.
+ * Enforces student approval (`status === 'approved'`) and scopes student data when called by a student.
  */
-async function handleLogin(req: Request, res: Response): Promise<void> {
-  const rawPhone = String(req.body?.phone ?? '');
-  const phone = normalizeDigitsServer(rawPhone);
-  const password = String(req.body?.password ?? '');
-
-  if (!/^09\d{9}$/.test(phone) || !password) {
-    res.status(422).json({
-      success: false,
-      message: 'شماره تلفن یا رمز عبور نامعتبر است.',
-    });
-    return;
-  }
-
+app.get('/api/state', async (req: Request, res: Response) => {
   try {
-    // 1. Check Admin credentials in `admins` table
-    const [adminRows] = await pool.query<RowDataPacket[]>(
-      'SELECT id, first_name, last_name, phone, email, role_title, bio, avatar_url, password_hash FROM admins WHERE phone = ? LIMIT 1',
-      [phone]
+    await migrateLegacyExtendedStateOnce();
+
+    const callerRole = String(req.headers['x-user-role'] || req.query.role || '').trim();
+    const callerStudentId = Number(
+      req.headers['x-student-id'] || req.query.studentId || 0
     );
 
-    if (adminRows.length > 0) {
-      const admin = adminRows[0];
-      const hashValid = await verifyPasswordHash(
-        password,
-        String(admin.password_hash || '')
-      );
-
-      if (!hashValid) {
-        res.status(401).json({
+    let scopedStudentRow: RowDataPacket | null = null;
+    if (callerRole === 'student') {
+      const check = await verifyApprovedStudent(callerStudentId);
+      if (!check.allowed) {
+        res.status(check.httpStatus).json({
           success: false,
-          message: 'رمز عبور حساب مدیر اشتباه است.',
+          code: check.code,
+          message: check.message,
         });
         return;
       }
+      scopedStudentRow = check.studentRow || null;
+    }
 
-      const firstName = String(admin.first_name);
-      const lastName = String(admin.last_name);
+    const [adminRows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM `admins` ORDER BY `id` ASC LIMIT 1'
+    );
+    const [classRows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM `classes` ORDER BY `code` ASC'
+    );
+    const [studentRows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM `students` ORDER BY `id` DESC'
+    );
+    const [assignmentRows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM `assignments` ORDER BY `id` DESC'
+    );
+    const [submissionRows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM `assignment_submissions` ORDER BY `id` DESC'
+    );
+    const [resourceRows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM `educational_resources` ORDER BY `id` DESC'
+    );
+    const [announcementRows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM `announcements` ORDER BY `id` DESC'
+    );
+    const [ticketRows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM `tickets` ORDER BY `id` DESC'
+    );
+    const [ticketMessageRows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM `ticket_messages` ORDER BY `id` ASC'
+    );
+    const [gbSessionRows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM `gradebook_sessions` ORDER BY `id` ASC'
+    );
+    const [gbEntryRows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM `gradebook_entries` ORDER BY `id` ASC'
+    );
+    const [activityRows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM `activity_logs` ORDER BY `id` DESC LIMIT 50'
+    );
+    const [settingRows] = await pool.query<RowDataPacket[]>(
+      "SELECT `setting_key`, `setting_value` FROM `system_settings` WHERE `setting_key` != 'app_extended_state'"
+    );
+
+    const adminRow = adminRows[0];
+    const admin = adminRow
+      ? {
+          firstName: String(adminRow.first_name || ''),
+          lastName: String(adminRow.last_name || ''),
+          phone: normalizeIranianPhoneServer(adminRow.phone || ''),
+          email: String(adminRow.email || ''),
+          roleTitle: String(adminRow.role_title || ''),
+          bio: String(adminRow.bio || ''),
+          password: '',
+          avatarUrl: String(adminRow.avatar_url || ''),
+        }
+      : {
+          firstName: '',
+          lastName: '',
+          phone: '',
+          email: '',
+          roleTitle: '',
+          bio: '',
+          password: '',
+          avatarUrl: '',
+        };
+
+    const classes = classRows.map((c) => ({
+      code: String(c.code),
+      title: String(c.title || ''),
+      gradeLevel: String(c.grade_level || ''),
+      instructorName: String(c.instructor_name || ''),
+      capacity: Number(c.capacity) || 30,
+      roomOrLink: String(c.room_or_link || ''),
+      scheduleSummary: String(c.schedule_summary || ''),
+      description: String(c.description || ''),
+    }));
+
+    // Build student lookup map for resolving recipient names & submission student names
+    const studentMap = new Map<
+      number,
+      {
+        id: number;
+        firstName: string;
+        lastName: string;
+        phone: string;
+        email: string;
+        bio: string;
+        classCode: string;
+        status: string;
+        notes: string;
+        avatarUrl: string;
+        avatarRemoved: boolean;
+        createdAt: string;
+      }
+    >();
+
+    const allStudents = studentRows.map((s) => {
+      const mapped = {
+        id: Number(s.id),
+        firstName: String(s.first_name || ''),
+        lastName: String(s.last_name || ''),
+        phone: normalizeIranianPhoneServer(s.phone || ''),
+        email: String(s.email || ''),
+        bio: String(s.bio || ''),
+        classCode: String(s.class_code ?? ''),
+        status: String(s.status || 'pending'),
+        notes: String(s.notes || ''),
+        avatarUrl: s.avatar_removed ? '' : String(s.avatar_url || ''),
+        avatarRemoved: Boolean(s.avatar_removed),
+        createdAt: formatServerPersianDateOnly(s.created_at),
+      };
+      studentMap.set(mapped.id, mapped);
+      return mapped;
+    });
+
+    const allAssignments = assignmentRows.map((a) => {
+      const targetStId = a.target_student_id ? Number(a.target_student_id) : undefined;
+      const targetStObj = targetStId ? studentMap.get(targetStId) : undefined;
+      const targetStName = targetStObj
+        ? `${targetStObj.firstName} ${targetStObj.lastName}`.trim()
+        : a.target_student_name
+        ? String(a.target_student_name)
+        : undefined;
+
+      return {
+        id: Number(a.id),
+        title: String(a.title || ''),
+        description: String(a.description || ''),
+        classCode: String(a.class_code || 'all'),
+        targetStudentId: targetStId,
+        targetStudentName: targetStName,
+        dueDate: String(a.due_date || ''),
+        maxScore: Number(a.max_score ?? 20),
+        attachmentName: String(a.attachment_name || ''),
+        attachmentDataUrl: a.attachment_url ? String(a.attachment_url) : undefined,
+        status: (a.status === 'closed' ? 'closed' : 'active') as 'active' | 'closed',
+        closedAt: a.closed_at ? String(a.closed_at) : undefined,
+        createdAt: formatServerPersianDateTime(a.created_at, a.created_at_fa),
+      };
+    });
+
+    const allSubmissions = submissionRows.map((sub) => {
+      const stId = Number(sub.student_id);
+      const stObj = studentMap.get(stId);
+      const stName =
+        String(sub.student_name || '').trim() ||
+        (stObj ? `${stObj.firstName} ${stObj.lastName}`.trim() : 'دانش‌آموز');
+      const clsCode =
+        String(sub.class_code || '').trim() || (stObj ? stObj.classCode : '');
+
+      return {
+        id: Number(sub.id),
+        assignmentId: Number(sub.assignment_id),
+        studentId: stId,
+        studentName: stName,
+        classCode: clsCode,
+        fileName: String(sub.file_name || ''),
+        fileContent: String(sub.file_content || ''),
+        fileDataUrl: sub.file_url ? String(sub.file_url) : undefined,
+        submittedAt: formatServerPersianDateTime(sub.created_at_ts, sub.submitted_at),
+        score:
+          sub.score !== null && sub.score !== undefined ? Number(sub.score) : null,
+        teacherFeedback: String(sub.teacher_feedback || ''),
+        status: (sub.status === 'graded' ? 'graded' : 'pending') as
+          | 'pending'
+          | 'graded',
+      };
+    });
+
+    const allResources = resourceRows.map((r) => {
+      const targetStId = r.target_student_id ? Number(r.target_student_id) : undefined;
+      const targetStObj = targetStId ? studentMap.get(targetStId) : undefined;
+      const targetStName = targetStObj
+        ? `${targetStObj.firstName} ${targetStObj.lastName}`.trim()
+        : r.target_student_name
+        ? String(r.target_student_name)
+        : undefined;
+
+      return {
+        id: Number(r.id),
+        title: String(r.title || ''),
+        category: String(r.category || 'جزوه PDF'),
+        classCode: String(r.class_code || 'all'),
+        targetStudentId: targetStId,
+        targetStudentName: targetStName,
+        urlOrFileName: String(r.url_or_filename || ''),
+        fileDataUrl: r.file_url ? String(r.file_url) : undefined,
+        fileSize: String(r.file_size || 'فایل پیوست'),
+        description: String(r.description || ''),
+        createdAt: formatServerPersianDateTime(r.created_at_ts, r.created_at),
+        viewers: safeJsonParse<Array<Record<string, unknown>>>(r.viewers_json, []),
+      };
+    });
+
+    const allAnnouncements = announcementRows.map((an) => {
+      const targetStId = an.target_student_id
+        ? Number(an.target_student_id)
+        : undefined;
+      const targetStObj = targetStId ? studentMap.get(targetStId) : undefined;
+      const targetStName = targetStObj
+        ? `${targetStObj.firstName} ${targetStObj.lastName}`.trim()
+        : an.target_student_name
+        ? String(an.target_student_name)
+        : undefined;
+
+      return {
+        id: Number(an.id),
+        title: String(an.title || ''),
+        content: String(an.content || ''),
+        targetClasses: String(an.target_classes || 'all'),
+        targetStudentId: targetStId,
+        targetStudentName: targetStName,
+        assignmentId: an.assignment_id ? Number(an.assignment_id) : undefined,
+        notificationType: String(an.notification_type || 'general'),
+        priority: String(an.priority || 'عادی'),
+        createdAt: formatServerPersianDateTime(an.created_at_ts, an.created_at),
+        readers: safeJsonParse<Array<Record<string, unknown>>>(
+          an.readers_json,
+          []
+        ),
+      };
+    });
+
+    const messagesByTicketId = new Map<number, Array<Record<string, unknown>>>();
+    for (const m of ticketMessageRows) {
+      const tId = Number(m.ticket_id);
+      if (!messagesByTicketId.has(tId)) {
+        messagesByTicketId.set(tId, []);
+      }
+      messagesByTicketId.get(tId)!.push({
+        id: Number(m.id),
+        senderRole: m.sender_role === 'admin' ? 'admin' : 'student',
+        senderName: String(m.sender_name || ''),
+        message: String(m.message || ''),
+        sentAt: formatServerPersianDateTime(m.created_at_ts, m.sent_at),
+        attachmentName: m.attachment_name ? String(m.attachment_name) : undefined,
+        attachmentDataUrl: m.attachment_url
+          ? String(m.attachment_url)
+          : undefined,
+      });
+    }
+
+    const allTickets = ticketRows.map((tk) => {
+      const stId = Number(tk.student_id);
+      const stObj = studentMap.get(stId);
+      const stName =
+        String(tk.student_name || '').trim() ||
+        (stObj ? `${stObj.firstName} ${stObj.lastName}`.trim() : 'دانش‌آموز');
+      const stPhone =
+        normalizeIranianPhoneServer(tk.student_phone || '') ||
+        (stObj ? stObj.phone : '');
+      const clsCode =
+        String(tk.class_code || '').trim() || (stObj ? stObj.classCode : '');
+
+      return {
+        id: Number(tk.id),
+        studentId: stId,
+        studentName: stName,
+        studentPhone: stPhone,
+        classCode: clsCode,
+        subject: String(tk.subject || ''),
+        priority: String(tk.priority || 'عادی'),
+        status: String(tk.status || 'در انتظار پاسخ'),
+        createdAt: formatServerPersianDateTime(tk.created_at_ts, tk.created_at),
+        messages: messagesByTicketId.get(Number(tk.id)) || [],
+      };
+    });
+
+    const allGradebookSessions = gbSessionRows.map((gs) => ({
+      id: Number(gs.id),
+      classCode: String(gs.class_code || '901'),
+      title: String(gs.title || ''),
+      sessionDate: String(gs.session_date || ''),
+      topic: String(gs.topic || ''),
+    }));
+
+    const allGradebookEntries = gbEntryRows.map((ge) => ({
+      id: Number(ge.id),
+      sessionId: Number(ge.session_id),
+      studentId: Number(ge.student_id),
+      classCode: String(ge.class_code || '901'),
+      attendance: String(ge.attendance || 'present'),
+      positiveCount: Number(ge.positive_count || 0),
+      negativeCount: Number(ge.negative_count || 0),
+      classScore:
+        ge.class_score !== null && ge.class_score !== undefined
+          ? Number(ge.class_score)
+          : null,
+      teacherNote: String(ge.teacher_note || ''),
+    }));
+
+    const allActivities = activityRows.map((act) => ({
+      id: Number(act.id),
+      title: String(act.title || ''),
+      detail: String(act.detail || ''),
+      timeAgo: formatServerPersianDateTime(act.created_at, act.time_ago),
+      category: String(act.category || 'student'),
+    }));
+
+    const settingsMap: Record<string, string> = {};
+    settingRows.forEach((row) => {
+      settingsMap[String(row.setting_key)] = String(row.setting_value ?? '');
+    });
+
+    const settings = {
+      platformName: settingsMap.platformName || 'پلتفرم آموزشی اسکول میت',
+      academicYear: settingsMap.academicYear || '۱۴۰۵–۱۴۰۶',
+      allowNewRegistrations:
+        settingsMap.allowNewRegistrations !== undefined
+          ? settingsMap.allowNewRegistrations === 'true'
+          : true,
+      requireAdminApproval:
+        settingsMap.requireAdminApproval !== undefined
+          ? settingsMap.requireAdminApproval === 'true'
+          : true,
+      maxUploadSizeMb: Number(settingsMap.maxUploadSizeMb) || 15,
+      supportPhone: settingsMap.supportPhone || admin.phone || '',
+    };
+
+    // If requested by an approved student, strictly scope the returned data to that student
+    if (callerRole === 'student' && scopedStudentRow) {
+      const myId = Number(scopedStudentRow.id);
+      const myClassCode = String(scopedStudentRow.class_code || '');
+
+      const myStudentList = allStudents.filter((s) => s.id === myId);
+      const myAssignments = allAssignments.filter((a) => {
+        if (a.targetStudentId && Number(a.targetStudentId) > 0) {
+          return Number(a.targetStudentId) === myId;
+        }
+        return a.classCode === 'all' || a.classCode === myClassCode;
+      });
+      const mySubmissions = allSubmissions.filter((s) => s.studentId === myId);
+      const myResources = allResources.filter((r) => {
+        if (r.targetStudentId && Number(r.targetStudentId) > 0) {
+          return Number(r.targetStudentId) === myId;
+        }
+        return r.classCode === 'all' || r.classCode === myClassCode;
+      });
+      const myAnnouncements = allAnnouncements.filter((an) => {
+        if (an.targetStudentId && Number(an.targetStudentId) > 0) {
+          return Number(an.targetStudentId) === myId;
+        }
+        return an.targetClasses === 'all' || an.targetClasses === myClassCode;
+      });
+      const myTickets = allTickets.filter((t) => t.studentId === myId);
+      const myGradebookEntries = allGradebookEntries.filter(
+        (e) => e.studentId === myId
+      );
+      const myGradebookSessions = allGradebookSessions.filter(
+        (gs) => gs.classCode === myClassCode
+      );
+
       res.json({
         success: true,
-        role: 'admin',
-        message: `خوش آمدید ${firstName} ${lastName} — وارد پنل مدیریت شدید.`,
-        admin: {
-          firstName,
-          lastName,
-          phone: String(admin.phone),
-          email: String(admin.email),
-          roleTitle: String(admin.role_title || 'مدیر و مدرس ارشد'),
-          bio: String(admin.bio || ''),
-          avatarUrl: admin.avatar_url ? String(admin.avatar_url) : '',
+        serverNowMs: Date.now(),
+        state: {
+          admin: {
+            firstName: admin.firstName,
+            lastName: admin.lastName,
+            phone: '',
+            email: '',
+            roleTitle: admin.roleTitle,
+            bio: admin.bio,
+            password: '',
+            avatarUrl: admin.avatarUrl,
+          },
+          activeStudentId: myId,
+          classes,
+          students: myStudentList,
+          gradebookSessions: myGradebookSessions,
+          gradebookEntries: myGradebookEntries,
+          assignments: myAssignments,
+          submissions: mySubmissions,
+          resources: myResources,
+          announcements: myAnnouncements,
+          tickets: myTickets,
+          activities: [],
+          settings,
         },
       });
       return;
     }
 
-    // 2. Check Student credentials in `students` table
+    res.json({
+      success: true,
+      serverNowMs: Date.now(),
+      state: {
+        admin,
+        activeStudentId: allStudents[0]?.id || 0,
+        classes,
+        students: allStudents,
+        gradebookSessions: allGradebookSessions,
+        gradebookEntries: allGradebookEntries,
+        assignments: allAssignments,
+        submissions: allSubmissions,
+        resources: allResources,
+        announcements: allAnnouncements,
+        tickets: allTickets,
+        activities: allActivities,
+        settings,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message:
+        err instanceof Error
+          ? err.message
+          : 'خطا در خواندن وضعیت سامانه از پایگاه داده MySQL.',
+    });
+  }
+});
+
+/**
+ * 3. Persist Application State to MySQL Relational Tables (POST /api/state)
+ */
+app.post('/api/state', async (req: Request, res: Response) => {
+  const incomingState = req.body?.state;
+  const callerRole = String(req.headers['x-user-role'] || req.body?.role || '').trim();
+  const callerStudentId = Number(
+    req.headers['x-student-id'] || incomingState?.activeStudentId || 0
+  );
+
+  if (!incomingState) {
+    res.status(400).json({
+      success: false,
+      message: 'داده‌های ارسالی برای ذخیره‌سازی معتبر نیست.',
+    });
+    return;
+  }
+
+  // When called by a student, verify approval and only persist student-authorized updates
+  if (callerRole === 'student') {
+    const check = await verifyApprovedStudent(callerStudentId);
+    if (!check.allowed || !check.studentRow) {
+      res.status(check.httpStatus).json({
+        success: false,
+        code: check.code,
+        message: check.message,
+      });
+      return;
+    }
+
+    const myId = Number(check.studentRow.id);
+    const myFullName = `${String(check.studentRow.first_name || '')} ${String(check.studentRow.last_name || '')}`.trim();
+    const myPhone = normalizeIranianPhoneServer(check.studentRow.phone || '');
+    const myClassCode = String(check.studentRow.class_code || '');
+
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+
+      // 1. Sync student's announcement read status
+      if (Array.isArray(incomingState.announcements)) {
+        for (const an of incomingState.announcements) {
+          const annId = Number(an.id);
+          if (!annId) continue;
+          const incomingReaders = Array.isArray(an.readers) ? an.readers : [];
+          const myReadEntry = incomingReaders.find(
+            (r: { studentId?: number }) => Number(r.studentId) === myId
+          );
+          if (myReadEntry) {
+            const [existingRows] = await conn.query<RowDataPacket[]>(
+              'SELECT `readers_json` FROM `announcements` WHERE `id` = ? LIMIT 1',
+              [annId]
+            );
+            if (existingRows.length > 0) {
+              const currentReaders = safeJsonParse<
+                Array<{
+                  studentId: number;
+                  studentName: string;
+                  classCode: string;
+                  readAt: string;
+                }>
+              >(existingRows[0].readers_json, []);
+              if (!currentReaders.some((r) => Number(r.studentId) === myId)) {
+                currentReaders.push({
+                  studentId: myId,
+                  studentName: myFullName,
+                  classCode: myClassCode,
+                  readAt: formatServerPersianDateTime(new Date()),
+                });
+                await conn.query(
+                  'UPDATE `announcements` SET `readers_json` = ? WHERE `id` = ?',
+                  [JSON.stringify(currentReaders), annId]
+                );
+              }
+            }
+          }
+        }
+      }
+
+      // 2. Sync student's educational resource view status
+      if (Array.isArray(incomingState.resources)) {
+        for (const resItem of incomingState.resources) {
+          const resId = Number(resItem.id);
+          if (!resId) continue;
+          const incomingViewers = Array.isArray(resItem.viewers)
+            ? resItem.viewers
+            : [];
+          const myViewEntry = incomingViewers.find(
+            (v: { studentId?: number }) => Number(v.studentId) === myId
+          );
+          if (myViewEntry) {
+            const [existingRows] = await conn.query<RowDataPacket[]>(
+              'SELECT `viewers_json` FROM `educational_resources` WHERE `id` = ? LIMIT 1',
+              [resId]
+            );
+            if (existingRows.length > 0) {
+              const currentViewers = safeJsonParse<
+                Array<{
+                  studentId: number;
+                  studentName: string;
+                  classCode: string;
+                  viewedAt: string;
+                }>
+              >(existingRows[0].viewers_json, []);
+              if (!currentViewers.some((v) => Number(v.studentId) === myId)) {
+                currentViewers.push({
+                  studentId: myId,
+                  studentName: myFullName,
+                  classCode: myClassCode,
+                  viewedAt: formatServerPersianDateTime(new Date()),
+                });
+                await conn.query(
+                  'UPDATE `educational_resources` SET `viewers_json` = ? WHERE `id` = ?',
+                  [JSON.stringify(currentViewers), resId]
+                );
+              }
+            }
+          }
+        }
+      }
+
+      // 3. Sync any new ticket created by this student
+      if (Array.isArray(incomingState.tickets)) {
+        for (const tk of incomingState.tickets) {
+          if (Number(tk.studentId) !== myId) continue;
+          const tkId = Number(tk.id);
+          if (!tkId) continue;
+
+          const [existingTk] = await conn.query<RowDataPacket[]>(
+            'SELECT `id`, `status` FROM `tickets` WHERE `id` = ? LIMIT 1',
+            [tkId]
+          );
+          if (existingTk.length === 0) {
+            const nowFa = formatServerPersianDateTime(new Date());
+            await conn.query(
+              `INSERT INTO \`tickets\`
+                (\`id\`, \`student_id\`, \`student_name\`, \`student_phone\`, \`class_code\`, \`subject\`, \`priority\`, \`status\`, \`created_at\`)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'در انتظار پاسخ', ?)`,
+              [
+                tkId,
+                myId,
+                myFullName,
+                myPhone,
+                myClassCode,
+                String(tk.subject || '').trim(),
+                String(tk.priority || 'عادی'),
+                nowFa,
+              ]
+            );
+
+            if (Array.isArray(tk.messages)) {
+              for (const msg of tk.messages) {
+                await conn.query(
+                  `INSERT INTO \`ticket_messages\`
+                    (\`id\`, \`ticket_id\`, \`sender_role\`, \`sender_name\`, \`message\`, \`sent_at\`, \`attachment_name\`, \`attachment_url\`)
+                   VALUES (?, ?, 'student', ?, ?, ?, ?, ?)`,
+                  [
+                    Number(msg.id) || Date.now(),
+                    tkId,
+                    myFullName,
+                    String(msg.message || '').trim(),
+                    nowFa,
+                    msg.attachmentName ? String(msg.attachmentName) : null,
+                    msg.attachmentDataUrl ? String(msg.attachmentDataUrl) : null,
+                  ]
+                );
+              }
+            }
+          }
+        }
+      }
+
+      await conn.commit();
+      res.json({
+        success: true,
+        message: 'اطلاعات شما با موفقیت در پایگاه داده MySQL ثبت گردید.',
+      });
+      return;
+    } catch (err) {
+      await conn.rollback();
+      res.status(500).json({
+        success: false,
+        message:
+          err instanceof Error
+            ? err.message
+            : 'خطا در ذخیره‌سازی اطلاعات دانش‌آموز در پایگاه داده.',
+      });
+      return;
+    } finally {
+      conn.release();
+    }
+  }
+
+  // Admin state synchronization across relational MySQL tables
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    // 1. Update Admin Profile if provided
+    if (incomingState.admin) {
+      const a = incomingState.admin;
+      const adminPhone = normalizeIranianPhoneServer(a.phone || '');
+      const [existingAdmins] = await conn.query<RowDataPacket[]>(
+        'SELECT `id`, `password_hash`, `avatar_url` FROM `admins` ORDER BY `id` ASC LIMIT 1'
+      );
+
+      if (existingAdmins.length > 0 && adminPhone) {
+        const adminId = existingAdmins[0].id;
+        const previousAvatarUrl = String(existingAdmins[0].avatar_url || '');
+        const nextAvatarUrl = String(a.avatarUrl || '');
+        let passwordHash = String(existingAdmins[0].password_hash);
+        if (a.password && String(a.password).trim().length >= 6) {
+          passwordHash = await bcrypt.hash(String(a.password).trim(), 10);
+        }
+
+        await conn.query(
+          `UPDATE \`admins\`
+           SET \`first_name\` = ?, \`last_name\` = ?, \`phone\` = ?, \`email\` = ?, \`role_title\` = ?, \`bio\` = ?, \`avatar_url\` = ?, \`password_hash\` = ?
+           WHERE \`id\` = ?`,
+          [
+            String(a.firstName || '').trim(),
+            String(a.lastName || '').trim(),
+            adminPhone,
+            String(a.email || '').trim(),
+            String(a.roleTitle || '').trim(),
+            String(a.bio || '').trim(),
+            nextAvatarUrl,
+            passwordHash,
+            adminId,
+          ]
+        );
+
+        if (previousAvatarUrl && previousAvatarUrl !== nextAvatarUrl) {
+          setImmediate(() => {
+            void deleteUnreferencedUploadFile(previousAvatarUrl);
+          });
+        }
+      }
+    }
+
+    // 2. Sync Classes
+    if (Array.isArray(incomingState.classes)) {
+      const incomingCodes = incomingState.classes
+        .map((c: { code?: string }) => String(c.code || '').trim())
+        .filter(Boolean);
+
+      if (incomingCodes.length > 0) {
+        const placeholders = incomingCodes.map(() => '?').join(',');
+        await conn.query(
+          `DELETE FROM \`classes\` WHERE \`code\` NOT IN (${placeholders})`,
+          incomingCodes
+        );
+      } else {
+        await conn.query('DELETE FROM `classes`');
+      }
+
+      for (const c of incomingState.classes) {
+        const code = String(c.code || '').trim();
+        if (!code) continue;
+        await conn.query(
+          `INSERT INTO \`classes\` (\`code\`, \`title\`, \`grade_level\`, \`instructor_name\`, \`capacity\`, \`room_or_link\`, \`schedule_summary\`, \`description\`)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             \`title\` = VALUES(\`title\`),
+             \`grade_level\` = VALUES(\`grade_level\`),
+             \`instructor_name\` = VALUES(\`instructor_name\`),
+             \`capacity\` = VALUES(\`capacity\`),
+             \`room_or_link\` = VALUES(\`room_or_link\`),
+             \`schedule_summary\` = VALUES(\`schedule_summary\`),
+             \`description\` = VALUES(\`description\`)`,
+          [
+            code,
+            String(c.title || ''),
+            String(c.gradeLevel || 'پایه نهم'),
+            String(c.instructorName || ''),
+            Number(c.capacity) || 30,
+            String(c.roomOrLink || ''),
+            String(c.scheduleSummary || ''),
+            String(c.description || ''),
+          ]
+        );
+      }
+    }
+
+    // 3. Sync Students
+    if (Array.isArray(incomingState.students)) {
+      const [existingStudents] = await conn.query<RowDataPacket[]>(
+        'SELECT `id`, `phone`, `email`, `bio`, `password_hash`, `avatar_url`, `avatar_removed` FROM `students`'
+      );
+      const existingById = new Map<number, RowDataPacket>();
+      const existingByPhone = new Map<string, RowDataPacket>();
+      existingStudents.forEach((row) => {
+        existingById.set(Number(row.id), row);
+        existingByPhone.set(normalizeIranianPhoneServer(row.phone), row);
+      });
+
+      const keptIds: number[] = [];
+
+      for (const st of incomingState.students) {
+        const phone = normalizeIranianPhoneServer(st.phone || '');
+        if (!phone) continue;
+
+        const existing =
+          existingById.get(Number(st.id)) || existingByPhone.get(phone);
+        let passwordHash = existing
+          ? String(existing.password_hash)
+          : await bcrypt.hash('123456', 10);
+
+        if (st.password && String(st.password).trim().length >= 6) {
+          passwordHash = await bcrypt.hash(String(st.password).trim(), 10);
+        }
+
+        const validStatus =
+          st.status === 'approved' || st.status === 'rejected'
+            ? st.status
+            : 'pending';
+
+        const avatarRemoved = Boolean(st.avatarRemoved);
+        const avatarUrl = avatarRemoved ? null : st.avatarUrl || null;
+        const emailVal =
+          st.email !== undefined
+            ? normalizeDigitsServer(st.email).trim()
+            : String(existing?.email || '');
+        const bioVal =
+          st.bio !== undefined
+            ? String(st.bio).trim()
+            : String(existing?.bio || '');
+
+        if (existing) {
+          await conn.query(
+            `UPDATE \`students\`
+             SET \`first_name\` = ?, \`last_name\` = ?, \`phone\` = ?, \`email\` = ?, \`class_code\` = ?, \`status\` = ?, \`notes\` = ?, \`bio\` = ?, \`avatar_url\` = ?, \`avatar_removed\` = ?, \`password_hash\` = ?
+             WHERE \`id\` = ?`,
+            [
+              String(st.firstName || '').trim(),
+              String(st.lastName || '').trim(),
+              phone,
+              emailVal,
+              String(st.classCode ?? ''),
+              validStatus,
+              String(st.notes || ''),
+              bioVal,
+              avatarUrl,
+              avatarRemoved ? 1 : 0,
+              passwordHash,
+              existing.id,
+            ]
+          );
+          keptIds.push(Number(existing.id));
+        } else {
+          const [insertResult] = await conn.query<ResultSetHeader>(
+            `INSERT INTO \`students\` (\`first_name\`, \`last_name\`, \`phone\`, \`email\`, \`class_code\`, \`status\`, \`notes\`, \`bio\`, \`avatar_url\`, \`avatar_removed\`, \`password_hash\`)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              String(st.firstName || '').trim(),
+              String(st.lastName || '').trim(),
+              phone,
+              emailVal,
+              String(st.classCode ?? ''),
+              validStatus,
+              String(st.notes || ''),
+              bioVal,
+              avatarUrl,
+              avatarRemoved ? 1 : 0,
+              passwordHash,
+            ]
+          );
+          keptIds.push(Number(insertResult.insertId));
+        }
+      }
+
+      if (keptIds.length > 0) {
+        const placeholders = keptIds.map(() => '?').join(',');
+        await conn.query(
+          `DELETE FROM \`students\` WHERE \`id\` NOT IN (${placeholders})`,
+          keptIds
+        );
+      } else {
+        await conn.query('DELETE FROM `students`');
+      }
+    }
+
+    // 4. Sync Assignments in relational `assignments` table
+    if (Array.isArray(incomingState.assignments)) {
+      const keptHwIds: number[] = [];
+      for (const a of incomingState.assignments) {
+        const hwId = Number(a.id) || Date.now();
+        keptHwIds.push(hwId);
+        const createdFa = formatServerPersianDateTime(new Date(), a.createdAt);
+        await conn.query(
+          `INSERT INTO \`assignments\`
+            (\`id\`, \`title\`, \`description\`, \`class_code\`, \`target_student_id\`, \`target_student_name\`, \`due_date\`, \`max_score\`, \`attachment_name\`, \`attachment_url\`, \`status\`, \`closed_at\`, \`created_at_fa\`)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             \`title\` = VALUES(\`title\`),
+             \`description\` = VALUES(\`description\`),
+             \`class_code\` = VALUES(\`class_code\`),
+             \`target_student_id\` = VALUES(\`target_student_id\`),
+             \`target_student_name\` = VALUES(\`target_student_name\`),
+             \`due_date\` = VALUES(\`due_date\`),
+             \`max_score\` = VALUES(\`max_score\`),
+             \`attachment_name\` = VALUES(\`attachment_name\`),
+             \`attachment_url\` = VALUES(\`attachment_url\`),
+             \`status\` = VALUES(\`status\`),
+             \`closed_at\` = VALUES(\`closed_at\`)`,
+          [
+            hwId,
+            String(a.title || ''),
+            String(a.description || ''),
+            String(a.classCode || 'all'),
+            a.targetStudentId ? Number(a.targetStudentId) : null,
+            a.targetStudentName ? String(a.targetStudentName) : null,
+            String(a.dueDate || ''),
+            Number(a.maxScore ?? 20),
+            String(a.attachmentName || ''),
+            a.attachmentDataUrl ? String(a.attachmentDataUrl) : null,
+            a.status === 'closed' ? 'closed' : 'active',
+            a.closedAt ? String(a.closedAt) : null,
+            createdFa,
+          ]
+        );
+      }
+
+      if (keptHwIds.length > 0) {
+        const placeholders = keptHwIds.map(() => '?').join(',');
+        await conn.query(
+          `DELETE FROM \`assignments\` WHERE \`id\` NOT IN (${placeholders})`,
+          keptHwIds
+        );
+      } else {
+        await conn.query('DELETE FROM `assignments`');
+      }
+    }
+
+    // 5. Sync Assignment Submissions in relational `assignment_submissions` table
+    if (Array.isArray(incomingState.submissions)) {
+      const keptSubIds: number[] = [];
+      for (const s of incomingState.submissions) {
+        const subId = Number(s.id) || Date.now();
+        keptSubIds.push(subId);
+        const submittedFa = formatServerPersianDateTime(
+          new Date(),
+          s.submittedAt
+        );
+        await conn.query(
+          `INSERT INTO \`assignment_submissions\`
+            (\`id\`, \`assignment_id\`, \`student_id\`, \`student_name\`, \`class_code\`, \`file_name\`, \`file_content\`, \`file_url\`, \`submitted_at\`, \`score\`, \`teacher_feedback\`, \`status\`)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             \`file_name\` = VALUES(\`file_name\`),
+             \`file_content\` = VALUES(\`file_content\`),
+             \`file_url\` = VALUES(\`file_url\`),
+             \`score\` = VALUES(\`score\`),
+             \`teacher_feedback\` = VALUES(\`teacher_feedback\`),
+             \`status\` = VALUES(\`status\`)`,
+          [
+            subId,
+            Number(s.assignmentId || 0),
+            Number(s.studentId || 0),
+            String(s.studentName || ''),
+            String(s.classCode || ''),
+            String(s.fileName || ''),
+            String(s.fileContent || ''),
+            s.fileDataUrl ? String(s.fileDataUrl) : null,
+            submittedFa,
+            s.score !== null && s.score !== undefined ? Number(s.score) : null,
+            String(s.teacherFeedback || ''),
+            s.status === 'graded' ? 'graded' : 'pending',
+          ]
+        );
+      }
+
+      if (keptSubIds.length > 0) {
+        const placeholders = keptSubIds.map(() => '?').join(',');
+        await conn.query(
+          `DELETE FROM \`assignment_submissions\` WHERE \`id\` NOT IN (${placeholders})`,
+          keptSubIds
+        );
+      } else {
+        await conn.query('DELETE FROM `assignment_submissions`');
+      }
+    }
+
+    // 6. Sync Educational Resources in relational `educational_resources` table
+    if (Array.isArray(incomingState.resources)) {
+      const keptResIds: number[] = [];
+      for (const r of incomingState.resources) {
+        const resId = Number(r.id) || Date.now();
+        keptResIds.push(resId);
+        const createdFa = formatServerPersianDateTime(new Date(), r.createdAt);
+        await conn.query(
+          `INSERT INTO \`educational_resources\`
+            (\`id\`, \`title\`, \`category\`, \`class_code\`, \`target_student_id\`, \`target_student_name\`, \`url_or_filename\`, \`file_url\`, \`file_size\`, \`description\`, \`viewers_json\`, \`created_at\`)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             \`title\` = VALUES(\`title\`),
+             \`category\` = VALUES(\`category\`),
+             \`class_code\` = VALUES(\`class_code\`),
+             \`target_student_id\` = VALUES(\`target_student_id\`),
+             \`target_student_name\` = VALUES(\`target_student_name\`),
+             \`url_or_filename\` = VALUES(\`url_or_filename\`),
+             \`file_url\` = VALUES(\`file_url\`),
+             \`file_size\` = VALUES(\`file_size\`),
+             \`description\` = VALUES(\`description\`),
+             \`viewers_json\` = VALUES(\`viewers_json\`)`,
+          [
+            resId,
+            String(r.title || ''),
+            String(r.category || 'جزوه PDF'),
+            String(r.classCode || 'all'),
+            r.targetStudentId ? Number(r.targetStudentId) : null,
+            r.targetStudentName ? String(r.targetStudentName) : null,
+            String(r.urlOrFileName || ''),
+            r.fileDataUrl ? String(r.fileDataUrl) : null,
+            String(r.fileSize || 'فایل پیوست'),
+            String(r.description || ''),
+            JSON.stringify(Array.isArray(r.viewers) ? r.viewers : []),
+            createdFa,
+          ]
+        );
+      }
+
+      if (keptResIds.length > 0) {
+        const placeholders = keptResIds.map(() => '?').join(',');
+        await conn.query(
+          `DELETE FROM \`educational_resources\` WHERE \`id\` NOT IN (${placeholders})`,
+          keptResIds
+        );
+      } else {
+        await conn.query('DELETE FROM `educational_resources`');
+      }
+    }
+
+    // 7. Sync Announcements in relational `announcements` table
+    if (Array.isArray(incomingState.announcements)) {
+      const keptAnnIds: number[] = [];
+      for (const an of incomingState.announcements) {
+        const annId = Number(an.id) || Date.now();
+        keptAnnIds.push(annId);
+        const createdFa = formatServerPersianDateTime(new Date(), an.createdAt);
+        await conn.query(
+          `INSERT INTO \`announcements\`
+            (\`id\`, \`title\`, \`content\`, \`target_classes\`, \`target_student_id\`, \`target_student_name\`, \`assignment_id\`, \`notification_type\`, \`priority\`, \`created_at\`, \`readers_json\`)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             \`title\` = VALUES(\`title\`),
+             \`content\` = VALUES(\`content\`),
+             \`target_classes\` = VALUES(\`target_classes\`),
+             \`target_student_id\` = VALUES(\`target_student_id\`),
+             \`target_student_name\` = VALUES(\`target_student_name\`),
+             \`assignment_id\` = VALUES(\`assignment_id\`),
+             \`notification_type\` = VALUES(\`notification_type\`),
+             \`priority\` = VALUES(\`priority\`),
+             \`readers_json\` = VALUES(\`readers_json\`)`,
+          [
+            annId,
+            String(an.title || ''),
+            String(an.content || ''),
+            String(an.targetClasses || 'all'),
+            an.targetStudentId ? Number(an.targetStudentId) : null,
+            an.targetStudentName ? String(an.targetStudentName) : null,
+            an.assignmentId ? Number(an.assignmentId) : null,
+            String(an.notificationType || 'general'),
+            String(an.priority || 'عادی'),
+            createdFa,
+            JSON.stringify(Array.isArray(an.readers) ? an.readers : []),
+          ]
+        );
+      }
+
+      if (keptAnnIds.length > 0) {
+        const placeholders = keptAnnIds.map(() => '?').join(',');
+        await conn.query(
+          `DELETE FROM \`announcements\` WHERE \`id\` NOT IN (${placeholders})`,
+          keptAnnIds
+        );
+      } else {
+        await conn.query('DELETE FROM `announcements`');
+      }
+    }
+
+    // 8. Sync Tickets & Ticket Messages in relational `tickets` & `ticket_messages` tables
+    if (Array.isArray(incomingState.tickets)) {
+      const keptTicketIds: number[] = [];
+      for (const tk of incomingState.tickets) {
+        const tkId = Number(tk.id) || Date.now();
+        keptTicketIds.push(tkId);
+        const createdFa = formatServerPersianDateTime(new Date(), tk.createdAt);
+        await conn.query(
+          `INSERT INTO \`tickets\`
+            (\`id\`, \`student_id\`, \`student_name\`, \`student_phone\`, \`class_code\`, \`subject\`, \`priority\`, \`status\`, \`created_at\`)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             \`status\` = VALUES(\`status\`),
+             \`priority\` = VALUES(\`priority\`),
+             \`subject\` = VALUES(\`subject\`)`,
+          [
+            tkId,
+            Number(tk.studentId || 0),
+            String(tk.studentName || ''),
+            normalizeIranianPhoneServer(tk.studentPhone || ''),
+            String(tk.classCode || ''),
+            String(tk.subject || ''),
+            String(tk.priority || 'عادی'),
+            String(tk.status || 'در انتظار پاسخ'),
+            createdFa,
+          ]
+        );
+
+        if (Array.isArray(tk.messages)) {
+          for (const msg of tk.messages) {
+            const msgId =
+              Number(msg.id) || Date.now() + Math.floor(Math.random() * 1000);
+            const sentFa = formatServerPersianDateTime(new Date(), msg.sentAt);
+            await conn.query(
+              `INSERT INTO \`ticket_messages\`
+                (\`id\`, \`ticket_id\`, \`sender_role\`, \`sender_name\`, \`message\`, \`sent_at\`, \`attachment_name\`, \`attachment_url\`)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON DUPLICATE KEY UPDATE
+                 \`message\` = VALUES(\`message\`),
+                 \`attachment_name\` = VALUES(\`attachment_name\`),
+                 \`attachment_url\` = VALUES(\`attachment_url\`)`,
+              [
+                msgId,
+                tkId,
+                msg.senderRole === 'admin' ? 'admin' : 'student',
+                String(msg.senderName || ''),
+                String(msg.message || ''),
+                sentFa,
+                msg.attachmentName ? String(msg.attachmentName) : null,
+                msg.attachmentDataUrl ? String(msg.attachmentDataUrl) : null,
+              ]
+            );
+          }
+        }
+      }
+
+      if (keptTicketIds.length > 0) {
+        const placeholders = keptTicketIds.map(() => '?').join(',');
+        await conn.query(
+          `DELETE FROM \`ticket_messages\` WHERE \`ticket_id\` NOT IN (${placeholders})`,
+          keptTicketIds
+        );
+        await conn.query(
+          `DELETE FROM \`tickets\` WHERE \`id\` NOT IN (${placeholders})`,
+          keptTicketIds
+        );
+      } else {
+        await conn.query('DELETE FROM `ticket_messages`');
+        await conn.query('DELETE FROM `tickets`');
+      }
+    }
+
+    // 9. Sync Gradebook Sessions & Entries in relational `gradebook_sessions` & `gradebook_entries`
+    if (Array.isArray(incomingState.gradebookSessions)) {
+      const keptSessionIds: number[] = [];
+      for (const gs of incomingState.gradebookSessions) {
+        const sesId = Number(gs.id) || Date.now();
+        keptSessionIds.push(sesId);
+        await conn.query(
+          `INSERT INTO \`gradebook_sessions\`
+            (\`id\`, \`class_code\`, \`title\`, \`session_date\`, \`topic\`)
+           VALUES (?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             \`class_code\` = VALUES(\`class_code\`),
+             \`title\` = VALUES(\`title\`),
+             \`session_date\` = VALUES(\`session_date\`),
+             \`topic\` = VALUES(\`topic\`)`,
+          [
+            sesId,
+            String(gs.classCode || '901'),
+            String(gs.title || ''),
+            String(gs.sessionDate || ''),
+            String(gs.topic || ''),
+          ]
+        );
+      }
+
+      if (keptSessionIds.length > 0) {
+        const placeholders = keptSessionIds.map(() => '?').join(',');
+        await conn.query(
+          `DELETE FROM \`gradebook_entries\` WHERE \`session_id\` NOT IN (${placeholders})`,
+          keptSessionIds
+        );
+        await conn.query(
+          `DELETE FROM \`gradebook_sessions\` WHERE \`id\` NOT IN (${placeholders})`,
+          keptSessionIds
+        );
+      } else {
+        await conn.query('DELETE FROM `gradebook_entries`');
+        await conn.query('DELETE FROM `gradebook_sessions`');
+      }
+    }
+
+    if (Array.isArray(incomingState.gradebookEntries)) {
+      for (const ge of incomingState.gradebookEntries) {
+        const entryId = Number(ge.id) || Date.now();
+        const attendanceVal =
+          ge.attendance === 'absent' || ge.attendance === 'late'
+            ? ge.attendance
+            : 'present';
+        await conn.query(
+          `INSERT INTO \`gradebook_entries\`
+            (\`id\`, \`session_id\`, \`student_id\`, \`class_code\`, \`attendance\`, \`positive_count\`, \`negative_count\`, \`class_score\`, \`teacher_note\`)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             \`attendance\` = VALUES(\`attendance\`),
+             \`positive_count\` = VALUES(\`positive_count\`),
+             \`negative_count\` = VALUES(\`negative_count\`),
+             \`class_score\` = VALUES(\`class_score\`),
+             \`teacher_note\` = VALUES(\`teacher_note\`)`,
+          [
+            entryId,
+            Number(ge.sessionId || 0),
+            Number(ge.studentId || 0),
+            String(ge.classCode || '901'),
+            attendanceVal,
+            attendanceVal === 'absent' ? 0 : Number(ge.positiveCount || 0),
+            attendanceVal === 'absent' ? 0 : Number(ge.negativeCount || 0),
+            attendanceVal === 'absent'
+              ? null
+              : ge.classScore !== null && ge.classScore !== undefined
+              ? Number(ge.classScore)
+              : null,
+            String(ge.teacherNote || ''),
+          ]
+        );
+      }
+    }
+
+    // 10. Sync Activity Logs in relational `activity_logs`
+    if (Array.isArray(incomingState.activities)) {
+      for (const act of incomingState.activities.slice(0, 40)) {
+        const actId = Number(act.id) || Date.now();
+        await conn.query(
+          `INSERT IGNORE INTO \`activity_logs\`
+            (\`id\`, \`title\`, \`detail\`, \`time_ago\`, \`category\`)
+           VALUES (?, ?, ?, ?, ?)`,
+          [
+            actId,
+            String(act.title || ''),
+            String(act.detail || ''),
+            formatServerPersianDateTime(new Date(), act.timeAgo),
+            String(act.category || 'student'),
+          ]
+        );
+      }
+    }
+
+    // 11. Sync System Settings
+    if (incomingState.settings) {
+      const s = incomingState.settings;
+      const entries: Array<[string, string]> = [
+        ['platformName', String(s.platformName || 'پلتفرم آموزشی اسکول میت')],
+        ['academicYear', String(s.academicYear || '۱۴۰۵–۱۴۰۶')],
+        ['allowNewRegistrations', String(Boolean(s.allowNewRegistrations))],
+        ['requireAdminApproval', String(Boolean(s.requireAdminApproval))],
+        ['maxUploadSizeMb', String(Number(s.maxUploadSizeMb) || 15)],
+        ['supportPhone', normalizeIranianPhoneServer(s.supportPhone || '')],
+      ];
+
+      for (const [key, val] of entries) {
+        await conn.query(
+          `INSERT INTO \`system_settings\` (\`setting_key\`, \`setting_value\`)
+           VALUES (?, ?)
+           ON DUPLICATE KEY UPDATE \`setting_value\` = VALUES(\`setting_value\`)`,
+          [key, val]
+        );
+      }
+    }
+
+    await conn.commit();
+    res.json({
+      success: true,
+      message: 'تغییرات با موفقیت در جداول پایگاه داده MySQL ذخیره گردید.',
+    });
+  } catch (err) {
+    await conn.rollback();
+    res.status(500).json({
+      success: false,
+      message:
+        err instanceof Error
+          ? err.message
+          : 'خطا در ذخیره‌سازی تغییرات در پایگاه داده MySQL.',
+    });
+  } finally {
+    conn.release();
+  }
+});
+
+/**
+ * 4. Authentication: Login (POST /api/auth/login)
+ * Enforces Iranian mobile phone normalization & validation and blocks unapproved students.
+ */
+app.post('/api/auth/login', async (req: Request, res: Response) => {
+  try {
+    const rawPhone = String(req.body?.phone || '').trim();
+    const password = String(req.body?.password || '');
+
+    if (!isValidIranianPhoneServer(rawPhone)) {
+      res.status(422).json({
+        success: false,
+        message:
+          'شماره موبایل واردشده معتبر نیست. لطفاً یک شماره همراه معتبر ایران (مثال: ۰۹۱۲۳۴۵۶۷۸۹) وارد کنید.',
+      });
+      return;
+    }
+
+    if (password.length < 4) {
+      res.status(422).json({
+        success: false,
+        message: 'لطفاً رمز عبور خود را به درستی وارد نمایید.',
+      });
+      return;
+    }
+
+    const phone = normalizeIranianPhoneServer(rawPhone);
+
+    // 1. Check Admins table first
+    const [adminRows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM `admins` WHERE `phone` = ? LIMIT 1',
+      [phone]
+    );
+
+    if (adminRows.length > 0) {
+      const admin = adminRows[0];
+      const storedHash = String(admin.password_hash || '');
+      const isMatch = storedHash.startsWith('$2')
+        ? await bcrypt.compare(password, storedHash)
+        : password === storedHash;
+
+      if (!isMatch) {
+        res.status(401).json({
+          success: false,
+          message: 'رمز عبور مدیریت نادرست است.',
+        });
+        return;
+      }
+
+      res.json({
+        success: true,
+        role: 'admin',
+        message: 'ورود مدیر سامانه با موفقیت انجام شد.',
+        admin: {
+          firstName: String(admin.first_name),
+          lastName: String(admin.last_name),
+          phone: normalizeIranianPhoneServer(admin.phone),
+          email: String(admin.email),
+          roleTitle: String(admin.role_title),
+          bio: String(admin.bio || ''),
+          avatarUrl: String(admin.avatar_url || ''),
+        },
+      });
+      return;
+    }
+
+    // 2. Check Students table
     const [studentRows] = await pool.query<RowDataPacket[]>(
-      'SELECT id, first_name, last_name, phone, class_code, status, notes, avatar_url, avatar_removed, password_hash, created_at FROM students WHERE phone = ? LIMIT 1',
+      'SELECT * FROM `students` WHERE `phone` = ? LIMIT 1',
       [phone]
     );
 
     if (studentRows.length === 0) {
-      res.status(401).json({
+      res.status(404).json({
         success: false,
-        message: 'حساب کاربری با این شماره تلفن در پایگاه داده یافت نشد.',
+        message:
+          'کاربری با این شماره تلفن در پایگاه داده یافت نشد. ابتدا ثبت‌نام کنید.',
       });
       return;
     }
 
     const student = studentRows[0];
-    const hashValid = await verifyPasswordHash(
-      password,
-      String(student.password_hash || '')
-    );
+    const storedHash = String(student.password_hash || '');
+    const isMatch = storedHash.startsWith('$2')
+      ? await bcrypt.compare(password, storedHash)
+      : password === storedHash;
 
-    if (!hashValid) {
+    if (!isMatch) {
       res.status(401).json({
         success: false,
-        message: 'رمز عبور واردشده صحیح نیست.',
+        message: 'رمز عبور واردشده نادرست است.',
+      });
+      return;
+    }
+
+    // Requirement #6: Restrict student access until admin approval
+    if (student.status === 'pending') {
+      res.status(403).json({
+        success: false,
+        code: 'ACCOUNT_PENDING_APPROVAL',
+        message:
+          'حساب کاربری شما ثبت شده و در انتظار تأیید مدیر سامانه است. پس از تأیید مدیریت می‌توانید وارد پنل دانش‌آموزی شوید.',
       });
       return;
     }
@@ -549,641 +1970,230 @@ async function handleLogin(req: Request, res: Response): Promise<void> {
     if (student.status === 'rejected') {
       res.status(403).json({
         success: false,
-        message: 'درخواست عضویت این حساب توسط مدیر تأیید نشده است.',
+        code: 'ACCOUNT_REJECTED',
+        message:
+          'درخواست عضویت حساب کاربری شما توسط مدیریت تأیید نشده است. جهت بررسی با پشتیبانی تماس بگیرید.',
       });
       return;
     }
 
-    const studentRecord = {
-      id: Number(student.id),
-      firstName: String(student.first_name),
-      lastName: String(student.last_name),
-      phone: String(student.phone),
-      email: String(student.email || ''),
-      bio: String(student.bio || ''),
-      classCode: String(student.class_code ?? ''),
-      status: (student.status as 'pending' | 'approved' | 'rejected') || 'pending',
-      notes: String(student.notes || ''),
-      avatarUrl:
-        student.avatar_removed || !student.avatar_url
-          ? undefined
-          : String(student.avatar_url),
-      avatarRemoved: Boolean(student.avatar_removed),
-      createdAt: student.created_at
-        ? new Date(student.created_at).toLocaleDateString('fa-IR')
-        : new Date().toLocaleDateString('fa-IR'),
-    };
-
     res.json({
       success: true,
       role: 'student',
-      message: `خوش آمدید ${studentRecord.firstName} ${studentRecord.lastName} — وارد پنل دانش‌آموزی شدید.`,
-      student: studentRecord,
+      message: `${student.first_name} ${student.last_name} عزیز، به اسکول میت خوش آمدید.`,
+      student: {
+        id: Number(student.id),
+        firstName: String(student.first_name),
+        lastName: String(student.last_name),
+        phone: normalizeIranianPhoneServer(student.phone),
+        email: String(student.email || ''),
+        bio: String(student.bio || ''),
+        classCode: String(student.class_code || ''),
+        status: String(student.status) as 'pending' | 'approved' | 'rejected',
+        avatarUrl: student.avatar_removed ? '' : String(student.avatar_url || ''),
+        avatarRemoved: Boolean(student.avatar_removed),
+        createdAt: formatServerPersianDateOnly(student.created_at),
+      },
     });
-  } catch (err: unknown) {
-    console.error('[MySQL Login Error]:', err);
+  } catch (err) {
     res.status(500).json({
       success: false,
-      message: 'خطا در ارتباط با پایگاه داده MySQL.',
+      message:
+        err instanceof Error
+          ? err.message
+          : 'خطای سرور در بررسی اطلاعات ورود.',
     });
   }
-}
-
-app.post('/api/auth/login', handleLogin);
-app.post('/api/auth/login.php', handleLogin);
+});
 
 /**
- * 3. Student Registration Endpoint
- * POST /api/auth/register (also /api/auth/register.php)
+ * 5. Authentication: Register Student (POST /api/auth/register)
+ * Enforces Iranian mobile phone normalization, mandatory valid email, and sets status based on `requireAdminApproval`.
  */
-async function handleRegister(req: Request, res: Response): Promise<void> {
-  const firstName = String(
-    req.body?.firstName ?? req.body?.first_name ?? ''
-  ).trim();
-  const lastName = String(
-    req.body?.lastName ?? req.body?.last_name ?? ''
-  ).trim();
-  const phone = normalizeDigitsServer(String(req.body?.phone ?? ''));
-  const classCode = normalizeDigitsServer(
-    String(req.body?.classCode ?? req.body?.class_code ?? '')
-  );
-  const password = String(req.body?.password ?? '');
-
-  if (
-    firstName.length < 2 ||
-    lastName.length < 2 ||
-    !/^09\d{9}$/.test(phone) ||
-    !classCode ||
-    password.length < 6
-  ) {
-    res.status(422).json({
-      success: false,
-      message: 'اطلاعات ارسالی جهت ثبت‌نام معتبر نیست.',
-    });
-    return;
-  }
-
+app.post('/api/auth/register', async (req: Request, res: Response) => {
   try {
-    // Check if phone number is already registered in `students` or `admins`
-    const [existingStudent] = await pool.query<RowDataPacket[]>(
-      'SELECT id FROM students WHERE phone = ? LIMIT 1',
+    const firstName = String(req.body?.firstName || '').trim();
+    const lastName = String(req.body?.lastName || '').trim();
+    const rawPhone = String(req.body?.phone || '').trim();
+    const email = normalizeDigitsServer(req.body?.email || '').trim();
+    const classCode = String(req.body?.classCode || '').trim();
+    const password = String(req.body?.password || '');
+
+    if (!firstName || firstName.length < 2 || !lastName || lastName.length < 2) {
+      res.status(422).json({
+        success: false,
+        message: 'وارد کردن نام و نام خانوادگی (حداقل ۲ کاراکتر) الزامی است.',
+      });
+      return;
+    }
+
+    if (!rawPhone || !isValidIranianPhoneServer(rawPhone)) {
+      res.status(422).json({
+        success: false,
+        message:
+          'شماره موبایل واردشده معتبر نیست. لطفاً یک شماره همراه معتبر ایران (مثال: ۰۹۱۲۳۴۵۶۷۸۹) وارد کنید.',
+      });
+      return;
+    }
+
+    if (!classCode) {
+      res.status(422).json({
+        success: false,
+        message: 'انتخاب کلاس برای ثبت‌نام الزامی است.',
+      });
+      return;
+    }
+
+    if (email && !isValidEmailServer(email)) {
+      res.status(422).json({
+        success: false,
+        message: 'فرمت آدرس ایمیل واردشده معتبر نیست.',
+      });
+      return;
+    }
+
+    if (!password || password.length < 6) {
+      res.status(422).json({
+        success: false,
+        message: 'رمز عبور باید حداقل ۶ کاراکتر باشد.',
+      });
+      return;
+    }
+
+    const phone = normalizeIranianPhoneServer(rawPhone);
+
+    const [dupStudent] = await pool.query<RowDataPacket[]>(
+      'SELECT `id` FROM `students` WHERE `phone` = ? LIMIT 1',
       [phone]
     );
-    const [existingAdmin] = await pool.query<RowDataPacket[]>(
-      'SELECT id FROM admins WHERE phone = ? LIMIT 1',
+    const [dupAdmin] = await pool.query<RowDataPacket[]>(
+      'SELECT `id` FROM `admins` WHERE `phone` = ? LIMIT 1',
       [phone]
     );
-    if (existingStudent.length > 0 || existingAdmin.length > 0) {
+
+    if (dupStudent.length > 0 || dupAdmin.length > 0) {
       res.status(409).json({
         success: false,
-        message: 'این شماره تلفن قبلاً در پایگاه داده ثبت شده است.',
+        message: 'این شماره موبایل قبلاً در سامانه ثبت‌نام شده است.',
       });
       return;
     }
 
-    const passwordHash = await bcrypt.hash(password, 12);
-    const notes = 'ثبت‌نام جدید از طریق فرم صفحه اصلی';
+    const passwordHash = await bcrypt.hash(password, 10);
 
-    const [result] = await pool.query<ResultSetHeader>(
-      `INSERT INTO students (first_name, last_name, phone, email, class_code, status, notes, bio, avatar_url, avatar_removed, password_hash)
-       VALUES (?, ?, ?, '', ?, 'pending', ?, '', NULL, 0, ?)`,
-      [firstName, lastName, phone, classCode, notes, passwordHash]
+    // Check requireAdminApproval setting (defaults to 'pending' so students require admin approval)
+    const [approvalSetting] = await pool.query<RowDataPacket[]>(
+      "SELECT `setting_value` FROM `system_settings` WHERE `setting_key` = 'requireAdminApproval' LIMIT 1"
     );
+    const requireApproval =
+      approvalSetting.length === 0 ||
+      String(approvalSetting[0].setting_value) !== 'false';
+    const initialStatus: 'pending' | 'approved' = requireApproval
+      ? 'pending'
+      : 'approved';
 
-    const newStudent = {
-      id: Number(result.insertId),
-      firstName,
-      lastName,
-      phone,
-      email: '',
-      bio: '',
-      classCode,
-      status: 'pending' as const,
-      notes,
-      avatarUrl: undefined,
-      avatarRemoved: false,
-      createdAt: new Date().toLocaleDateString('fa-IR'),
-    };
-
-    await syncStudentIntoExtendedState(newStudent);
-
-    res.status(201).json({
-      success: true,
-      role: 'student',
-      message: 'تبریک! حساب کاربری شما با موفقیت در پایگاه داده MySQL ایجاد شد.',
-      student: newStudent,
-    });
-  } catch (err: unknown) {
-    console.error('[MySQL Register Error]:', err);
-    res.status(500).json({
-      success: false,
-      message: 'خطا در ارتباط با پایگاه داده MySQL هنگام ثبت‌نام.',
-    });
-  }
-}
-
-app.post('/api/auth/register', handleRegister);
-app.post('/api/auth/register.php', handleRegister);
-
-/**
- * 4. Dedicated Student Profile & Password Endpoints
- * Strictly prevents students from modifying their registered phone number or class!
- */
-app.put('/api/student/profile', async (req: Request, res: Response): Promise<void> => {
-  const studentId = Number(req.body?.id ?? req.body?.studentId ?? 0);
-  const firstName = String(req.body?.firstName ?? '').trim();
-  const lastName = String(req.body?.lastName ?? '').trim();
-  const rawEmail =
-    req.body?.email !== undefined ? String(req.body.email ?? '').trim() : undefined;
-  const rawBio =
-    req.body?.bio !== undefined ? String(req.body.bio ?? '').trim() : undefined;
-  const avatarUrl =
-    req.body?.avatarUrl !== undefined ? String(req.body.avatarUrl || '') : undefined;
-  const avatarRemoved =
-    req.body?.avatarRemoved !== undefined ? Boolean(req.body.avatarRemoved) : undefined;
-
-  if (!studentId || firstName.length < 2 || lastName.length < 2) {
-    res.status(422).json({
-      success: false,
-      message: 'نام و نام خانوادگی باید حداقل ۲ کاراکتر باشند.',
-    });
-    return;
-  }
-
-  if (rawEmail !== undefined && !isValidEmailServer(rawEmail)) {
-    res.status(422).json({
-      success: false,
-      message: 'فرمت آدرس ایمیل واردشده معتبر نیست.',
-    });
-    return;
-  }
-
-  if (rawBio !== undefined && rawBio.length > 500) {
-    res.status(422).json({
-      success: false,
-      message: 'متن بیوگرافی نمی‌تواند بیشتر از ۵۰۰ کاراکتر باشد.',
-    });
-    return;
-  }
-
-  try {
-    const [rows] = await pool.query<RowDataPacket[]>(
-      'SELECT * FROM students WHERE id = ? LIMIT 1',
-      [studentId]
-    );
-    if (rows.length === 0) {
-      res.status(404).json({
-        success: false,
-        message: 'دانش‌آموز در پایگاه داده یافت نشد.',
-      });
-      return;
-    }
-
-    const existing = rows[0];
-    // Explicitly enforce phone immutability on the backend:
-    if (
-      req.body?.phone !== undefined &&
-      normalizeDigitsServer(String(req.body.phone)) !== String(existing.phone)
-    ) {
-      res.status(403).json({
-        success: false,
-        message: 'تغییر شماره موبایل ثبت‌نامی توسط دانش‌آموز مجاز نیست.',
-      });
-      return;
-    }
-
-    const oldAvatarUrl = existing.avatar_url ? String(existing.avatar_url) : null;
-    const nextEmail = rawEmail !== undefined ? rawEmail : String(existing.email || '');
-    const nextBio = rawBio !== undefined ? rawBio : String(existing.bio || '');
-    const nextAvatarRemoved =
-      avatarRemoved !== undefined
-        ? avatarRemoved
-          ? 1
-          : 0
-        : Number(existing.avatar_removed || 0);
-    const nextAvatarUrl = nextAvatarRemoved
-      ? null
-      : avatarUrl !== undefined
-      ? avatarUrl || null
-      : oldAvatarUrl;
-
-    await pool.query(
-      `UPDATE students
-       SET first_name = ?, last_name = ?, email = ?, bio = ?, avatar_url = ?, avatar_removed = ?
-       WHERE id = ?`,
-      [firstName, lastName, nextEmail, nextBio, nextAvatarUrl, nextAvatarRemoved, studentId]
-    );
-
-    if (oldAvatarUrl && oldAvatarUrl !== nextAvatarUrl) {
-      await safeDeleteUploadedFileIfUnreferenced(oldAvatarUrl, studentId);
-    }
-
-    const updatedStudent = {
-      id: Number(existing.id),
-      firstName,
-      lastName,
-      phone: String(existing.phone), // Immutable
-      email: nextEmail,
-      bio: nextBio,
-      classCode: String(existing.class_code ?? ''),
-      status: (existing.status as 'pending' | 'approved' | 'rejected') || 'pending',
-      notes: String(existing.notes || ''),
-      avatarUrl: nextAvatarUrl || undefined,
-      avatarRemoved: Boolean(nextAvatarRemoved),
-      createdAt: existing.created_at
-        ? new Date(existing.created_at).toLocaleDateString('fa-IR')
-        : '',
-    };
-
-    await syncStudentIntoExtendedState(updatedStudent);
-
-    res.json({
-      success: true,
-      message: 'مشخصات پروفایل شما در پایگاه داده بروزرسانی شد.',
-      student: updatedStudent,
-    });
-  } catch (err: unknown) {
-    console.error('[Student Profile Update Error]:', err);
-    res.status(500).json({
-      success: false,
-      message: 'خطا در بروزرسانی پروفایل دانش‌آموز در پایگاه داده.',
-    });
-  }
-});
-
-app.post('/api/student/password', async (req: Request, res: Response): Promise<void> => {
-  const studentId = Number(req.body?.studentId ?? req.body?.id ?? 0);
-  const newPassword = String(req.body?.newPassword ?? req.body?.password ?? '');
-
-  if (!studentId || newPassword.length < 6) {
-    res.status(422).json({
-      success: false,
-      message: 'رمز عبور جدید باید حداقل ۶ کاراکتر باشد.',
-    });
-    return;
-  }
-
-  try {
-    const passwordHash = await bcrypt.hash(newPassword, 12);
-    const [result] = await pool.query<ResultSetHeader>(
-      'UPDATE students SET password_hash = ? WHERE id = ?',
-      [passwordHash, studentId]
-    );
-    if (result.affectedRows === 0) {
-      res.status(404).json({
-        success: false,
-        message: 'حساب دانش‌آموز در پایگاه داده یافت نشد.',
-      });
-      return;
-    }
-    res.json({
-      success: true,
-      message: 'رمز عبور جدید شما با موفقیت در پایگاه داده ثبت شد.',
-    });
-  } catch (err: unknown) {
-    console.error('[Student Password Update Error]:', err);
-    res.status(500).json({
-      success: false,
-      message: 'خطا در تغییر رمز عبور دانش‌آموز.',
-    });
-  }
-});
-
-/**
- * 5. Dedicated Admin Profile, Password, and Student Management Endpoints
- */
-app.put('/api/admin/profile', async (req: Request, res: Response): Promise<void> => {
-  const firstName = String(req.body?.firstName ?? '').trim();
-  const lastName = String(req.body?.lastName ?? '').trim();
-  const phone = normalizeDigitsServer(String(req.body?.phone ?? ''));
-  const email = String(req.body?.email ?? '').trim();
-  const roleTitle = String(req.body?.roleTitle ?? '').trim();
-  const bio = String(req.body?.bio ?? '').trim();
-  const avatarUrl =
-    req.body?.avatarUrl !== undefined ? String(req.body.avatarUrl || '') : undefined;
-
-  if (firstName.length < 2 || lastName.length < 2 || !/^09\d{9}$/.test(phone)) {
-    res.status(422).json({
-      success: false,
-      message: 'نام، نام خانوادگی یا شماره همراه مدیر معتبر نیست.',
-    });
-    return;
-  }
-
-  try {
-    const [adminRows] = await pool.query<RowDataPacket[]>(
-      'SELECT * FROM admins ORDER BY id ASC LIMIT 1'
-    );
-    if (adminRows.length === 0) {
-      res.status(404).json({
-        success: false,
-        message: 'حساب مدیر در پایگاه داده یافت نشد.',
-      });
-      return;
-    }
-
-    const currentAdmin = adminRows[0];
-    const nextAvatarUrl =
-      avatarUrl !== undefined
-        ? avatarUrl || null
-        : currentAdmin.avatar_url
-        ? String(currentAdmin.avatar_url)
-        : null;
-
-    await pool.query(
-      `UPDATE admins
-       SET first_name = ?, last_name = ?, phone = ?, email = ?, role_title = ?, bio = ?, avatar_url = ?
-       WHERE id = ?`,
+    const [insertResult] = await pool.query<ResultSetHeader>(
+      `INSERT INTO \`students\` (\`first_name\`, \`last_name\`, \`phone\`, \`email\`, \`class_code\`, \`status\`, \`notes\`, \`bio\`, \`password_hash\`)
+       VALUES (?, ?, ?, ?, ?, ?, ?, '', ?)`,
       [
         firstName,
         lastName,
         phone,
         email,
-        roleTitle || 'مدیر و مدرس ارشد',
-        bio,
-        nextAvatarUrl,
-        currentAdmin.id,
+        classCode,
+        initialStatus,
+        'ثبت‌نام آنلاین از طریق درگاه اسکول میت',
+        passwordHash,
       ]
     );
 
-    const updatedAdmin = {
-      firstName,
-      lastName,
-      phone,
-      email,
-      roleTitle: roleTitle || 'مدیر و مدرس ارشد',
-      bio,
-      password: '',
-      avatarUrl: nextAvatarUrl || '',
-    };
-
-    res.json({
-      success: true,
-      message: 'اطلاعات پروفایل مدیر در پایگاه داده MySQL ذخیره شد.',
-      admin: updatedAdmin,
-    });
-  } catch (err: unknown) {
-    console.error('[Admin Profile Update Error]:', err);
-    res.status(500).json({
-      success: false,
-      message: 'خطا در بروزرسانی پروفایل مدیر در پایگاه داده.',
-    });
-  }
-});
-
-app.post('/api/admin/password', async (req: Request, res: Response): Promise<void> => {
-  const currentPassword = String(req.body?.currentPassword ?? '');
-  const newPassword = String(req.body?.newPassword ?? '');
-
-  if (newPassword.length < 6) {
-    res.status(422).json({
-      success: false,
-      message: 'رمز عبور جدید باید حداقل ۶ کاراکتر باشد.',
-    });
-    return;
-  }
-
-  try {
-    const [adminRows] = await pool.query<RowDataPacket[]>(
-      'SELECT id, password_hash FROM admins ORDER BY id ASC LIMIT 1'
+    // Log registration activity in relational activity_logs
+    await pool.query(
+      `INSERT INTO \`activity_logs\` (\`title\`, \`detail\`, \`time_ago\`, \`category\`)
+       VALUES (?, ?, ?, 'student')`,
+      [
+        `ثبت‌نام دانش‌آموز جدید (${firstName} ${lastName} — کلاس ${classCode || 'بدون کلاس'})`,
+        `شماره همراه: ${phone} · ایمیل: ${email} · وضعیت: در انتظار تأیید مدیر`,
+        formatServerPersianDateTime(new Date()),
+      ]
     );
-    if (adminRows.length === 0) {
-      res.status(404).json({
-        success: false,
-        message: 'حساب مدیر در پایگاه داده یافت نشد.',
-      });
-      return;
-    }
-
-    const admin = adminRows[0];
-    if (currentPassword) {
-      const isValid = await verifyPasswordHash(
-        currentPassword,
-        String(admin.password_hash || '')
-      );
-      if (!isValid) {
-        res.status(401).json({
-          success: false,
-          message: 'رمز عبور فعلی واردشده صحیح نیست.',
-        });
-        return;
-      }
-    }
-
-    const newHash = await bcrypt.hash(newPassword, 12);
-    await pool.query('UPDATE admins SET password_hash = ? WHERE id = ?', [
-      newHash,
-      admin.id,
-    ]);
-
-    res.json({
-      success: true,
-      message: 'رمز عبور مدیریت با موفقیت در پایگاه داده بروزرسانی شد.',
-    });
-  } catch (err: unknown) {
-    console.error('[Admin Password Error]:', err);
-    res.status(500).json({
-      success: false,
-      message: 'خطا در تغییر رمز عبور مدیر.',
-    });
-  }
-});
-
-app.post('/api/admin/students', async (req: Request, res: Response): Promise<void> => {
-  if (String(req.headers['x-user-role'] || '') === 'student') {
-    res.status(403).json({
-      success: false,
-      message: 'فقط مدیر سامانه مجاز به ایجاد دانش‌آموز جدید است.',
-    });
-    return;
-  }
-
-  const firstName = String(req.body?.firstName ?? '').trim();
-  const lastName = String(req.body?.lastName ?? '').trim();
-  const phone = normalizeDigitsServer(String(req.body?.phone ?? ''));
-  const email = String(req.body?.email ?? '').trim();
-  const bio = String(req.body?.bio ?? '').trim();
-  const classCode = normalizeDigitsServer(String(req.body?.classCode ?? ''));
-  const status = ['pending', 'approved', 'rejected'].includes(String(req.body?.status))
-    ? (String(req.body.status) as 'pending' | 'approved' | 'rejected')
-    : 'approved';
-  const notes = String(req.body?.notes ?? '').trim();
-  const password = String(req.body?.password ?? '');
-
-  if (
-    firstName.length < 2 ||
-    lastName.length < 2 ||
-    !/^09\d{9}$/.test(phone) ||
-    password.length < 6
-  ) {
-    res.status(422).json({
-      success: false,
-      message: 'اطلاعات دانش‌آموز نامعتبر است (نام، شماره همراه ۱۱ رقمی و رمز حداقل ۶ کاراکتر الزامی است).',
-    });
-    return;
-  }
-
-  if (!isValidEmailServer(email)) {
-    res.status(422).json({
-      success: false,
-      message: 'فرمت آدرس ایمیل دانش‌آموز معتبر نیست.',
-    });
-    return;
-  }
-
-  if (bio.length > 500) {
-    res.status(422).json({
-      success: false,
-      message: 'متن بیوگرافی دانش‌آموز نمی‌تواند بیشتر از ۵۰۰ کاراکتر باشد.',
-    });
-    return;
-  }
-
-  try {
-    const [dupSt] = await pool.query<RowDataPacket[]>(
-      'SELECT id FROM students WHERE phone = ? LIMIT 1',
-      [phone]
-    );
-    const [dupAd] = await pool.query<RowDataPacket[]>(
-      'SELECT id FROM admins WHERE phone = ? LIMIT 1',
-      [phone]
-    );
-    if (dupSt.length > 0 || dupAd.length > 0) {
-      res.status(409).json({
-        success: false,
-        message: 'این شماره موبایل قبلاً در سامانه ثبت شده است.',
-      });
-      return;
-    }
-
-    const passwordHash = await bcrypt.hash(password, 12);
-    const [result] = await pool.query<ResultSetHeader>(
-      `INSERT INTO students (first_name, last_name, phone, email, class_code, status, notes, bio, avatar_url, avatar_removed, password_hash)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?)`,
-      [firstName, lastName, phone, email, classCode, status, notes, bio, passwordHash]
-    );
-
-    const createdStudent = {
-      id: Number(result.insertId),
-      firstName,
-      lastName,
-      phone,
-      email,
-      bio,
-      classCode,
-      status,
-      notes,
-      avatarUrl: undefined,
-      avatarRemoved: false,
-      createdAt: new Date().toLocaleDateString('fa-IR'),
-    };
-
-    await syncStudentIntoExtendedState(createdStudent);
 
     res.status(201).json({
       success: true,
-      message: 'دانش‌آموز جدید با موفقیت در پایگاه داده MySQL ثبت شد.',
-      student: createdStudent,
+      role: 'student',
+      code:
+        initialStatus === 'pending' ? 'ACCOUNT_PENDING_APPROVAL' : 'APPROVED',
+      message:
+        initialStatus === 'pending'
+          ? 'ثبت‌نام شما با موفقیت انجام شد. حساب کاربری شما در انتظار تأیید مدیر سامانه است و پس از تأیید مدیریت می‌توانید وارد پنل شوید.'
+          : 'ثبت‌نام شما در پایگاه داده MySQL با موفقیت انجام شد.',
+      student: {
+        id: Number(insertResult.insertId),
+        firstName,
+        lastName,
+        phone,
+        email,
+        bio: '',
+        classCode,
+        status: initialStatus,
+        notes: 'ثبت‌نام آنلاین از طریق درگاه اسکول میت',
+        createdAt: formatServerPersianDateOnly(new Date()),
+      },
     });
-  } catch (err: unknown) {
-    console.error('[Admin Create Student Error]:', err);
+  } catch (err) {
     res.status(500).json({
       success: false,
-      message: 'خطا در ثبت دانش‌آموز در پایگاه داده.',
+      message:
+        err instanceof Error
+          ? err.message
+          : 'خطای سرور در ثبت‌نام دانش‌آموز جدید.',
     });
   }
 });
 
-app.put('/api/admin/students/:id', async (req: Request, res: Response): Promise<void> => {
-  if (String(req.headers['x-user-role'] || '') === 'student') {
-    res.status(403).json({
-      success: false,
-      message: 'فقط مدیر سامانه مجاز به ویرایش اطلاعات مدیریتی دانش‌آموز است.',
-    });
-    return;
-  }
-
-  const studentId = Number(req.params.id || 0);
-  if (!studentId) {
-    res.status(400).json({ success: false, message: 'شناسه دانش‌آموز نامعتبر است.' });
-    return;
-  }
-
+/**
+ * 6. Update Student Profile (PUT /api/student/profile)
+ * Enforces:
+ * - Student must be `'approved'`
+ * - Student phone number is strictly read-only
+ * - Email is mandatory and must be valid
+ */
+app.put('/api/student/profile', async (req: Request, res: Response) => {
   try {
-    const [existingRows] = await pool.query<RowDataPacket[]>(
-      'SELECT * FROM students WHERE id = ? LIMIT 1',
-      [studentId]
-    );
-    if (existingRows.length === 0) {
-      res.status(404).json({
-        success: false,
-        message: 'دانش‌آموز مورد نظر در پایگاه داده یافت نشد.',
-      });
-      return;
-    }
-
-    const existing = existingRows[0];
-    const firstName =
-      req.body?.firstName !== undefined
-        ? String(req.body.firstName).trim()
-        : String(existing.first_name);
-    const lastName =
-      req.body?.lastName !== undefined
-        ? String(req.body.lastName).trim()
-        : String(existing.last_name);
-    const phone =
-      req.body?.phone !== undefined
-        ? normalizeDigitsServer(String(req.body.phone))
-        : String(existing.phone);
-    const email =
-      req.body?.email !== undefined
-        ? String(req.body.email).trim()
-        : String(existing.email || '');
-    const bio =
-      req.body?.bio !== undefined
-        ? String(req.body.bio).trim()
-        : String(existing.bio || '');
-    const classCode =
-      req.body?.classCode !== undefined
-        ? normalizeDigitsServer(String(req.body.classCode))
-        : String(existing.class_code ?? '');
-    const status =
-      req.body?.status !== undefined &&
-      ['pending', 'approved', 'rejected'].includes(String(req.body.status))
-        ? (String(req.body.status) as 'pending' | 'approved' | 'rejected')
-        : (existing.status as 'pending' | 'approved' | 'rejected');
-    const notes =
-      req.body?.notes !== undefined
-        ? String(req.body.notes).trim()
-        : String(existing.notes || '');
-
-    const oldAvatarUrl = existing.avatar_url ? String(existing.avatar_url) : null;
-    const nextAvatarRemoved =
+    const id = Number(req.body?.id);
+    const firstName = String(req.body?.firstName || '').trim();
+    const lastName = String(req.body?.lastName || '').trim();
+    const email = normalizeDigitsServer(req.body?.email || '').trim();
+    const bio = String(req.body?.bio || '').trim();
+    const avatarUrl =
+      req.body?.avatarUrl !== undefined ? String(req.body.avatarUrl) : undefined;
+    const avatarRemoved =
       req.body?.avatarRemoved !== undefined
-        ? req.body.avatarRemoved
-          ? 1
-          : 0
-        : Number(existing.avatar_removed || 0);
-    const nextAvatarUrl = nextAvatarRemoved
-      ? null
-      : req.body?.avatarUrl !== undefined
-      ? req.body.avatarUrl
-        ? String(req.body.avatarUrl)
-        : null
-      : oldAvatarUrl;
+        ? Boolean(req.body.avatarRemoved)
+        : undefined;
 
-    if (firstName.length < 2 || lastName.length < 2 || !/^09\d{9}$/.test(phone)) {
-      res.status(422).json({
+    const approvalCheck = await verifyApprovedStudent(id);
+    if (!approvalCheck.allowed || !approvalCheck.studentRow) {
+      res.status(approvalCheck.httpStatus).json({
         success: false,
-        message: 'نام، نام خانوادگی یا شماره موبایل دانش‌آموز معتبر نیست.',
+        code: approvalCheck.code,
+        message: approvalCheck.message,
       });
       return;
     }
 
-    if (!isValidEmailServer(email)) {
+    if (!firstName || !lastName || firstName.length < 2 || lastName.length < 2) {
       res.status(422).json({
         success: false,
-        message: 'فرمت آدرس ایمیل دانش‌آموز معتبر نیست.',
+        message: 'لطفاً نام و نام خانوادگی معتبر (حداقل ۲ کاراکتر) وارد نمایید.',
+      });
+      return;
+    }
+
+    if (email && !isValidEmailServer(email)) {
+      res.status(422).json({
+        success: false,
+        message: 'فرمت آدرس پست الکترونیکی (ایمیل) واردشده در پروفایل معتبر نیست.',
       });
       return;
     }
@@ -1196,1368 +2206,1016 @@ app.put('/api/admin/students/:id', async (req: Request, res: Response): Promise<
       return;
     }
 
-    // Check phone uniqueness if phone changed
-    if (phone !== String(existing.phone)) {
-      const [dupSt] = await pool.query<RowDataPacket[]>(
-        'SELECT id FROM students WHERE phone = ? AND id <> ? LIMIT 1',
-        [phone, studentId]
-      );
-      const [dupAd] = await pool.query<RowDataPacket[]>(
-        'SELECT id FROM admins WHERE phone = ? LIMIT 1',
-        [phone]
-      );
-      if (dupSt.length > 0 || dupAd.length > 0) {
-        res.status(409).json({
-          success: false,
-          message: 'این شماره موبایل متعلق به کاربر دیگری در سامانه است.',
-        });
-        return;
-      }
+    const current = approvalCheck.studentRow;
+    const previousAvatarUrl = String(current.avatar_url || '');
+    const finalAvatarRemoved =
+      avatarRemoved !== undefined ? avatarRemoved : Boolean(current.avatar_removed);
+    const finalAvatarUrl = finalAvatarRemoved
+      ? null
+      : avatarUrl !== undefined
+      ? avatarUrl || null
+      : current.avatar_url;
+
+    // Phone is NOT updated here — student's registered phone is immutable
+    await pool.query(
+      `UPDATE \`students\`
+       SET \`first_name\` = ?, \`last_name\` = ?, \`email\` = ?, \`bio\` = ?, \`avatar_url\` = ?, \`avatar_removed\` = ?
+       WHERE \`id\` = ?`,
+      [
+        firstName,
+        lastName,
+        email,
+        bio,
+        finalAvatarUrl,
+        finalAvatarRemoved ? 1 : 0,
+        id,
+      ]
+    );
+
+    if (previousAvatarUrl && previousAvatarUrl !== String(finalAvatarUrl || '')) {
+      setImmediate(() => {
+        void deleteUnreferencedUploadFile(previousAvatarUrl);
+      });
     }
-
-    const rawPassword = String(req.body?.password ?? '').trim();
-    if (rawPassword.length >= 6) {
-      const passwordHash = await bcrypt.hash(rawPassword, 12);
-      await pool.query(
-        `UPDATE students
-         SET first_name = ?, last_name = ?, phone = ?, email = ?, class_code = ?, status = ?, notes = ?, bio = ?, avatar_url = ?, avatar_removed = ?, password_hash = ?
-         WHERE id = ?`,
-        [
-          firstName,
-          lastName,
-          phone,
-          email,
-          classCode,
-          status,
-          notes,
-          bio,
-          nextAvatarUrl,
-          nextAvatarRemoved,
-          passwordHash,
-          studentId,
-        ]
-      );
-    } else {
-      await pool.query(
-        `UPDATE students
-         SET first_name = ?, last_name = ?, phone = ?, email = ?, class_code = ?, status = ?, notes = ?, bio = ?, avatar_url = ?, avatar_removed = ?
-         WHERE id = ?`,
-        [
-          firstName,
-          lastName,
-          phone,
-          email,
-          classCode,
-          status,
-          notes,
-          bio,
-          nextAvatarUrl,
-          nextAvatarRemoved,
-          studentId,
-        ]
-      );
-    }
-
-    if (oldAvatarUrl && oldAvatarUrl !== nextAvatarUrl) {
-      await safeDeleteUploadedFileIfUnreferenced(oldAvatarUrl, studentId);
-    }
-
-    const updatedStudent = {
-      id: studentId,
-      firstName,
-      lastName,
-      phone,
-      email,
-      bio,
-      classCode,
-      status,
-      notes,
-      avatarUrl: nextAvatarUrl || undefined,
-      avatarRemoved: Boolean(nextAvatarRemoved),
-      createdAt: existing.created_at
-        ? new Date(existing.created_at).toLocaleDateString('fa-IR')
-        : '',
-    };
-
-    await syncStudentIntoExtendedState(updatedStudent);
 
     res.json({
       success: true,
-      message: 'اطلاعات دانش‌آموز با موفقیت در پایگاه داده MySQL بروزرسانی شد.',
-      student: updatedStudent,
+      message: 'مشخصات پروفایل دانش‌آموز در پایگاه داده بروزرسانی شد.',
+      student: {
+        id,
+        firstName,
+        lastName,
+        phone: normalizeIranianPhoneServer(current.phone),
+        email,
+        bio,
+        classCode: String(current.class_code || ''),
+        status: String(current.status || 'approved'),
+        avatarUrl: finalAvatarRemoved ? '' : String(finalAvatarUrl || ''),
+        avatarRemoved: finalAvatarRemoved,
+        createdAt: formatServerPersianDateOnly(current.created_at),
+      },
     });
-  } catch (err: unknown) {
-    console.error('[Admin Update Student Error]:', err);
+  } catch (err) {
     res.status(500).json({
       success: false,
-      message: 'خطا در بروزرسانی اطلاعات دانش‌آموز در پایگاه داده.',
+      message:
+        err instanceof Error
+          ? err.message
+          : 'خطا در بروزرسانی پروفایل دانش‌آموز.',
     });
   }
 });
 
 /**
- * 5B. Admin Remove Student Profile Picture Endpoint (DELETE /api/admin/students/:id/avatar)
- * Reverts student's profile picture to the default account icon, updates MySQL, and safely deletes unreferenced physical file.
+ * 7. Update Student Password (POST /api/student/password)
  */
-app.delete('/api/admin/students/:id/avatar', async (req: Request, res: Response): Promise<void> => {
-  if (String(req.headers['x-user-role'] || '') === 'student') {
-    res.status(403).json({
-      success: false,
-      message: 'فقط مدیر سامانه مجاز به حذف تصویر پروفایل دانش‌آموز است.',
-    });
-    return;
-  }
-
-  const studentId = Number(req.params.id || 0);
-  if (!studentId) {
-    res.status(400).json({ success: false, message: 'شناسه دانش‌آموز نامعتبر است.' });
-    return;
-  }
-
+app.post('/api/student/password', async (req: Request, res: Response) => {
   try {
+    const studentId = Number(req.body?.studentId);
+    const newPassword = String(req.body?.newPassword || '');
+
+    const approvalCheck = await verifyApprovedStudent(studentId);
+    if (!approvalCheck.allowed) {
+      res.status(approvalCheck.httpStatus).json({
+        success: false,
+        code: approvalCheck.code,
+        message: approvalCheck.message,
+      });
+      return;
+    }
+
+    if (newPassword.length < 6) {
+      res.status(422).json({
+        success: false,
+        message: 'رمز عبور جدید باید حداقل ۶ کاراکتر باشد.',
+      });
+      return;
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    await pool.query(
+      'UPDATE `students` SET `password_hash` = ? WHERE `id` = ?',
+      [passwordHash, studentId]
+    );
+
+    res.json({
+      success: true,
+      message: 'رمز عبور در پایگاه داده MySQL با موفقیت تغییر یافت.',
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message:
+        err instanceof Error ? err.message : 'خطا در بروزرسانی رمز عبور.',
+    });
+  }
+});
+
+/**
+ * 8. Update Admin Profile (PUT /api/admin/profile)
+ */
+app.put('/api/admin/profile', async (req: Request, res: Response) => {
+  try {
+    const firstName = String(req.body?.firstName || '').trim();
+    const lastName = String(req.body?.lastName || '').trim();
+    const rawPhone = String(req.body?.phone || '').trim();
+    const email = String(req.body?.email || '').trim();
+    const roleTitle = String(req.body?.roleTitle || '').trim();
+    const bio = String(req.body?.bio || '').trim();
+    const avatarUrl =
+      req.body?.avatarUrl !== undefined ? String(req.body.avatarUrl) : undefined;
+
+    if (!firstName || !lastName || !isValidIranianPhoneServer(rawPhone)) {
+      res.status(422).json({
+        success: false,
+        message:
+          'لطفاً نام، نام خانوادگی و شماره موبایل معتبر ایران (مثال: ۰۹۱۲۳۴۵۶۷۸۹) وارد کنید.',
+      });
+      return;
+    }
+
+    const phone = normalizeIranianPhoneServer(rawPhone);
+
+    const [admins] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM `admins` ORDER BY `id` ASC LIMIT 1'
+    );
+    if (admins.length === 0) {
+      res.status(404).json({
+        success: false,
+        message: 'حساب مدیر در پایگاه داده یافت نشد.',
+      });
+      return;
+    }
+
+    const currentAdmin = admins[0];
+    const previousAvatarUrl = String(currentAdmin.avatar_url || '');
+    const finalAvatarUrl =
+      avatarUrl !== undefined ? avatarUrl : String(currentAdmin.avatar_url || '');
+
+    await pool.query(
+      `UPDATE \`admins\`
+       SET \`first_name\` = ?, \`last_name\` = ?, \`phone\` = ?, \`email\` = ?, \`role_title\` = ?, \`bio\` = ?, \`avatar_url\` = ?
+       WHERE \`id\` = ?`,
+      [
+        firstName,
+        lastName,
+        phone,
+        email || String(currentAdmin.email || ''),
+        roleTitle || String(currentAdmin.role_title || ''),
+        bio,
+        finalAvatarUrl,
+        currentAdmin.id,
+      ]
+    );
+
+    if (previousAvatarUrl && previousAvatarUrl !== finalAvatarUrl) {
+      setImmediate(() => {
+        void deleteUnreferencedUploadFile(previousAvatarUrl);
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'اطلاعات پروفایل مدیر با موفقیت در پایگاه داده ذخیره گردید.',
+      admin: {
+        firstName,
+        lastName,
+        phone,
+        email: email || String(currentAdmin.email || ''),
+        roleTitle: roleTitle || String(currentAdmin.role_title || ''),
+        bio,
+        avatarUrl: finalAvatarUrl,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message:
+        err instanceof Error ? err.message : 'خطا در بروزرسانی پروفایل مدیر.',
+    });
+  }
+});
+
+/**
+ * 9. Update Admin Password (POST /api/admin/password)
+ */
+app.post('/api/admin/password', async (req: Request, res: Response) => {
+  try {
+    const currentPassword = String(req.body?.currentPassword || '');
+    const newPassword = String(req.body?.newPassword || '');
+
+    if (newPassword.length < 6) {
+      res.status(422).json({
+        success: false,
+        message: 'رمز عبور جدید باید حداقل ۶ کاراکتر باشد.',
+      });
+      return;
+    }
+
+    const [admins] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM `admins` ORDER BY `id` ASC LIMIT 1'
+    );
+    if (admins.length === 0) {
+      res.status(404).json({
+        success: false,
+        message: 'حساب مدیر یافت نشد.',
+      });
+      return;
+    }
+
+    const admin = admins[0];
+    if (currentPassword) {
+      const storedHash = String(admin.password_hash || '');
+      const isMatch = storedHash.startsWith('$2')
+        ? await bcrypt.compare(currentPassword, storedHash)
+        : currentPassword === storedHash;
+      if (!isMatch) {
+        res.status(401).json({
+          success: false,
+          message: 'رمز عبور فعلی واردشده صحیح نیست.',
+        });
+        return;
+      }
+    }
+
+    const newHash = await bcrypt.hash(newPassword, 10);
+    await pool.query(
+      'UPDATE `admins` SET `password_hash` = ? WHERE `id` = ?',
+      [newHash, admin.id]
+    );
+
+    res.json({
+      success: true,
+      message: 'رمز عبور حساب مدیریت با موفقیت در دیتابیس بروزرسانی شد.',
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message:
+        err instanceof Error ? err.message : 'خطا در تغییر رمز عبور مدیر.',
+    });
+  }
+});
+
+/**
+ * 10. Admin: Create Student directly in MySQL (POST /api/admin/students)
+ */
+app.post('/api/admin/students', async (req: Request, res: Response) => {
+  try {
+    const firstName = String(req.body?.firstName || '').trim();
+    const lastName = String(req.body?.lastName || '').trim();
+    const rawPhone = String(req.body?.phone || '').trim();
+    const email = normalizeDigitsServer(req.body?.email || '').trim();
+    const bio = String(req.body?.bio || '').trim();
+    const classCode = String(req.body?.classCode ?? '').trim();
+    const status =
+      req.body?.status === 'pending' || req.body?.status === 'rejected'
+        ? req.body.status
+        : 'approved';
+    const notes = String(req.body?.notes || 'ثبت‌شده توسط مدیر سامانه').trim();
+    const password = String(req.body?.password || '123456');
+
+    if (firstName.length < 2 || lastName.length < 2) {
+      res.status(422).json({
+        success: false,
+        message: 'نام و نام خانوادگی دانش‌آموز باید حداقل ۲ کاراکتر باشد.',
+      });
+      return;
+    }
+
+    if (!isValidIranianPhoneServer(rawPhone)) {
+      res.status(422).json({
+        success: false,
+        message:
+          'شماره موبایل دانش‌آموز معتبر نیست. لطفاً یک شماره همراه معتبر ایران (مثال: ۰۹۱۲۳۴۵۶۷۸۹) وارد کنید.',
+      });
+      return;
+    }
+
+    if (!email || !isValidEmailServer(email)) {
+      res.status(422).json({
+        success: false,
+        message: 'وارد کردن آدرس ایمیل معتبر برای ثبت دانش‌آموز الزامی است.',
+      });
+      return;
+    }
+
+    const phone = normalizeIranianPhoneServer(rawPhone);
+
+    const [dup] = await pool.query<RowDataPacket[]>(
+      'SELECT `id` FROM `students` WHERE `phone` = ? LIMIT 1',
+      [phone]
+    );
+    if (dup.length > 0) {
+      res.status(409).json({
+        success: false,
+        message: 'دانش‌آموزی با این شماره تلفن قبلاً در پایگاه داده ثبت شده است.',
+      });
+      return;
+    }
+
+    const passwordHash = await bcrypt.hash(
+      password.length >= 6 ? password : '123456',
+      10
+    );
+
+    const [insertRes] = await pool.query<ResultSetHeader>(
+      `INSERT INTO \`students\`
+        (\`first_name\`, \`last_name\`, \`phone\`, \`email\`, \`class_code\`, \`status\`, \`notes\`, \`bio\`, \`avatar_url\`, \`avatar_removed\`, \`password_hash\`)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?)`,
+      [firstName, lastName, phone, email, classCode, status, notes, bio, passwordHash]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'دانش‌آموز جدید با موفقیت در پایگاه داده MySQL ثبت گردید.',
+      student: {
+        id: Number(insertRes.insertId),
+        firstName,
+        lastName,
+        phone,
+        email,
+        bio,
+        classCode,
+        status,
+        notes,
+        avatarUrl: '',
+        avatarRemoved: false,
+        createdAt: formatServerPersianDateOnly(new Date()),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message:
+        err instanceof Error ? err.message : 'خطا در ثبت دانش‌آموز جدید.',
+    });
+  }
+});
+
+/**
+ * 11. Admin: Update Student Profile / Class / Status / Avatar in MySQL (PUT /api/admin/students/:id)
+ */
+app.put('/api/admin/students/:id', async (req: Request, res: Response) => {
+  try {
+    const callerRole = String(req.headers['x-user-role'] || '').trim();
+    if (callerRole === 'student') {
+      res.status(403).json({
+        success: false,
+        message: 'دسترسی غیرمجاز: فقط مدیر سامانه مجاز به ویرایش کامل اطلاعات دانش‌آموز و شماره تلفن است.',
+      });
+      return;
+    }
+
+    const studentId = Number(req.params.id);
+    if (!studentId) {
+      res.status(400).json({
+        success: false,
+        message: 'شناسه دانش‌آموز نامعتبر است.',
+      });
+      return;
+    }
+
     const [rows] = await pool.query<RowDataPacket[]>(
-      'SELECT * FROM students WHERE id = ? LIMIT 1',
+      'SELECT * FROM `students` WHERE `id` = ? LIMIT 1',
       [studentId]
     );
     if (rows.length === 0) {
       res.status(404).json({
         success: false,
-        message: 'دانش‌آموز مورد نظر در پایگاه داده یافت نشد.',
+        message: 'دانش‌آموز در پایگاه داده یافت نشد.',
       });
       return;
     }
 
-    const existing = rows[0];
-    const oldAvatarUrl = existing.avatar_url ? String(existing.avatar_url) : null;
+    const current = rows[0];
+    const firstName =
+      req.body?.firstName !== undefined
+        ? String(req.body.firstName).trim()
+        : String(current.first_name);
+    const lastName =
+      req.body?.lastName !== undefined
+        ? String(req.body.lastName).trim()
+        : String(current.last_name);
 
-    await pool.query(
-      'UPDATE students SET avatar_url = NULL, avatar_removed = 1 WHERE id = ?',
-      [studentId]
-    );
-
-    const fileDeleted = await safeDeleteUploadedFileIfUnreferenced(oldAvatarUrl, studentId);
-
-    const updatedStudent = {
-      id: studentId,
-      firstName: String(existing.first_name),
-      lastName: String(existing.last_name),
-      phone: String(existing.phone),
-      email: String(existing.email || ''),
-      bio: String(existing.bio || ''),
-      classCode: String(existing.class_code ?? ''),
-      status: (existing.status as 'pending' | 'approved' | 'rejected') || 'pending',
-      notes: String(existing.notes || ''),
-      avatarUrl: undefined,
-      avatarRemoved: true,
-      createdAt: existing.created_at
-        ? new Date(existing.created_at).toLocaleDateString('fa-IR')
-        : '',
-    };
-
-    await syncStudentIntoExtendedState(updatedStudent);
-
-    res.json({
-      success: true,
-      fileDeleted,
-      message: 'تصویر پروفایل دانش‌آموز حذف شد و آیکون پیش‌فرض حساب جایگزین گردید.',
-      student: updatedStudent,
-    });
-  } catch (err: unknown) {
-    console.error('[Admin Delete Student Avatar Error]:', err);
-    res.status(500).json({
-      success: false,
-      message: 'خطا در حذف تصویر پروفایل دانش‌آموز.',
-    });
-  }
-});
-
-/**
- * 5C. Admin Close / Reopen Assignment Endpoint (POST /api/admin/assignments/:id/status)
- */
-app.post('/api/admin/assignments/:id/status', async (req: Request, res: Response): Promise<void> => {
-  if (String(req.headers['x-user-role'] || '') === 'student') {
-    res.status(403).json({
-      success: false,
-      message: 'فقط مدیر یا مدرس مجاز به بستن یا بازگشایی تکلیف است.',
-    });
-    return;
-  }
-
-  const assignmentId = Number(req.params.id || 0);
-  const nextStatus = String(req.body?.status || 'closed') === 'active' ? 'active' : 'closed';
-
-  if (!assignmentId) {
-    res.status(400).json({ success: false, message: 'شناسه تکلیف نامعتبر است.' });
-    return;
-  }
-
-  try {
-    const extState = await readExtendedState();
-    const assignmentsList = Array.isArray(extState.assignments)
-      ? ([...extState.assignments] as Record<string, unknown>[])
-      : [];
-    const targetIdx = assignmentsList.findIndex((a) => Number(a.id) === assignmentId);
-
-    const [relRows] = await pool.query<RowDataPacket[]>(
-      'SELECT * FROM assignments WHERE id = ? LIMIT 1',
-      [assignmentId]
-    );
-
-    if (targetIdx < 0 && relRows.length === 0) {
-      res.status(404).json({
-        success: false,
-        message: 'تکلیف مورد نظر در پایگاه داده یافت نشد.',
-      });
-      return;
-    }
-
-    await pool.query('UPDATE assignments SET status = ? WHERE id = ?', [
-      nextStatus,
-      assignmentId,
-    ]);
-
-    let updatedHw: Record<string, unknown> | undefined;
-    if (targetIdx >= 0) {
-      assignmentsList[targetIdx] = {
-        ...assignmentsList[targetIdx],
-        status: nextStatus,
-        closedAt:
-          nextStatus === 'closed'
-            ? new Date().toLocaleDateString('fa-IR')
-            : undefined,
-      };
-      updatedHw = assignmentsList[targetIdx];
-      extState.assignments = assignmentsList;
-      await writeExtendedState(extState);
-    } else if (relRows.length > 0) {
-      updatedHw = {
-        id: assignmentId,
-        title: String(relRows[0].title || ''),
-        description: String(relRows[0].description || ''),
-        classCode: String(relRows[0].class_code || 'all'),
-        dueDate: String(relRows[0].due_date || ''),
-        maxScore: Number(relRows[0].max_score || 20),
-        attachmentName: String(relRows[0].attachment_name || ''),
-        status: nextStatus,
-      };
-    }
-
-    res.json({
-      success: true,
-      status: nextStatus,
-      assignment: updatedHw,
-      message:
-        nextStatus === 'closed'
-          ? 'تکلیف با موفقیت بسته شد و ارسال یا ویرایش پاسخ برای دانش‌آموزان غیرفعال گردید.'
-          : 'تکلیف مجدداً برای دریافت پاسخ دانش‌آموزان فعال شد.',
-    });
-  } catch (err: unknown) {
-    console.error('[Admin Assignment Status Error]:', err);
-    res.status(500).json({
-      success: false,
-      message: 'خطا در تغییر وضعیت تکلیف در پایگاه داده.',
-    });
-  }
-});
-
-/**
- * 5D. Student Submit / Edit Assignment Endpoint (POST /api/student/assignments/:id/submit)
- * Strictly enforces:
- *   1) Assignment exists
- *   2) Assignment is NOT closed by administrator (status !== 'closed')
- *   3) Assignment deadline has NOT passed relative to server time
- *   4) Existing submission has NOT already been graded
- */
-app.post('/api/student/assignments/:id/submit', async (req: Request, res: Response): Promise<void> => {
-  const assignmentId = Number(req.params.id || 0);
-  const studentId = Number(req.body?.studentId ?? req.body?.student_id ?? 0);
-  const fileName = String(req.body?.fileName ?? '').trim();
-  const fileContent = String(req.body?.fileContent ?? '').trim();
-  const fileDataUrl = req.body?.fileDataUrl ? String(req.body.fileDataUrl) : undefined;
-  const submittedAt =
-    String(req.body?.submittedAt || '').trim() ||
-    `${new Date().toLocaleDateString('fa-IR')} · هم‌اکنون`;
-
-  if (!assignmentId || !studentId || (!fileName && !fileContent)) {
-    res.status(422).json({
-      success: false,
-      message: 'اطلاعات ارسالی تکلیف ناقص است.',
-    });
-    return;
-  }
-
-  try {
-    const [stRows] = await pool.query<RowDataPacket[]>(
-      'SELECT * FROM students WHERE id = ? LIMIT 1',
-      [studentId]
-    );
-    if (stRows.length === 0) {
-      res.status(404).json({
-        success: false,
-        message: 'حساب دانش‌آموز در پایگاه داده یافت نشد.',
-      });
-      return;
-    }
-    const studentRow = stRows[0];
-
-    const extState = await readExtendedState();
-    const assignmentsList = Array.isArray(extState.assignments)
-      ? (extState.assignments as Record<string, unknown>[])
-      : [];
-    const extHw = assignmentsList.find((a) => Number(a.id) === assignmentId);
-
-    const [relHwRows] = await pool.query<RowDataPacket[]>(
-      'SELECT * FROM assignments WHERE id = ? LIMIT 1',
-      [assignmentId]
-    );
-    const relHw = relHwRows[0];
-
-    if (!extHw && !relHw) {
-      res.status(404).json({
-        success: false,
-        message: 'تکلیف مورد نظر در پایگاه داده یافت نشد.',
-      });
-      return;
-    }
-
-    const hwStatus = String(extHw?.status || relHw?.status || 'active');
-    const hwDueDate = String(extHw?.dueDate || relHw?.due_date || '');
-    const hwTitle = String(extHw?.title || relHw?.title || 'تکلیف');
-
-    // Backend Enforcement #1: Closed by Administrator
-    if (hwStatus === 'closed') {
-      res.status(403).json({
-        success: false,
-        code: 'ASSIGNMENT_CLOSED',
-        message:
-          'این تکلیف توسط مدرس بسته شده است و امکان ارسال یا ویرایش پاسخ وجود ندارد.',
-      });
-      return;
-    }
-
-    // Backend Enforcement #2: Deadline Expired (compared against authoritative server time)
-    if (isAssignmentExpiredServer(hwDueDate, Date.now())) {
-      res.status(403).json({
-        success: false,
-        code: 'ASSIGNMENT_EXPIRED',
-        message:
-          'مهلت ارسال این تکلیف به پایان رسیده است و امکان ارسال یا ویرایش پاسخ وجود ندارد.',
-      });
-      return;
-    }
-
-    const submissionsList = Array.isArray(extState.submissions)
-      ? ([...extState.submissions] as Record<string, unknown>[])
-      : [];
-    const existingIdx = submissionsList.findIndex(
-      (s) =>
-        Number(s.assignmentId) === assignmentId && Number(s.studentId) === studentId
-    );
-
-    if (existingIdx >= 0 && submissionsList[existingIdx].status === 'graded') {
-      res.status(403).json({
-        success: false,
-        code: 'SUBMISSION_ALREADY_GRADED',
-        message:
-          'پاسخ شما قبلاً توسط مدرس تصحیح و نمره‌دهی شده است و امکان ویرایش مجدد ندارد.',
-      });
-      return;
-    }
-
-    const studentFullName = `${String(studentRow.first_name)} ${String(studentRow.last_name)}`;
-    const studentClassCode = String(studentRow.class_code || '901');
-    const resolvedFileName = fileName || 'پاسخ-متنی-دانش‌آموز.txt';
-    const resolvedContent = fileContent || `فایل پیوست: ${resolvedFileName}`;
-
-    let submissionObj: Record<string, unknown>;
-    if (existingIdx >= 0) {
-      submissionObj = {
-        ...submissionsList[existingIdx],
-        fileName: resolvedFileName,
-        fileContent: resolvedContent,
-        fileDataUrl: fileDataUrl || submissionsList[existingIdx].fileDataUrl,
-        submittedAt,
-        status: 'pending',
-      };
-      submissionsList[existingIdx] = submissionObj;
-    } else {
-      submissionObj = {
-        id: Date.now(),
-        assignmentId,
-        studentId,
-        studentName: studentFullName,
-        classCode: studentClassCode,
-        fileName: resolvedFileName,
-        fileContent: resolvedContent,
-        fileDataUrl,
-        submittedAt,
-        score: null,
-        teacherFeedback: '',
-        status: 'pending',
-      };
-      submissionsList.unshift(submissionObj);
-    }
-
-    // Persist in relational `assignment_submissions` table as well
-    try {
-      const [existingSubRows] = await pool.query<RowDataPacket[]>(
-        'SELECT id FROM assignment_submissions WHERE assignment_id = ? AND student_id = ? LIMIT 1',
-        [assignmentId, studentId]
-      );
-      if (existingSubRows.length > 0) {
-        await pool.query(
-          `UPDATE assignment_submissions
-           SET file_name = ?, file_content = ?, submitted_at = ?, status = 'pending'
-           WHERE id = ?`,
-          [resolvedFileName, resolvedContent, submittedAt, existingSubRows[0].id]
-        );
-      } else {
-        await pool.query(
-          `INSERT INTO assignment_submissions (assignment_id, student_id, file_name, file_content, submitted_at, status)
-           VALUES (?, ?, ?, ?, ?, 'pending')`,
-          [assignmentId, studentId, resolvedFileName, resolvedContent, submittedAt]
-        );
-      }
-    } catch {
-      // Relational assignment_submissions sync is best-effort if assignment id is timestamp-based
-    }
-
-    const activitiesList = Array.isArray(extState.activities)
-      ? ([...extState.activities] as Record<string, unknown>[])
-      : [];
-    activitiesList.unshift({
-      id: Date.now() + 1,
-      title: `${existingIdx >= 0 ? 'ویرایش' : 'ارسال'} تکلیف توسط ${studentFullName}`,
-      detail: `تکلیف: ${hwTitle} (کلاس ${studentClassCode})`,
-      timeAgo: 'لحظاتی پیش',
-      category: 'assignment',
-    });
-
-    extState.submissions = submissionsList;
-    extState.activities = activitiesList.slice(0, 25);
-    await writeExtendedState(extState);
-
-    res.json({
-      success: true,
-      isEdit: existingIdx >= 0,
-      submission: submissionObj,
-      message:
-        existingIdx >= 0
-          ? 'پاسخ تکلیف شما با موفقیت بروزرسانی شد.'
-          : 'پاسخ تکلیف شما با موفقیت ثبت و برای مدرس ارسال گردید.',
-    });
-  } catch (err: unknown) {
-    console.error('[Student Assignment Submit Error]:', err);
-    res.status(500).json({
-      success: false,
-      message: 'خطا در ثبت پاسخ تکلیف در پایگاه داده.',
-    });
-  }
-});
-
-/**
- * 5E. Student Reply to Ticket Endpoint (POST /api/student/tickets/:id/reply)
- * Strictly prevents students from replying or attaching files to closed tickets ('بسته شده')!
- */
-app.post('/api/student/tickets/:id/reply', async (req: Request, res: Response): Promise<void> => {
-  const ticketId = Number(req.params.id || 0);
-  const studentId = Number(req.body?.studentId ?? req.body?.student_id ?? 0);
-  const message = String(req.body?.message ?? '').trim();
-  const attachmentName = req.body?.attachmentName
-    ? String(req.body.attachmentName).trim()
-    : undefined;
-  const attachmentDataUrl = req.body?.attachmentDataUrl
-    ? String(req.body.attachmentDataUrl)
-    : undefined;
-  const sentAt =
-    String(req.body?.sentAt || '').trim() ||
-    `${new Date().toLocaleDateString('fa-IR')} · هم‌اکنون`;
-
-  if (!ticketId || !studentId || !message) {
-    res.status(422).json({
-      success: false,
-      message: 'متن پیام پاسخ تیکت الزامی است.',
-    });
-    return;
-  }
-
-  try {
-    const extState = await readExtendedState();
-    const ticketsList = Array.isArray(extState.tickets)
-      ? ([...extState.tickets] as Record<string, unknown>[])
-      : [];
-    const tkIdx = ticketsList.findIndex((t) => Number(t.id) === ticketId);
-
-    if (tkIdx < 0) {
-      res.status(404).json({
-        success: false,
-        message: 'تیکت مورد نظر یافت نشد.',
-      });
-      return;
-    }
-
-    const tk = ticketsList[tkIdx];
-    if (Number(tk.studentId) !== studentId) {
-      res.status(403).json({
-        success: false,
-        message: 'شما مجاز به ارسال پیام در این تیکت نیستید.',
-      });
-      return;
-    }
-
-    // Backend Enforcement: Reject student replies to closed tickets
-    if (String(tk.status) === 'بسته شده') {
-      res.status(403).json({
-        success: false,
-        code: 'TICKET_CLOSED',
-        message:
-          'این تیکت توسط مدیریت بسته شده است و امکان ارسال پیام یا فایل جدید در آن وجود ندارد.',
-      });
-      return;
-    }
-
-    const messages = Array.isArray(tk.messages)
-      ? ([...tk.messages] as Record<string, unknown>[])
-      : [];
-    const newMsg = {
-      id: Date.now(),
-      senderRole: 'student',
-      senderName: String(tk.studentName || 'دانش‌آموز'),
-      message,
-      sentAt,
-      attachmentName,
-      attachmentDataUrl,
-    };
-    messages.push(newMsg);
-
-    const updatedTicket = {
-      ...tk,
-      status: 'در انتظار پاسخ',
-      messages,
-    };
-    ticketsList[tkIdx] = updatedTicket;
-    extState.tickets = ticketsList;
-    await writeExtendedState(extState);
-
-    res.json({
-      success: true,
-      ticket: updatedTicket,
-      message: 'پیام شما در تیکت ثبت و برای مدرس ارسال گردید.',
-    });
-  } catch (err: unknown) {
-    console.error('[Student Ticket Reply Error]:', err);
-    res.status(500).json({
-      success: false,
-      message: 'خطا در ثبت پاسخ تیکت در پایگاه داده.',
-    });
-  }
-});
-
-/**
- * 6. Full Application State Sync with MySQL (GET /api/state & POST /api/state)
- */
-app.get('/api/state', async (_req: Request, res: Response): Promise<void> => {
-  try {
-    const [adminRows] = await pool.query<RowDataPacket[]>(
-      'SELECT * FROM admins ORDER BY id ASC LIMIT 1'
-    );
-    const [classRows] = await pool.query<RowDataPacket[]>(
-      'SELECT * FROM classes ORDER BY code ASC'
-    );
-    const [studentRows] = await pool.query<RowDataPacket[]>(
-      'SELECT * FROM students ORDER BY id DESC'
-    );
-    const [assignmentRows] = await pool.query<RowDataPacket[]>(
-      'SELECT * FROM assignments ORDER BY id DESC'
-    );
-    const savedExtendedState = await readExtendedState();
-
-    // Map extended state students by id so any fallback properties are preserved,
-    // while MySQL columns are the primary source of truth.
-    const extStudentsMap = new Map<number, Record<string, unknown>>();
-    if (Array.isArray(savedExtendedState.students)) {
-      for (const s of savedExtendedState.students as Record<string, unknown>[]) {
-        if (s && typeof s.id === 'number') {
-          extStudentsMap.set(s.id, s);
-        }
-      }
-    }
-
-    const students = studentRows.map((row) => {
-      const id = Number(row.id);
-      const extSt = extStudentsMap.get(id) || {};
-      const dbAvatarUrl = row.avatar_url ? String(row.avatar_url) : undefined;
-      const dbAvatarRemoved = Boolean(row.avatar_removed);
-      return {
-        ...extSt,
-        id,
-        firstName: String(row.first_name),
-        lastName: String(row.last_name),
-        phone: String(row.phone),
-        email:
-          row.email !== undefined && row.email !== null
-            ? String(row.email)
-            : String(extSt.email || ''),
-        bio:
-          row.bio !== undefined && row.bio !== null
-            ? String(row.bio)
-            : String(extSt.bio || ''),
-        classCode: String(row.class_code ?? ''),
-        status: (row.status as 'pending' | 'approved' | 'rejected') || 'pending',
-        notes: String(row.notes || ''),
-        avatarUrl: dbAvatarRemoved
-          ? undefined
-          : dbAvatarUrl || (extSt.avatarUrl ? String(extSt.avatarUrl) : undefined),
-        avatarRemoved: dbAvatarRemoved,
-        createdAt: row.created_at
-          ? new Date(row.created_at).toLocaleDateString('fa-IR')
-          : String(extSt.createdAt || ''),
-      };
-    });
-
-    // Ensure relational assignments.status is reflected in returned assignments
-    const relStatusMap = new Map<number, 'active' | 'closed'>();
-    for (const r of assignmentRows) {
-      relStatusMap.set(
-        Number(r.id),
-        String(r.status) === 'closed' ? 'closed' : 'active'
-      );
-    }
-    const extAssignments = Array.isArray(savedExtendedState.assignments)
-      ? (savedExtendedState.assignments as Record<string, unknown>[]).map((hw) => {
-          const hwId = Number(hw.id);
-          const relSt = relStatusMap.get(hwId);
-          return {
-            ...hw,
-            status:
-              relSt || (String(hw.status) === 'closed' ? 'closed' : 'active'),
-          };
-        })
-      : [];
-
-    const classes = classRows.map((row) => ({
-      code: String(row.code),
-      title: String(row.title),
-      gradeLevel: String(row.grade_level || ''),
-      instructorName: String(row.instructor_name),
-      capacity: Number(row.capacity || 30),
-      roomOrLink: String(row.room_or_link),
-      scheduleSummary: String(row.schedule_summary),
-      description: String(row.description),
-    }));
-
-    const extAdmin = (savedExtendedState.admin || {}) as Record<string, unknown>;
-    const admin = adminRows[0]
-      ? {
-          ...extAdmin,
-          firstName: String(adminRows[0].first_name),
-          lastName: String(adminRows[0].last_name),
-          phone: String(adminRows[0].phone),
-          email: String(adminRows[0].email),
-          roleTitle: String(adminRows[0].role_title),
-          bio: String(adminRows[0].bio || ''),
-          avatarUrl: adminRows[0].avatar_url
-            ? String(adminRows[0].avatar_url)
-            : String(extAdmin.avatarUrl || ''),
-          password: '',
-        }
-      : undefined;
-
-    res.json({
-      success: true,
-      serverNowMs: Date.now(),
-      data: {
-        ...savedExtendedState,
-        ...(admin ? { admin } : {}),
-        classes: classes.length > 0 ? classes : savedExtendedState.classes || [],
-        students,
-        assignments: extAssignments,
-      },
-    });
-  } catch (err: unknown) {
-    res.status(500).json({
-      success: false,
-      message: 'خطا در خواندن اطلاعات از پایگاه داده MySQL.',
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-});
-
-app.post('/api/state', async (req: Request, res: Response): Promise<void> => {
-  const state = req.body;
-  if (!state || typeof state !== 'object') {
-    res.status(400).json({ success: false, message: 'داده نامعتبر است.' });
-    return;
-  }
-
-  // Enforce backend security rules on state mutations before touching the database
-  const callerRole = String(req.headers['x-user-role'] || '');
-  const prevExtState = await readExtendedState();
-  const prevAssignments = Array.isArray(prevExtState.assignments)
-    ? (prevExtState.assignments as Record<string, unknown>[])
-    : [];
-  const prevSubmissions = Array.isArray(prevExtState.submissions)
-    ? (prevExtState.submissions as Record<string, unknown>[])
-    : [];
-  const prevTickets = Array.isArray(prevExtState.tickets)
-    ? (prevExtState.tickets as Record<string, unknown>[])
-    : [];
-
-  // 0A. Prevent students from modifying assignment status/dueDate via /api/state
-  if (callerRole === 'student' && Array.isArray(state.assignments)) {
-    for (const prevHw of prevAssignments) {
-      const incomingHw = (state.assignments as Record<string, unknown>[]).find(
-        (a) => Number(a.id) === Number(prevHw.id)
-      );
-      if (
-        incomingHw &&
-        (String(incomingHw.status || 'active') !== String(prevHw.status || 'active') ||
-          String(incomingHw.dueDate || '') !== String(prevHw.dueDate || ''))
-      ) {
-        res.status(403).json({
+    let phone = normalizeIranianPhoneServer(current.phone);
+    if (req.body?.phone !== undefined) {
+      if (!isValidIranianPhoneServer(req.body.phone)) {
+        res.status(422).json({
           success: false,
-          message: 'دانش‌آموز مجاز به تغییر وضعیت یا مهلت تکلیف نیست.',
+          message:
+            'شماره موبایل واردشده معتبر نیست. لطفاً یک شماره همراه معتبر ایران (مثال: ۰۹۱۲۳۴۵۶۷۸۹) وارد کنید.',
+        });
+        return;
+      }
+      phone = normalizeIranianPhoneServer(req.body.phone);
+    }
+
+    const email =
+      req.body?.email !== undefined
+        ? normalizeDigitsServer(req.body.email).trim()
+        : String(current.email || '');
+    const bio =
+      req.body?.bio !== undefined
+        ? String(req.body.bio).trim()
+        : String(current.bio || '');
+    const classCode =
+      req.body?.classCode !== undefined
+        ? String(req.body.classCode).trim()
+        : String(current.class_code || '');
+    const status =
+      req.body?.status === 'pending' ||
+      req.body?.status === 'approved' ||
+      req.body?.status === 'rejected'
+        ? req.body.status
+        : String(current.status || 'pending');
+    const notes =
+      req.body?.notes !== undefined
+        ? String(req.body.notes).trim()
+        : String(current.notes || '');
+
+    // If a non-empty email was provided in the profile edit payload, require it to be valid
+    if (email && !isValidEmailServer(email)) {
+      res.status(422).json({
+        success: false,
+        message: 'فرمت آدرس پست الکترونیکی (ایمیل) واردشده برای دانش‌آموز معتبر نیست.',
+      });
+      return;
+    }
+
+    if (phone !== normalizeIranianPhoneServer(current.phone)) {
+      const [dup] = await pool.query<RowDataPacket[]>(
+        'SELECT `id` FROM `students` WHERE `phone` = ? AND `id` != ? LIMIT 1',
+        [phone, studentId]
+      );
+      if (dup.length > 0) {
+        res.status(409).json({
+          success: false,
+          message: 'این شماره موبایل متعلق به دانش‌آموز دیگری در سامانه است.',
         });
         return;
       }
     }
-  }
 
-  // 0B. Prevent adding or editing student submissions on closed or expired assignments
-  if (Array.isArray(state.submissions)) {
-    const incomingSubs = state.submissions as Record<string, unknown>[];
-    for (const sub of incomingSubs) {
-      const subId = Number(sub.id) || 0;
-      const hwId = Number(sub.assignmentId) || 0;
-      const studentId = Number(sub.studentId) || 0;
+    const previousAvatarUrl = String(current.avatar_url || '');
+    let finalAvatarRemoved = Boolean(current.avatar_removed);
+    let finalAvatarUrl: string | null = current.avatar_url
+      ? String(current.avatar_url)
+      : null;
 
-      const prevSub = prevSubmissions.find(
-        (p) =>
-          (subId > 0 && Number(p.id) === subId) ||
-          (Number(p.assignmentId) === hwId && Number(p.studentId) === studentId)
-      );
-
-      const isNewOrStudentEdited =
-        !prevSub ||
-        String(prevSub.fileName || '') !== String(sub.fileName || '') ||
-        String(prevSub.fileContent || '') !== String(sub.fileContent || '') ||
-        String(prevSub.fileDataUrl || '') !== String(sub.fileDataUrl || '');
-
-      if (isNewOrStudentEdited) {
-        const refHw =
-          prevAssignments.find((a) => Number(a.id) === hwId) ||
-          (Array.isArray(state.assignments)
-            ? (state.assignments as Record<string, unknown>[]).find(
-                (a) => Number(a.id) === hwId
-              )
-            : undefined);
-
-        if (refHw) {
-          if (String(refHw.status) === 'closed') {
-            res.status(403).json({
-              success: false,
-              code: 'ASSIGNMENT_CLOSED',
-              message:
-                'این تکلیف توسط مدرس بسته شده است و امکان ارسال یا ویرایش پاسخ وجود ندارد.',
-            });
-            return;
-          }
-          if (isAssignmentExpiredServer(String(refHw.dueDate || ''), Date.now())) {
-            res.status(403).json({
-              success: false,
-              code: 'ASSIGNMENT_EXPIRED',
-              message:
-                'مهلت ارسال این تکلیف به پایان رسیده است و امکان ارسال یا ویرایش پاسخ وجود ندارد.',
-            });
-            return;
-          }
-        }
+    if (req.body?.avatarRemoved !== undefined) {
+      finalAvatarRemoved = Boolean(req.body.avatarRemoved);
+      if (finalAvatarRemoved) {
+        finalAvatarUrl = null;
       }
     }
-  }
-
-  // 0C. Prevent student replies or reopening of closed tickets ('بسته شده')
-  if (Array.isArray(state.tickets)) {
-    const incomingTickets = state.tickets as Record<string, unknown>[];
-    for (const tk of incomingTickets) {
-      const tkId = Number(tk.id) || 0;
-      const prevTk = prevTickets.find((p) => Number(p.id) === tkId);
-      if (prevTk && String(prevTk.status) === 'بسته شده') {
-        const prevMsgs = Array.isArray(prevTk.messages)
-          ? (prevTk.messages as Record<string, unknown>[])
-          : [];
-        const nextMsgs = Array.isArray(tk.messages)
-          ? (tk.messages as Record<string, unknown>[])
-          : [];
-
-        const addedMsgs = nextMsgs.slice(prevMsgs.length);
-        const hasNewStudentReply = addedMsgs.some(
-          (m) => String(m.senderRole) === 'student'
-        );
-
-        if (
-          hasNewStudentReply ||
-          (callerRole === 'student' &&
-            (nextMsgs.length !== prevMsgs.length ||
-              String(tk.status) !== 'بسته شده'))
-        ) {
-          res.status(403).json({
-            success: false,
-            code: 'TICKET_CLOSED',
-            message:
-              'این تیکت توسط مدیریت بسته شده است و امکان ارسال پیام یا فایل جدید در آن وجود ندارد.',
-          });
-          return;
-        }
-      }
-    }
-  }
-
-  const conn = await pool.getConnection();
-  try {
-    await conn.beginTransaction();
-
-    // 1. Sync Admin profile (match by primary admin id so phone changes also persist)
-    if (state.admin && typeof state.admin === 'object') {
-      const [adminRows] = await conn.query<RowDataPacket[]>(
-        'SELECT id FROM admins ORDER BY id ASC LIMIT 1'
-      );
-      if (adminRows.length > 0) {
-        const adminId = Number(adminRows[0].id);
-        const adminPhone = normalizeDigitsServer(String(state.admin.phone || ''));
-        const avatarUrl = state.admin.avatarUrl
-          ? String(state.admin.avatarUrl)
-          : null;
-
-        if (state.admin.password && String(state.admin.password).length >= 6) {
-          const newAdminHash = await bcrypt.hash(String(state.admin.password), 12);
-          await conn.query(
-            `UPDATE admins
-             SET first_name = ?, last_name = ?, phone = IF(? <> '', ?, phone), email = ?, role_title = ?, bio = ?, avatar_url = ?, password_hash = ?
-             WHERE id = ?`,
-            [
-              String(state.admin.firstName || ''),
-              String(state.admin.lastName || ''),
-              adminPhone,
-              adminPhone,
-              String(state.admin.email || ''),
-              String(state.admin.roleTitle || ''),
-              String(state.admin.bio || ''),
-              avatarUrl,
-              newAdminHash,
-              adminId,
-            ]
-          );
-        } else {
-          await conn.query(
-            `UPDATE admins
-             SET first_name = ?, last_name = ?, phone = IF(? <> '', ?, phone), email = ?, role_title = ?, bio = ?, avatar_url = ?
-             WHERE id = ?`,
-            [
-              String(state.admin.firstName || ''),
-              String(state.admin.lastName || ''),
-              adminPhone,
-              adminPhone,
-              String(state.admin.email || ''),
-              String(state.admin.roleTitle || ''),
-              String(state.admin.bio || ''),
-              avatarUrl,
-              adminId,
-            ]
-          );
-        }
+    if (req.body?.avatarUrl !== undefined) {
+      finalAvatarUrl = req.body.avatarUrl ? String(req.body.avatarUrl) : null;
+      if (finalAvatarUrl) {
+        finalAvatarRemoved = false;
       }
     }
 
-    // 2. Sync Classes (support any class code and remove deleted classes)
-    if (Array.isArray(state.classes)) {
-      const activeCodes: string[] = [];
-      for (const cls of state.classes) {
-        const code = normalizeDigitsServer(String(cls.code || '')).trim();
-        if (code) {
-          activeCodes.push(code);
-          await conn.query(
-            `INSERT INTO classes (code, title, grade_level, instructor_name, capacity, room_or_link, schedule_summary, description)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE
-               title = VALUES(title),
-               grade_level = VALUES(grade_level),
-               instructor_name = VALUES(instructor_name),
-               capacity = VALUES(capacity),
-               room_or_link = VALUES(room_or_link),
-               schedule_summary = VALUES(schedule_summary),
-               description = VALUES(description)`,
-            [
-              code,
-              String(cls.title || ''),
-              String(cls.gradeLevel || ''),
-              String(cls.instructorName || ''),
-              Number(cls.capacity || 30),
-              String(cls.roomOrLink || ''),
-              String(cls.scheduleSummary || ''),
-              String(cls.description || ''),
-            ]
-          );
-        }
-      }
-      if (activeCodes.length > 0) {
-        await conn.query(
-          `DELETE FROM classes WHERE code NOT IN (${activeCodes
-            .map(() => '?')
-            .join(',')})`,
-          activeCodes
-        );
-      } else {
-        await conn.query('DELETE FROM classes');
-      }
+    let passwordHash = String(current.password_hash);
+    if (req.body?.password && String(req.body.password).trim().length >= 6) {
+      passwordHash = await bcrypt.hash(String(req.body.password).trim(), 10);
     }
 
-    // 3. Sync Students metadata (match by `id` first so phone edits, email, bio & class removals persist!)
-    if (Array.isArray(state.students)) {
-      for (const st of state.students) {
-        const stId = Number(st.id) || 0;
-        const cleanPhone = normalizeDigitsServer(String(st.phone || ''));
-        const email = String(st.email || '').trim().slice(0, 150);
-        const bio = String(st.bio || '').trim().slice(0, 500);
-        const classCode = normalizeDigitsServer(String(st.classCode ?? ''));
-        const validStatus = ['pending', 'approved', 'rejected'].includes(
-          String(st.status)
-        )
-          ? String(st.status)
-          : 'pending';
-        const avatarUrl = st.avatarRemoved
-          ? null
-          : st.avatarUrl
-          ? String(st.avatarUrl)
-          : null;
-        const avatarRemoved = st.avatarRemoved ? 1 : 0;
-
-        if (!/^09\d{9}$/.test(cleanPhone)) continue;
-
-        if (st.password && String(st.password).length >= 6) {
-          const stHash = await bcrypt.hash(String(st.password), 12);
-          if (stId > 0) {
-            const [existingById] = await conn.query<RowDataPacket[]>(
-              'SELECT id FROM students WHERE id = ? LIMIT 1',
-              [stId]
-            );
-            if (existingById.length > 0) {
-              await conn.query(
-                `UPDATE students
-                 SET first_name = ?, last_name = ?, phone = ?, email = ?, class_code = ?, status = ?, notes = ?, bio = ?, avatar_url = ?, avatar_removed = ?, password_hash = ?
-                 WHERE id = ?`,
-                [
-                  String(st.firstName || ''),
-                  String(st.lastName || ''),
-                  cleanPhone,
-                  email,
-                  classCode,
-                  validStatus,
-                  String(st.notes || ''),
-                  bio,
-                  avatarUrl,
-                  avatarRemoved,
-                  stHash,
-                  stId,
-                ]
-              );
-              continue;
-            }
-          }
-
-          await conn.query(
-            `INSERT INTO students (first_name, last_name, phone, email, class_code, status, notes, bio, avatar_url, avatar_removed, password_hash)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE
-               first_name = VALUES(first_name),
-               last_name = VALUES(last_name),
-               email = VALUES(email),
-               class_code = VALUES(class_code),
-               status = VALUES(status),
-               notes = VALUES(notes),
-               bio = VALUES(bio),
-               avatar_url = VALUES(avatar_url),
-               avatar_removed = VALUES(avatar_removed),
-               password_hash = VALUES(password_hash)`,
-            [
-              String(st.firstName || ''),
-              String(st.lastName || ''),
-              cleanPhone,
-              email,
-              classCode,
-              validStatus,
-              String(st.notes || ''),
-              bio,
-              avatarUrl,
-              avatarRemoved,
-              stHash,
-            ]
-          );
-        } else if (stId > 0) {
-          await conn.query(
-            `UPDATE students
-             SET first_name = ?, last_name = ?, phone = ?, email = ?, class_code = ?, status = ?, notes = ?, bio = ?, avatar_url = ?, avatar_removed = ?
-             WHERE id = ?`,
-            [
-              String(st.firstName || ''),
-              String(st.lastName || ''),
-              cleanPhone,
-              email,
-              classCode,
-              validStatus,
-              String(st.notes || ''),
-              bio,
-              avatarUrl,
-              avatarRemoved,
-              stId,
-            ]
-          );
-        } else {
-          await conn.query(
-            `UPDATE students
-             SET first_name = ?, last_name = ?, email = ?, class_code = ?, status = ?, notes = ?, bio = ?, avatar_url = ?, avatar_removed = ?
-             WHERE phone = ?`,
-            [
-              String(st.firstName || ''),
-              String(st.lastName || ''),
-              email,
-              classCode,
-              validStatus,
-              String(st.notes || ''),
-              bio,
-              avatarUrl,
-              avatarRemoved,
-              cleanPhone,
-            ]
-          );
-        }
-      }
-    }
-
-    // 4. Sync Relational Tables (`assignments`, `educational_resources`, `announcements`) for phpMyAdmin inspection
-    if (Array.isArray(state.assignments)) {
-      const assignmentIds: number[] = [];
-      for (const hw of state.assignments) {
-        const hwId = Number(hw.id) || 0;
-        if (hwId > 0) {
-          assignmentIds.push(hwId);
-          await conn.query(
-            `INSERT INTO assignments (id, title, description, class_code, due_date, max_score, attachment_name, status)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE
-               title = VALUES(title),
-               description = VALUES(description),
-               class_code = VALUES(class_code),
-               due_date = VALUES(due_date),
-               max_score = VALUES(max_score),
-               attachment_name = VALUES(attachment_name),
-               status = VALUES(status)`,
-            [
-              hwId,
-              String(hw.title || ''),
-              String(hw.description || ''),
-              String(hw.classCode || 'all'),
-              String(hw.dueDate || ''),
-              Number(hw.maxScore || 20),
-              String(hw.attachmentName || ''),
-              hw.status === 'closed' ? 'closed' : 'active',
-            ]
-          );
-        }
-      }
-      if (assignmentIds.length > 0) {
-        await conn.query(
-          `DELETE FROM assignments WHERE id NOT IN (${assignmentIds
-            .map(() => '?')
-            .join(',')})`,
-          assignmentIds
-        );
-      } else {
-        await conn.query('DELETE FROM assignments');
-      }
-    }
-
-    if (Array.isArray(state.resources)) {
-      const resourceIds: number[] = [];
-      for (const resItem of state.resources) {
-        const rId = Number(resItem.id) || 0;
-        if (rId > 0) {
-          resourceIds.push(rId);
-          const validCat = [
-            'جزوه PDF',
-            'فایل تمرین',
-            'لینک آموزشی',
-            'ویدیو ضبط‌شده',
-          ].includes(String(resItem.category))
-            ? String(resItem.category)
-            : 'جزوه PDF';
-          await conn.query(
-            `INSERT INTO educational_resources (id, title, category, class_code, url_or_filename, file_size, description, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE
-               title = VALUES(title),
-               category = VALUES(category),
-               class_code = VALUES(class_code),
-               url_or_filename = VALUES(url_or_filename),
-               file_size = VALUES(file_size),
-               description = VALUES(description)`,
-            [
-              rId,
-              String(resItem.title || ''),
-              validCat,
-              String(resItem.classCode || 'all'),
-              String(resItem.urlOrFileName || '').slice(0, 255),
-              String(resItem.fileSize || '—').slice(0, 40),
-              String(resItem.description || ''),
-              String(resItem.createdAt || ''),
-            ]
-          );
-        }
-      }
-      if (resourceIds.length > 0) {
-        await conn.query(
-          `DELETE FROM educational_resources WHERE id NOT IN (${resourceIds
-            .map(() => '?')
-            .join(',')})`,
-          resourceIds
-        );
-      } else {
-        await conn.query('DELETE FROM educational_resources');
-      }
-    }
-
-    if (Array.isArray(state.announcements)) {
-      const annIds: number[] = [];
-      for (const ann of state.announcements) {
-        const aId = Number(ann.id) || 0;
-        if (aId > 0) {
-          annIds.push(aId);
-          const validPriority = ['عادی', 'مهم', 'فوری'].includes(
-            String(ann.priority)
-          )
-            ? String(ann.priority)
-            : 'عادی';
-          await conn.query(
-            `INSERT INTO announcements (id, title, content, target_classes, priority, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE
-               title = VALUES(title),
-               content = VALUES(content),
-               target_classes = VALUES(target_classes),
-               priority = VALUES(priority)`,
-            [
-              aId,
-              String(ann.title || ''),
-              String(ann.content || ''),
-              String(ann.targetClasses || 'all'),
-              validPriority,
-              String(ann.createdAt || ''),
-            ]
-          );
-        }
-      }
-      if (annIds.length > 0) {
-        await conn.query(
-          `DELETE FROM announcements WHERE id NOT IN (${annIds
-            .map(() => '?')
-            .join(',')})`,
-          annIds
-        );
-      } else {
-        await conn.query('DELETE FROM announcements');
-      }
-    }
-
-    // 5. Persist extended state (without plain passwords) in `system_settings`
-    const [latestStudents] = await conn.query<RowDataPacket[]>(
-      'SELECT * FROM students ORDER BY id DESC'
-    );
-    const syncedStudents = latestStudents.map((row) => ({
-      id: Number(row.id),
-      firstName: String(row.first_name),
-      lastName: String(row.last_name),
-      phone: String(row.phone),
-      email: String(row.email || ''),
-      bio: String(row.bio || ''),
-      classCode: String(row.class_code ?? ''),
-      status: (row.status as 'pending' | 'approved' | 'rejected') || 'pending',
-      notes: String(row.notes || ''),
-      avatarUrl: row.avatar_removed
-        ? undefined
-        : row.avatar_url
-        ? String(row.avatar_url)
-        : undefined,
-      avatarRemoved: Boolean(row.avatar_removed),
-      createdAt: row.created_at
-        ? new Date(row.created_at).toLocaleDateString('fa-IR')
-        : '',
-    }));
-
-    const sanitizedState = {
-      ...state,
-      admin: state.admin ? { ...state.admin, password: '' } : undefined,
-      students: syncedStudents,
-    };
-
-    await conn.query(
-      `INSERT INTO system_settings (setting_key, setting_value)
-       VALUES ('app_extended_state', ?)
-       ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
-      [JSON.stringify(sanitizedState)]
+    await pool.query(
+      `UPDATE \`students\`
+       SET \`first_name\` = ?, \`last_name\` = ?, \`phone\` = ?, \`email\` = ?, \`class_code\` = ?, \`status\` = ?, \`notes\` = ?, \`bio\` = ?, \`avatar_url\` = ?, \`avatar_removed\` = ?, \`password_hash\` = ?
+       WHERE \`id\` = ?`,
+      [
+        firstName,
+        lastName,
+        phone,
+        email,
+        classCode,
+        status,
+        notes,
+        bio,
+        finalAvatarUrl,
+        finalAvatarRemoved ? 1 : 0,
+        passwordHash,
+        studentId,
+      ]
     );
 
-    await conn.commit();
+    if (previousAvatarUrl && previousAvatarUrl !== String(finalAvatarUrl || '')) {
+      setImmediate(() => {
+        void deleteUnreferencedUploadFile(previousAvatarUrl);
+      });
+    }
+
     res.json({
       success: true,
-      serverNowMs: Date.now(),
-      message: 'اطلاعات در پایگاه داده MySQL ذخیره شد.',
-      students: syncedStudents,
+      message: 'اطلاعات دانش‌آموز در پایگاه داده MySQL بروزرسانی شد.',
+      student: {
+        id: studentId,
+        firstName,
+        lastName,
+        phone,
+        email,
+        bio,
+        classCode,
+        status,
+        notes,
+        avatarUrl: finalAvatarRemoved ? '' : String(finalAvatarUrl || ''),
+        avatarRemoved: finalAvatarRemoved,
+        createdAt: formatServerPersianDateOnly(current.created_at),
+      },
     });
-  } catch (err: unknown) {
-    await conn.rollback();
-    console.error('[POST /api/state Error]:', err);
+  } catch (err) {
     res.status(500).json({
       success: false,
-      message: 'خطا در ذخیره‌سازی وضعیت در MySQL.',
-      error: err instanceof Error ? err.message : String(err),
+      message:
+        err instanceof Error
+          ? err.message
+          : 'خطا در بروزرسانی اطلاعات دانش‌آموز.',
     });
-  } finally {
-    conn.release();
   }
 });
 
 /**
- * 7. Admin Operations Endpoint
- * GET/POST /api/admin (also /api/admin/index.php)
+ * 12. Admin: Remove a Student's Custom Profile Picture (DELETE /api/admin/students/:id/avatar)
  */
-async function handleAdminController(req: Request, res: Response): Promise<void> {
-  const action = String(req.query.action || req.body?.action || 'summary');
+app.delete(
+  '/api/admin/students/:id/avatar',
+  async (req: Request, res: Response) => {
+    try {
+      const callerRole = String(req.headers['x-user-role'] || '').trim();
+      if (callerRole === 'student') {
+        res.status(403).json({
+          success: false,
+          message: 'دسترسی غیرمجاز.',
+        });
+        return;
+      }
 
-  try {
-    if (action === 'summary') {
-      const [[totalSt]] = await pool.query<RowDataPacket[]>(
-        'SELECT COUNT(*) AS cnt FROM students'
+      const studentId = Number(req.params.id);
+      if (!studentId) {
+        res.status(400).json({
+          success: false,
+          message: 'شناسه دانش‌آموز نامعتبر است.',
+        });
+        return;
+      }
+
+      const [rows] = await pool.query<RowDataPacket[]>(
+        'SELECT * FROM `students` WHERE `id` = ? LIMIT 1',
+        [studentId]
       );
-      const [[pendingSt]] = await pool.query<RowDataPacket[]>(
-        "SELECT COUNT(*) AS cnt FROM students WHERE status = 'pending'"
+      if (rows.length === 0) {
+        res.status(404).json({
+          success: false,
+          message: 'دانش‌آموز در پایگاه داده یافت نشد.',
+        });
+        return;
+      }
+
+      const current = rows[0];
+      const previousAvatarUrl = String(current.avatar_url || '');
+
+      await pool.query(
+        'UPDATE `students` SET `avatar_url` = NULL, `avatar_removed` = 1 WHERE `id` = ?',
+        [studentId]
       );
-      const [[pendingSub]] = await pool.query<RowDataPacket[]>(
-        "SELECT COUNT(*) AS cnt FROM assignment_submissions WHERE status = 'pending'"
-      );
-      const [[openTick]] = await pool.query<RowDataPacket[]>(
-        "SELECT COUNT(*) AS cnt FROM tickets WHERE status = 'در انتظار پاسخ'"
-      );
+
+      let fileDeleted = false;
+      if (previousAvatarUrl) {
+        fileDeleted = await deleteUnreferencedUploadFile(previousAvatarUrl);
+      }
 
       res.json({
         success: true,
-        stats: {
-          totalStudents: Number(totalSt?.cnt ?? 0),
-          pendingStudents: Number(pendingSt?.cnt ?? 0),
-          pendingSubmits: Number(pendingSub?.cnt ?? 0),
-          openTickets: Number(openTick?.cnt ?? 0),
+        fileDeleted,
+        message:
+          'تصویر پروفایل دانش‌آموز حذف شد و به آیکون پیش‌فرض بازنشانی گردید.',
+        student: {
+          id: studentId,
+          firstName: String(current.first_name),
+          lastName: String(current.last_name),
+          phone: normalizeIranianPhoneServer(current.phone),
+          email: String(current.email || ''),
+          bio: String(current.bio || ''),
+          classCode: String(current.class_code || ''),
+          status: String(current.status || 'approved'),
+          notes: String(current.notes || ''),
+          avatarUrl: '',
+          avatarRemoved: true,
+          createdAt: formatServerPersianDateOnly(current.created_at),
         },
       });
-      return;
-    }
-
-    if (action === 'approve_student') {
-      const studentId = Number(req.body?.student_id ?? 0);
-      const status = String(req.body?.status ?? 'approved');
-      await pool.query('UPDATE students SET status = ? WHERE id = ?', [
-        status,
-        studentId,
-      ]);
-      res.json({
-        success: true,
-        message: 'وضعیت دانش‌آموز در MySQL بروزرسانی شد.',
+    } catch (err) {
+      res.status(500).json({
+        success: false,
+        message:
+          err instanceof Error
+            ? err.message
+            : 'خطا در حذف تصویر پروفایل دانش‌آموز.',
       });
-      return;
     }
-
-    if (action === 'grade_submission') {
-      const submissionId = Number(req.body?.submission_id ?? 0);
-      const score = Number(req.body?.score ?? 0);
-      const feedback = String(req.body?.feedback ?? '').trim();
-      await pool.query(
-        "UPDATE assignment_submissions SET score = ?, teacher_feedback = ?, status = 'graded' WHERE id = ?",
-        [score, feedback, submissionId]
-      );
-      res.json({
-        success: true,
-        message: 'نمره و بازخورد تکلیف با موفقیت در MySQL ثبت شد.',
-      });
-      return;
-    }
-
-    res.json({
-      success: true,
-      message: 'سرویس مدیریت Node.js اسکول میت آماده است.',
-    });
-  } catch (err: unknown) {
-    console.error('[MySQL Admin Error]:', err);
-    res.status(500).json({
-      success: false,
-      message: 'خطا در اجرای عملیات پایگاه داده MySQL.',
-    });
   }
-}
+);
 
-app.all('/api/admin', handleAdminController);
-app.all('/api/admin/index.php', handleAdminController);
-
-let serverStarted = false;
-
-export function startApiServer(port = Number(process.env.API_PORT) || 3001): void {
-  if (serverStarted) return;
-  serverStarted = true;
-
-  const server = app.listen(port, '127.0.0.1', async () => {
-    const info = getDbInfo();
-    console.log(
-      `[ScoolMeet API] Node.js Express server running at http://127.0.0.1:${port}`
-    );
-    console.log(
-      `[ScoolMeet MySQL] Target -> ${info.user}@${info.host}:${info.port}/${info.database}`
-    );
-    const status = await testDatabaseConnection();
-    if (status.connected) {
-      console.log(
-        `[ScoolMeet MySQL] Connected to '${status.database}' successfully.`
-      );
-      try {
-        const migrationResult = await runMigrations();
-        if (migrationResult.applied.length > 0) {
-          console.log(
-            `[ScoolMeet Migrations] Applied ${migrationResult.applied.length} pending migration(s): ${migrationResult.applied.join(', ')}`
-          );
-        } else {
-          console.log(
-            `[ScoolMeet Migrations] Schema is up to date (${migrationResult.totalExecuted} migration(s) verified).`
-          );
-        }
-      } catch (migErr) {
-        console.error('[ScoolMeet Migrations] Error applying migrations:', migErr);
+/**
+ * 13. Admin: Close or Reopen an Assignment (POST /api/admin/assignments/:id/status)
+ */
+app.post(
+  '/api/admin/assignments/:id/status',
+  async (req: Request, res: Response) => {
+    try {
+      const callerRole = String(req.headers['x-user-role'] || '').trim();
+      if (callerRole === 'student') {
+        res.status(403).json({
+          success: false,
+          message: 'فقط مدیر سامانه مجاز به بستن یا بازگشایی تکلیف است.',
+        });
+        return;
       }
-    } else {
-      console.warn(
-        `[ScoolMeet MySQL] Warning: Could not connect to MySQL (${status.error}). Ensure MySQL service is running.`
+
+      const assignmentId = Number(req.params.id);
+      const nextStatus =
+        req.body?.status === 'closed' ? 'closed' : ('active' as const);
+
+      const [hwRows] = await pool.query<RowDataPacket[]>(
+        'SELECT * FROM `assignments` WHERE `id` = ? LIMIT 1',
+        [assignmentId]
       );
+      if (hwRows.length === 0) {
+        res.status(404).json({
+          success: false,
+          message: 'تکلیف مورد نظر در پایگاه داده یافت نشد.',
+        });
+        return;
+      }
+
+      const closedAtVal =
+        nextStatus === 'closed' ? formatServerPersianDateTime(new Date()) : null;
+
+      await pool.query(
+        'UPDATE `assignments` SET `status` = ?, `closed_at` = ? WHERE `id` = ?',
+        [nextStatus, closedAtVal, assignmentId]
+      );
+
+      res.json({
+        success: true,
+        status: nextStatus,
+        message:
+          nextStatus === 'closed'
+            ? 'تکلیف با موفقیت بسته شد و امکان ارسال یا ویرایش پاسخ برای دانش‌آموزان غیرفعال گردید.'
+            : 'تکلیف مجدداً بازگشایی شد و دانش‌آموزان در صورت نگذشتن مهلت تحویل می‌توانند پاسخ ارسال کنند.',
+      });
+    } catch (err) {
+      res.status(500).json({
+        success: false,
+        message:
+          err instanceof Error
+            ? err.message
+            : 'خطا در تغییر وضعیت تکلیف در پایگاه داده.',
+      });
     }
+  }
+);
+
+/**
+ * 14. Student: Submit or Update Assignment Response (POST /api/student/assignments/:id/submit)
+ * Enforces on backend:
+ * - Student must exist and have `status === 'approved'`
+ * - Assignment must exist
+ * - Assignment must NOT be manually closed (`status === 'closed'`)
+ * - Assignment deadline (`dueDate`) must NOT have passed
+ */
+app.post(
+  '/api/student/assignments/:id/submit',
+  async (req: Request, res: Response) => {
+    try {
+      const assignmentId = Number(req.params.id);
+      const studentId = Number(req.body?.studentId);
+      const fileName = String(req.body?.fileName || 'homework.zip').trim();
+      const fileContent = String(req.body?.fileContent || '').trim();
+      const fileDataUrl = req.body?.fileDataUrl
+        ? String(req.body.fileDataUrl)
+        : undefined;
+
+      if (!assignmentId || !studentId || !fileContent) {
+        res.status(422).json({
+          success: false,
+          message: 'اطلاعات ارسالی برای ثبت پاسخ تکلیف ناقص است.',
+        });
+        return;
+      }
+
+      // Verify student is approved
+      const approvalCheck = await verifyApprovedStudent(studentId);
+      if (!approvalCheck.allowed || !approvalCheck.studentRow) {
+        res.status(approvalCheck.httpStatus).json({
+          success: false,
+          code: approvalCheck.code,
+          message: approvalCheck.message,
+        });
+        return;
+      }
+
+      const [hwRows] = await pool.query<RowDataPacket[]>(
+        'SELECT * FROM `assignments` WHERE `id` = ? LIMIT 1',
+        [assignmentId]
+      );
+      if (hwRows.length === 0) {
+        res.status(404).json({
+          success: false,
+          message: 'تکلیف مورد نظر یافت نشد.',
+        });
+        return;
+      }
+
+      const hw = hwRows[0];
+      const lockCheck = getAssignmentLockStatusServer(
+        {
+          status: String(hw.status || 'active'),
+          dueDate: String(hw.due_date || ''),
+        },
+        Date.now()
+      );
+      if (lockCheck.locked) {
+        res.status(403).json({
+          success: false,
+          code: lockCheck.reason,
+          message: formatAssignmentStatusError(lockCheck.reason),
+        });
+        return;
+      }
+
+      const stRow = approvalCheck.studentRow;
+      const studentName = `${String(stRow.first_name || '')} ${String(stRow.last_name || '')}`.trim();
+      const classCode = String(stRow.class_code || '901');
+      const submittedAt = formatServerPersianDateTime(new Date());
+
+      const [existingSubs] = await pool.query<RowDataPacket[]>(
+        'SELECT * FROM `assignment_submissions` WHERE `assignment_id` = ? AND `student_id` = ? LIMIT 1',
+        [assignmentId, studentId]
+      );
+
+      let submissionRecord: Record<string, unknown>;
+      const isEdit = existingSubs.length > 0;
+
+      if (isEdit) {
+        const existing = existingSubs[0];
+        if (existing.score !== null && existing.score !== undefined) {
+          res.status(403).json({
+            success: false,
+            code: 'ASSIGNMENT_ALREADY_GRADED',
+            message:
+              'این تکلیف توسط مدرس تصحیح و نمره‌دهی شده است و امکان ویرایش پاسخ وجود ندارد.',
+          });
+          return;
+        }
+
+        const nextFileUrl =
+          fileDataUrl !== undefined
+            ? fileDataUrl
+            : existing.file_url
+            ? String(existing.file_url)
+            : null;
+
+        await pool.query(
+          `UPDATE \`assignment_submissions\`
+           SET \`file_name\` = ?, \`file_content\` = ?, \`file_url\` = ?, \`submitted_at\` = ?
+           WHERE \`id\` = ?`,
+          [fileName, fileContent, nextFileUrl, submittedAt, existing.id]
+        );
+
+        submissionRecord = {
+          id: Number(existing.id),
+          assignmentId,
+          studentId,
+          studentName,
+          classCode,
+          fileName,
+          fileContent,
+          fileDataUrl: nextFileUrl || undefined,
+          submittedAt,
+          score: null,
+          teacherFeedback: String(existing.teacher_feedback || ''),
+          status: 'pending',
+        };
+      } else {
+        const [ins] = await pool.query<ResultSetHeader>(
+          `INSERT INTO \`assignment_submissions\`
+            (\`assignment_id\`, \`student_id\`, \`student_name\`, \`class_code\`, \`file_name\`, \`file_content\`, \`file_url\`, \`submitted_at\`, \`score\`, \`teacher_feedback\`, \`status\`)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, '', 'pending')`,
+          [
+            assignmentId,
+            studentId,
+            studentName,
+            classCode,
+            fileName,
+            fileContent,
+            fileDataUrl || null,
+            submittedAt,
+          ]
+        );
+
+        submissionRecord = {
+          id: Number(ins.insertId),
+          assignmentId,
+          studentId,
+          studentName,
+          classCode,
+          fileName,
+          fileContent,
+          fileDataUrl,
+          submittedAt,
+          score: null,
+          teacherFeedback: '',
+          status: 'pending',
+        };
+      }
+
+      await pool.query(
+        `INSERT INTO \`activity_logs\` (\`title\`, \`detail\`, \`time_ago\`, \`category\`)
+         VALUES (?, ?, ?, 'assignment')`,
+        [
+          `${isEdit ? 'ویرایش پاسخ تکلیف' : 'ارسال تکلیف جدید'} توسط ${studentName}`,
+          `${String(hw.title || '')} — فایل: ${fileName}`,
+          submittedAt,
+        ]
+      );
+
+      res.json({
+        success: true,
+        isEdit,
+        submission: submissionRecord,
+        message: isEdit
+          ? 'پاسخ و فایل ارسالی شما با موفقیت در پایگاه داده بروزرسانی شد.'
+          : 'پاسخ و فایل تکلیف شما با موفقیت در پایگاه داده ثبت گردید.',
+      });
+    } catch (err) {
+      res.status(500).json({
+        success: false,
+        message:
+          err instanceof Error
+            ? err.message
+            : 'خطا در ثبت پاسخ تکلیف در پایگاه داده.',
+      });
+    }
+  }
+);
+
+/**
+ * 15. Student: Reply to a Ticket (POST /api/student/tickets/:id/reply)
+ * Enforces on backend:
+ * - Student must exist and have `status === 'approved'`
+ * - Ticket must exist and belong to the student
+ * - Ticket must NOT be closed (`status === 'بسته شده'`)
+ */
+app.post(
+  '/api/student/tickets/:id/reply',
+  async (req: Request, res: Response) => {
+    try {
+      const ticketId = Number(req.params.id);
+      const studentId = Number(req.body?.studentId);
+      const messageText = String(req.body?.message || '').trim();
+      const attachmentName = req.body?.attachmentName
+        ? String(req.body.attachmentName).trim()
+        : undefined;
+      const attachmentDataUrl = req.body?.attachmentDataUrl
+        ? String(req.body.attachmentDataUrl)
+        : undefined;
+
+      if (!ticketId || !studentId || !messageText) {
+        res.status(422).json({
+          success: false,
+          message: 'متن پیام تیکت نمی‌تواند خالی باشد.',
+        });
+        return;
+      }
+
+      const approvalCheck = await verifyApprovedStudent(studentId);
+      if (!approvalCheck.allowed || !approvalCheck.studentRow) {
+        res.status(approvalCheck.httpStatus).json({
+          success: false,
+          code: approvalCheck.code,
+          message: approvalCheck.message,
+        });
+        return;
+      }
+
+      const [tkRows] = await pool.query<RowDataPacket[]>(
+        'SELECT * FROM `tickets` WHERE `id` = ? LIMIT 1',
+        [ticketId]
+      );
+      if (tkRows.length === 0) {
+        res.status(404).json({
+          success: false,
+          message: 'تیکت مورد نظر در پایگاه داده یافت نشد.',
+        });
+        return;
+      }
+
+      const tk = tkRows[0];
+      if (Number(tk.student_id) !== studentId) {
+        res.status(403).json({
+          success: false,
+          message: 'شما مجاز به ارسال پیام در این تیکت نیستید.',
+        });
+        return;
+      }
+
+      if (String(tk.status) === 'بسته شده') {
+        res.status(403).json({
+          success: false,
+          code: 'TICKET_CLOSED',
+          message:
+            'این تیکت توسط مدیریت بسته شده است و امکان ارسال پیام یا فایل جدید در آن وجود ندارد.',
+        });
+        return;
+      }
+
+      const stRow = approvalCheck.studentRow;
+      const senderName = `${String(stRow.first_name || '')} ${String(stRow.last_name || '')}`.trim();
+      const sentAt = formatServerPersianDateTime(new Date());
+
+      await pool.query(
+        `INSERT INTO \`ticket_messages\`
+          (\`ticket_id\`, \`sender_role\`, \`sender_name\`, \`message\`, \`sent_at\`, \`attachment_name\`, \`attachment_url\`)
+         VALUES (?, 'student', ?, ?, ?, ?, ?)`,
+        [
+          ticketId,
+          senderName,
+          messageText,
+          sentAt,
+          attachmentName || null,
+          attachmentDataUrl || null,
+        ]
+      );
+
+      await pool.query(
+        "UPDATE `tickets` SET `status` = 'در انتظار پاسخ' WHERE `id` = ?",
+        [ticketId]
+      );
+
+      res.json({
+        success: true,
+        message: 'پیام شما با موفقیت در تیکت ثبت گردید.',
+      });
+    } catch (err) {
+      res.status(500).json({
+        success: false,
+        message:
+          err instanceof Error
+            ? err.message
+            : 'خطا در ارسال پیام تیکت در پایگاه داده.',
+      });
+    }
+  }
+);
+
+let apiServerStarted = false;
+
+/**
+ * Initialize Database Schema & Migrations on Startup, then Start Server
+ */
+export async function startApiServer(listenPort: number = PORT): Promise<void> {
+  if (apiServerStarted) return;
+  apiServerStarted = true;
+
+  const info = getDbInfo();
+  const connectionStatus = await testDatabaseConnection();
+
+  if (connectionStatus.connected) {
+    try {
+      const migrationResult = await runMigrations();
+      await migrateLegacyExtendedStateOnce();
+      console.log(
+        `[ScoolMeet API] Connected to MySQL (${info.user}@${info.host}:${info.port}/${info.database}). Applied migrations now: ${migrationResult.applied.length}`
+      );
+    } catch (err) {
+      console.error('[ScoolMeet API] Error running database migrations:', err);
+    }
+  } else {
+    console.error(
+      `[ScoolMeet API] Warning: Could not connect to MySQL (${info.host}:${info.port}/${info.database}): ${connectionStatus.error}`
+    );
+  }
+
+  const server = app.listen(listenPort, () => {
+    console.log(
+      `[ScoolMeet API] Node.js + Express backend listening on http://localhost:${listenPort}`
+    );
   });
 
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
+      // Port 3001 is already bound by an active server instance
       return;
     }
-    console.error('[ScoolMeet API Error]:', err);
+    console.error('[ScoolMeet API] Server error:', err);
   });
 }
 
-const isDirectRun =
-  process.argv[1] &&
-  (process.argv[1].endsWith('server/index.ts') ||
-    process.argv[1].endsWith('server\\index.ts'));
-
-if (isDirectRun) {
-  startApiServer();
+// Auto-start when run directly via tsx/node
+if (process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('server/index.ts')) {
+  void startApiServer(PORT);
 }
+

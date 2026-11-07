@@ -1,531 +1,360 @@
-import { DatabaseState, StudentRecord } from './types';
+import { ActivityLogItem, DatabaseState } from './types';
+import { formatPersianDateTime } from './validation';
 
-export const DB_STORAGE_KEY = 'scoolmeet_mysql_clean_state_v8';
+const SESSION_STUDENT_ID_KEY = 'scoolmeet_active_student_id_v1';
+const SESSION_ROLE_KEY = 'scoolmeet_active_role_v1';
 
 /**
- * Clean Initial State (No Demo Students, No Demo Records, No Hardcoded Passwords)
- * Actual records are loaded and synchronized with MySQL (`scoolmeet_db`).
+ * Configure API Base URL from Vite `.env` (`VITE_API_BASE_URL=/api`).
  */
-const INITIAL_DB_STATE: DatabaseState = {
-  admin: {
-    firstName: 'مدیر',
-    lastName: 'سامانه',
-    phone: '',
-    email: '',
-    roleTitle: 'مدیر و مدرس ارشد',
-    bio: '',
-    password: '',
-    avatarUrl: '',
-  },
-  activeStudentId: 0,
-  classes: [
-    {
-      code: '901',
-      title: 'کلاس ۹۰۱',
-      gradeLevel: '',
-      instructorName: '',
-      capacity: 30,
-      roomOrLink: '',
-      scheduleSummary: '',
-      description: '',
-    },
-    {
-      code: '902',
-      title: 'کلاس ۹۰۲',
-      gradeLevel: '',
-      instructorName: '',
-      capacity: 30,
-      roomOrLink: '',
-      scheduleSummary: '',
-      description: '',
-    },
-    {
-      code: '903',
-      title: 'کلاس ۹۰۳',
-      gradeLevel: '',
-      instructorName: '',
-      capacity: 30,
-      roomOrLink: '',
-      scheduleSummary: '',
-      description: '',
-    },
-  ],
-  students: [],
-  gradebookSessions: [],
-  gradebookEntries: [],
-  assignments: [],
-  submissions: [],
-  resources: [],
-  announcements: [],
-  tickets: [],
-  activities: [],
-  settings: {
-    platformName: 'اسکول میت | ScoolMeet',
-    academicYear: '۱۴۰۵-۱۴۰۶',
-    allowNewRegistrations: true,
-    requireAdminApproval: true,
-    maxUploadSizeMb: 25,
-    supportPhone: '',
-  },
-};
+const rawEnvBase = (
+  (import.meta as unknown as { env?: Record<string, string> }).env
+    ?.VITE_API_BASE_URL || '/api'
+).trim();
+export const API_BASE_URL = rawEnvBase.replace(/\/+$/, '') || '/api';
 
-export const API_BASE_URL: string =
-  ((import.meta as unknown as { env?: Record<string, string> }).env
-    ?.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
+let memoryDbCache: DatabaseState | null = null;
+let serverTimeOffsetMs = 0;
+const syncListeners: Array<(state: DatabaseState) => void> = [];
 
-let backendSyncInitialized = false;
-let memoryState: DatabaseState | null = null;
-const stateListeners: Array<() => void> = [];
-
-const ACTIVE_STUDENT_KEY = 'scoolmeet_active_student_id';
-const ACTIVE_ROLE_KEY = 'scoolmeet_active_user_role';
-let serverClockOffsetMs = 0;
-
+/**
+ * Return authoritative current timestamp in milliseconds (synchronized with backend server clock)
+ */
 export function getAuthoritativeNowMs(): number {
-  return Date.now() + serverClockOffsetMs;
+  return Date.now() + serverTimeOffsetMs;
+}
+
+/**
+ * Subscribe to backend MySQL state synchronization events
+ */
+export function onDbStateSynced(listener: (state: DatabaseState) => void): void {
+  syncListeners.push(listener);
+}
+
+/**
+ * Get or set the currently logged-in user role ('admin' | 'student' | '')
+ */
+export function getActiveUserRole(): 'admin' | 'student' | '' {
+  try {
+    const val = sessionStorage.getItem(SESSION_ROLE_KEY) || '';
+    if (val === 'admin' || val === 'student') return val;
+    return '';
+  } catch {
+    return '';
+  }
 }
 
 export function setActiveUserRole(role: 'admin' | 'student' | ''): void {
-  if (typeof window === 'undefined') return;
   try {
-    if (role) {
-      window.sessionStorage.setItem(ACTIVE_ROLE_KEY, role);
+    if (!role) {
+      sessionStorage.removeItem(SESSION_ROLE_KEY);
     } else {
-      window.sessionStorage.removeItem(ACTIVE_ROLE_KEY);
+      sessionStorage.setItem(SESSION_ROLE_KEY, role);
     }
   } catch {
-    // Ignore storage issues
-  }
-}
-
-export function getActiveUserRole(): 'admin' | 'student' | '' {
-  if (typeof window === 'undefined') return '';
-  try {
-    const val = window.sessionStorage.getItem(ACTIVE_ROLE_KEY);
-    if (val === 'admin' || val === 'student') return val;
-  } catch {
-    // Ignore
-  }
-  if (typeof document !== 'undefined') {
-    if (
-      !document
-        .getElementById('student-workspace-view')
-        ?.classList.contains('view-hidden')
-    ) {
-      return 'student';
-    }
-    if (
-      !document
-        .getElementById('admin-workspace-view')
-        ?.classList.contains('view-hidden')
-    ) {
-      return 'admin';
-    }
-  }
-  return '';
-}
-
-export function setActiveStudentSessionId(studentId: number): void {
-  if (typeof window === 'undefined') return;
-  try {
-    if (studentId > 0) {
-      window.localStorage.setItem(ACTIVE_STUDENT_KEY, String(studentId));
-    } else {
-      window.localStorage.removeItem(ACTIVE_STUDENT_KEY);
-    }
-  } catch {
-    // Ignore
+    // Ignore storage errors
   }
 }
 
 export function getActiveStudentSessionId(): number {
-  if (typeof window === 'undefined') return 0;
   try {
-    return Number(window.localStorage.getItem(ACTIVE_STUDENT_KEY) || 0) || 0;
+    const raw = sessionStorage.getItem(SESSION_STUDENT_ID_KEY);
+    return raw ? Number(raw) || 0 : 0;
   } catch {
     return 0;
   }
 }
 
-/**
- * Subscribe to backend state synchronization events so active Admin/Student views
- * automatically re-render as soon as MySQL state arrives without needing page reloads.
- */
-export function onDbStateSynced(listener: () => void): void {
-  stateListeners.push(listener);
-}
-
-function notifyStateListeners(): void {
-  for (const fn of stateListeners) {
-    try {
-      fn();
-    } catch {
-      // Ignore individual listener errors
-    }
-  }
-}
-
-/**
- * Write state to localStorage safely by stripping any legacy huge base64 strings (>100KB)
- * while keeping all server `/uploads/...` URLs intact so localStorage quota never overflows.
- */
-function writeLocalStorageSafe(state: DatabaseState): void {
-  if (typeof window === 'undefined') return;
-  if (state.activeStudentId > 0) {
-    setActiveStudentSessionId(state.activeStudentId);
-  }
+export function setActiveStudentSessionId(studentId: number): void {
   try {
-    window.localStorage.setItem(DB_STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    try {
-      const compact: DatabaseState = {
-        ...state,
-        resources: (state.resources || []).map((r) => ({
-          ...r,
-          fileDataUrl:
-            r.fileDataUrl && r.fileDataUrl.startsWith('data:') && r.fileDataUrl.length > 80000
-              ? undefined
-              : r.fileDataUrl,
-        })),
-        assignments: (state.assignments || []).map((a) => ({
-          ...a,
-          attachmentDataUrl:
-            a.attachmentDataUrl &&
-            a.attachmentDataUrl.startsWith('data:') &&
-            a.attachmentDataUrl.length > 80000
-              ? undefined
-              : a.attachmentDataUrl,
-        })),
-        submissions: (state.submissions || []).map((s) => ({
-          ...s,
-          fileDataUrl:
-            s.fileDataUrl && s.fileDataUrl.startsWith('data:') && s.fileDataUrl.length > 80000
-              ? undefined
-              : s.fileDataUrl,
-        })),
-      };
-      window.localStorage.setItem(DB_STORAGE_KEY, JSON.stringify(compact));
-    } catch {
-      // In-memory state remains authoritative
+    if (!studentId) {
+      sessionStorage.removeItem(SESSION_STUDENT_ID_KEY);
+    } else {
+      sessionStorage.setItem(SESSION_STUDENT_ID_KEY, String(studentId));
     }
-  }
-}
-
-/**
- * Pull latest records from Node.js + MySQL backend (/api/state) into memory & local cache
- */
-export async function syncStateFromBackend(): Promise<DatabaseState> {
-  const current = loadDbState();
-  try {
-    const res = await fetch(`${API_BASE_URL}/state`, {
-      method: 'GET',
-      headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
-    });
-    if (!res.ok) return current;
-    const json = (await res.json()) as {
-      success?: boolean;
-      serverNowMs?: number;
-      data?: Partial<DatabaseState>;
-    };
-    if (typeof json.serverNowMs === 'number' && json.serverNowMs > 0) {
-      serverClockOffsetMs = json.serverNowMs - Date.now();
-    }
-    if (json.success && json.data) {
-      const sessionStId = getActiveStudentSessionId();
-      const merged: DatabaseState = {
-        ...current,
-        ...json.data,
-        activeStudentId:
-          sessionStId ||
-          current.activeStudentId ||
-          Number(json.data.activeStudentId || 0),
-        admin: {
-          ...current.admin,
-          ...(json.data.admin || {}),
-          password: '',
-        },
-        settings: {
-          ...current.settings,
-          ...(json.data.settings || {}),
-        },
-        classes: Array.isArray(json.data.classes)
-          ? json.data.classes
-          : current.classes,
-        students: Array.isArray(json.data.students)
-          ? json.data.students
-          : current.students,
-        assignments: Array.isArray(json.data.assignments)
-          ? json.data.assignments
-          : current.assignments,
-        submissions: Array.isArray(json.data.submissions)
-          ? json.data.submissions
-          : current.submissions,
-        resources: Array.isArray(json.data.resources)
-          ? json.data.resources
-          : current.resources,
-        announcements: Array.isArray(json.data.announcements)
-          ? json.data.announcements
-          : current.announcements,
-        tickets: Array.isArray(json.data.tickets)
-          ? json.data.tickets
-          : current.tickets,
-        gradebookSessions: Array.isArray(json.data.gradebookSessions)
-          ? json.data.gradebookSessions
-          : current.gradebookSessions,
-        gradebookEntries: Array.isArray(json.data.gradebookEntries)
-          ? json.data.gradebookEntries
-          : current.gradebookEntries,
-      };
-      memoryState = merged;
-      writeLocalStorageSafe(merged);
-      notifyStateListeners();
-      return merged;
+    if (memoryDbCache) {
+      memoryDbCache.activeStudentId = studentId;
     }
   } catch {
-    // Ignore when offline
-  }
-  return current;
-}
-
-export function loadDbState(): DatabaseState {
-  if (!backendSyncInitialized && typeof window !== 'undefined') {
-    backendSyncInitialized = true;
-    void syncStateFromBackend();
-  }
-  if (memoryState) {
-    const sessionStId = getActiveStudentSessionId();
-    if (sessionStId && !memoryState.activeStudentId) {
-      memoryState.activeStudentId = sessionStId;
-    }
-    return memoryState;
-  }
-  try {
-    const raw =
-      typeof window !== 'undefined'
-        ? window.localStorage.getItem(DB_STORAGE_KEY)
-        : null;
-    if (!raw) {
-      const fresh = JSON.parse(JSON.stringify(INITIAL_DB_STATE)) as DatabaseState;
-      fresh.activeStudentId = getActiveStudentSessionId();
-      memoryState = fresh;
-      writeLocalStorageSafe(fresh);
-      return fresh;
-    }
-    const parsed = JSON.parse(raw) as Partial<DatabaseState>;
-    const hydrated: DatabaseState = {
-      ...INITIAL_DB_STATE,
-      ...parsed,
-      activeStudentId:
-        getActiveStudentSessionId() || Number(parsed.activeStudentId || 0),
-      admin: {
-        ...INITIAL_DB_STATE.admin,
-        ...(parsed.admin || {}),
-        password: '',
-      },
-      settings: {
-        ...INITIAL_DB_STATE.settings,
-        ...(parsed.settings || {}),
-      },
-    };
-    memoryState = hydrated;
-    return hydrated;
-  } catch {
-    const fallback = JSON.parse(JSON.stringify(INITIAL_DB_STATE)) as DatabaseState;
-    memoryState = fallback;
-    return fallback;
+    // Ignore storage errors
   }
 }
 
 /**
- * Awaited persistence to Node.js + MySQL backend (`POST /api/state`).
- * Throws an Error if the backend rejects the operation or fails to save to MySQL,
- * ensuring callers never display false success messages.
+ * Empty structural state before MySQL backend responds.
+ * Does NOT contain any demo students, demo classes, or hardcoded admin credentials.
  */
-export async function persistDbState(
-  state: DatabaseState
-): Promise<{ success: boolean; message: string }> {
-  memoryState = state;
-  writeLocalStorageSafe(state);
+function createEmptyState(): DatabaseState {
+  return {
+    admin: {
+      firstName: '',
+      lastName: '',
+      phone: '',
+      email: '',
+      roleTitle: '',
+      bio: '',
+      password: '',
+      avatarUrl: '',
+    },
+    activeStudentId: getActiveStudentSessionId(),
+    classes: [],
+    students: [],
+    gradebookSessions: [],
+    gradebookEntries: [],
+    assignments: [],
+    submissions: [],
+    resources: [],
+    announcements: [],
+    tickets: [],
+    activities: [],
+    settings: {
+      platformName: 'پلتفرم آموزشی اسکول میت',
+      academicYear: '۱۴۰۵–۱۴۰۶',
+      allowNewRegistrations: true,
+      requireAdminApproval: true,
+      maxUploadSizeMb: 15,
+      supportPhone: '',
+    },
+  };
+}
 
-  if (typeof window === 'undefined') {
-    return { success: true, message: 'ذخیره شد.' };
-  }
-
-  const role = getActiveUserRole();
+function buildStateHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
     Accept: 'application/json',
   };
+  const role = getActiveUserRole();
+  const studentId = getActiveStudentSessionId();
   if (role) {
     headers['X-User-Role'] = role;
   }
-
-  let res: Response;
-  try {
-    res = await fetch(`${API_BASE_URL}/state`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(state),
-    });
-  } catch {
-    throw new Error('خطا در برقراری ارتباط با سرور Node.js و پایگاه داده MySQL.');
+  if (studentId > 0) {
+    headers['X-Student-Id'] = String(studentId);
   }
-
-  const json = (await res.json().catch(() => ({}))) as {
-    success?: boolean;
-    serverNowMs?: number;
-    message?: string;
-    students?: StudentRecord[];
-  };
-
-  if (typeof json.serverNowMs === 'number' && json.serverNowMs > 0) {
-    serverClockOffsetMs = json.serverNowMs - Date.now();
-  }
-
-  if (!res.ok || !json.success) {
-    // Re-sync from backend so optimistic in-memory mutations are rolled back
-    await syncStateFromBackend();
-    throw new Error(
-      json.message || 'خطا در ذخیره‌سازی اطلاعات در پایگاه داده MySQL.'
-    );
-  }
-
-  if (Array.isArray(json.students)) {
-    state.students = json.students;
-    memoryState = state;
-    writeLocalStorageSafe(state);
-  }
-
-  notifyStateListeners();
-  return {
-    success: true,
-    message: json.message || 'اطلاعات در پایگاه داده MySQL ذخیره شد.',
-  };
+  return headers;
 }
 
 /**
- * Synchronous wrapper for legacy callers; triggers persistDbState in background.
- * Prefer `await persistDbState(state)` for all interactive user operations.
+ * Synchronize application state from the Node.js + MySQL backend (`GET /api/state`)
  */
-export function saveDbState(state: DatabaseState): void {
-  void persistDbState(state).catch(() => {
-    // Handled by syncStateFromBackend rollback
-  });
+export async function syncStateFromBackend(): Promise<DatabaseState> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/state`, {
+      method: 'GET',
+      headers: buildStateHeaders(),
+    });
+
+    if (response.status === 403 || response.status === 401) {
+      // Student is pending approval, rejected, or unauthorized
+      if (getActiveUserRole() === 'student') {
+        setActiveUserRole('');
+        setActiveStudentSessionId(0);
+      }
+      return loadDbState();
+    }
+
+    if (!response.ok) {
+      return loadDbState();
+    }
+
+    const data = await response.json();
+    if (typeof data?.serverNowMs === 'number') {
+      serverTimeOffsetMs = data.serverNowMs - Date.now();
+    }
+
+    if (data?.success && data?.state) {
+      const currentActiveStudentId =
+        getActiveStudentSessionId() ||
+        memoryDbCache?.activeStudentId ||
+        data.state.activeStudentId ||
+        0;
+
+      const merged: DatabaseState = {
+        ...createEmptyState(),
+        ...data.state,
+        activeStudentId: currentActiveStudentId,
+      };
+      memoryDbCache = merged;
+      syncListeners.forEach((cb) => cb(merged));
+      return merged;
+    }
+  } catch {
+    // Fallback to in-memory state if backend is unreachable
+  }
+  return loadDbState();
 }
 
-export function resetDbState(): void {
-  memoryState = null;
+/**
+ * Load current state from memory (populated from MySQL via `syncStateFromBackend`).
+ * Never uses `localStorage` as a substitute for MySQL persistence.
+ */
+export function loadDbState(): DatabaseState {
+  if (!memoryDbCache) {
+    memoryDbCache = createEmptyState();
+  }
+  const sessionStId = getActiveStudentSessionId();
+  if (sessionStId > 0) {
+    memoryDbCache.activeStudentId = sessionStId;
+  }
+  return memoryDbCache;
+}
+
+/**
+ * Save state to memory and persist to the Node.js + MySQL backend (`POST /api/state`).
+ * Returns a promise that resolves after the MySQL write completes and re-syncs state from MySQL.
+ */
+export async function persistDbState(state: DatabaseState): Promise<{
+  success: boolean;
+  message: string;
+}> {
+  memoryDbCache = state;
+  if (state.activeStudentId) {
+    setActiveStudentSessionId(state.activeStudentId);
+  }
+
   try {
-    window.localStorage.removeItem(DB_STORAGE_KEY);
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...buildStateHeaders(),
+    };
+    const response = await fetch(`${API_BASE_URL}/state`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ state }),
+    });
+    const data = await response.json();
+    if (!response.ok || !data?.success) {
+      return {
+        success: false,
+        message: data?.message || 'خطا در ذخیره‌سازی تغییرات در پایگاه داده MySQL.',
+      };
+    }
+    await syncStateFromBackend();
+    return {
+      success: true,
+      message: data.message || 'تغییرات با موفقیت در پایگاه داده ذخیره گردید.',
+    };
   } catch {
-    // Ignore storage issues
+    return {
+      success: false,
+      message: 'خطا در برقراری ارتباط با سرور Node.js جهت ذخیره‌سازی در MySQL.',
+    };
   }
 }
 
+export function saveDbState(state: DatabaseState): void {
+  void persistDbState(state);
+}
+
+/**
+ * Re-fetch clean state from MySQL backend (never seeds demo data)
+ */
+export function resetDbState(): DatabaseState {
+  const empty = createEmptyState();
+  memoryDbCache = empty;
+  void syncStateFromBackend();
+  return empty;
+}
+
+/**
+ * Upload a file to `/api/upload` using XMLHttpRequest to support real-time upload progress (0% to 100%)
+ * and files larger than 1 MB.
+ */
+export function uploadFileWithProgress(
+  file: File,
+  onProgress?: (percent: number) => void
+): Promise<{
+  success: boolean;
+  fileName?: string;
+  fileUrl?: string;
+  fileSize?: string;
+  message?: string;
+}> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onerror = () => {
+      resolve({
+        success: false,
+        message: 'خطا در خواندن فایل انتخاب‌شده از سیستم شما.',
+      });
+    };
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '');
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${API_BASE_URL}/upload`, true);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable && onProgress) {
+          const pct = Math.min(99, Math.round((event.loaded / event.total) * 100));
+          onProgress(pct);
+        }
+      };
+
+      xhr.onload = () => {
+        try {
+          const response = JSON.parse(xhr.responseText || '{}');
+          if (xhr.status >= 200 && xhr.status < 300 && response.success) {
+            if (onProgress) onProgress(100);
+            resolve({
+              success: true,
+              fileName: response.fileName || file.name,
+              fileUrl: response.fileUrl,
+              fileSize: response.fileSize,
+              message: response.message,
+            });
+          } else {
+            resolve({
+              success: false,
+              message: response.message || 'خطا در آپلود فایل در سرور.',
+            });
+          }
+        } catch {
+          resolve({
+            success: false,
+            message: 'پاسخ سرور هنگام آپلود فایل معتبر نبود.',
+          });
+        }
+      };
+
+      xhr.onerror = () => {
+        resolve({
+          success: false,
+          message: 'خطای شبکه هنگام ارسال فایل به سرور.',
+        });
+      };
+
+      xhr.send(
+        JSON.stringify({
+          fileName: file.name,
+          dataUrl,
+        })
+      );
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * Append a new activity log entry and optionally persist immediately
+ */
 export function logAdminActivity(
   state: DatabaseState,
   title: string,
   detail: string,
-  category: 'student' | 'assignment' | 'ticket' | 'announcement',
-  skipAutoSave = false
+  category: ActivityLogItem['category'],
+  skipSave = false
 ): void {
   state.activities.unshift({
-    id: Date.now() + Math.floor(Math.random() * 1000),
+    id: Date.now(),
     title,
     detail,
-    timeAgo: 'هم‌اکنون',
+    timeAgo: formatPersianDateTime(new Date()),
     category,
   });
-  if (state.activities.length > 15) {
-    state.activities = state.activities.slice(0, 15);
+  if (state.activities.length > 35) {
+    state.activities = state.activities.slice(0, 35);
   }
-  memoryState = state;
-  writeLocalStorageSafe(state);
-  if (!skipAutoSave) {
-    void persistDbState(state);
+  if (!skipSave) {
+    saveDbState(state);
   }
-}
-
-/**
- * Upload a file (resource, ticket attachment, homework attachment, or avatar)
- * to `POST /api/upload` using XMLHttpRequest so real byte-level upload progress (0%–100%)
- * is reported via `onProgress`. Supports files >1MB up to maxUploadSizeMb.
- */
-export function uploadFileWithProgress(
-  file: File,
-  onProgress?: (percent: number, loadedBytes: number, totalBytes: number) => void
-): Promise<{
-  success: boolean;
-  fileUrl?: string;
-  fileName?: string;
-  fileSize?: string;
-  sizeBytes?: number;
-  message?: string;
-}> {
-  return new Promise((resolve) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${API_BASE_URL}/upload`, true);
-    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-    xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
-    xhr.setRequestHeader('Accept', 'application/json');
-
-    xhr.upload.onprogress = (event: ProgressEvent) => {
-      if (event.lengthComputable && onProgress) {
-        const pct = Math.min(100, Math.round((event.loaded / event.total) * 100));
-        onProgress(pct, event.loaded, event.total);
-      }
-    };
-
-    xhr.onload = () => {
-      try {
-        const res = JSON.parse(xhr.responseText || '{}') as {
-          success?: boolean;
-          fileUrl?: string;
-          fileName?: string;
-          fileSize?: string;
-          sizeBytes?: number;
-          message?: string;
-        };
-        if (xhr.status >= 200 && xhr.status < 300 && res.success && res.fileUrl) {
-          if (onProgress) onProgress(100, file.size, file.size);
-          resolve({
-            success: true,
-            fileUrl: res.fileUrl,
-            fileName: res.fileName || file.name,
-            fileSize: res.fileSize || '',
-            sizeBytes: res.sizeBytes ?? file.size,
-            message: res.message,
-          });
-        } else {
-          resolve({
-            success: false,
-            message:
-              res.message ||
-              `خطا در آپلود فایل (کد وضعیت: ${xhr.status || 'نامشخص'}).`,
-          });
-        }
-      } catch {
-        resolve({
-          success: false,
-          message: 'پاسخ سرور هنگام آپلود فایل معتبر نبود.',
-        });
-      }
-    };
-
-    xhr.onerror = () => {
-      resolve({
-        success: false,
-        message: 'خطای شبکه هنگام ارسال فایل به سرور رخ داد.',
-      });
-    };
-
-    xhr.onabort = () => {
-      resolve({
-        success: false,
-        message: 'آپلود فایل لغو شد.',
-      });
-    };
-
-    xhr.send(file);
-  });
 }

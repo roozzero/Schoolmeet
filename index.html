@@ -34,7 +34,7 @@
          ======================================================================= -->
     <div id="public-auth-view" class="reference-viewport-shell">
       <main class="reference-split-container" dir="ltr">
-        <!-- سمت چپ (#EDF7FD): فقط تصویر کلاژ دانش‌آموزان (بدون متن) -->
+        <!-- سمت چپ: پنل تصویر کلاژ دانش‌آموزان مطابق طرح اصلی با رنگ‌بندی داشبورد -->
         <section
           class="collage-showcase-half"
           dir="rtl"
@@ -42,32 +42,68 @@
         >
           <div
             class="student-collage-graphic"
+            dir="ltr"
             role="img"
             aria-label="دانش‌آموزان اسکول میت"
-          ></div>
+          >
+            <span class="collage-decor-circle collage-decor-circle-top" aria-hidden="true"></span>
+            <span class="collage-decor-circle collage-decor-circle-bottom" aria-hidden="true"></span>
+            <div class="collage-student-grid">
+              <div class="collage-student-tile collage-student-tile-tl"></div>
+              <div class="collage-student-tile collage-student-tile-tr"></div>
+              <div class="collage-student-tile collage-student-tile-bl"></div>
+              <div class="collage-student-tile collage-student-tile-br"></div>
+            </div>
+          </div>
         </section>
 
-        <!-- سمت راست (#FFFFFF): بخش ورود به حساب و ثبت‌نام دانش‌آموز -->
+        <!-- سمت راست: بخش ورود به حساب و ثبت‌نام دانش‌آموز -->
         <section
           class="auth-white-half"
           dir="rtl"
           aria-label="بخش ورود و ثبت‌نام دانش‌آموز"
         >
           <div class="auth-content-column">
-            <!-- لوگوی اسکول میت (بدون زیرمتن) -->
-            <div class="mb-5">
+            <!-- هدر برند اسکول میت (بدون بج) -->
+            <div class="mb-4 flex items-center justify-between gap-3">
               <div class="brand-logo-lockup">
                 <div class="brand-school-icon" aria-hidden="true"></div>
-                <div class="flex items-center gap-2">
-                  <span class="text-2xl font-black text-[#10375C] tracking-tight leading-none">
+                <div>
+                  <span class="text-2xl font-black text-[#251B15] tracking-tight leading-none block">
                     اسکول میت
+                  </span>
+                  <span class="text-[11px] font-bold text-[#1B5E5A] mt-1 block">
+                    پلتفرم مدیریت کلاس و آموزش هوشمند
                   </span>
                 </div>
               </div>
             </div>
 
-            <!-- تب‌های دوگانه: فقط ورود به حساب و ثبت‌نام دانش‌آموز -->
-            <div class="mb-5">
+            <!-- بنر وضعیت در انتظار تأیید مدیر برای دانش‌آموزان تازه‌ثبت‌نام‌شده -->
+            <div
+              id="auth-pending-approval-banner"
+              class="hidden mb-4 p-3.5 rounded-2xl bg-gradient-to-l from-[#FFFBEB] to-[#FEF3C7] border border-[#F59E0B]/40 text-xs text-[#92400E] leading-relaxed shadow-xs"
+              role="status"
+            >
+              <div class="flex items-start gap-2.5">
+                <span class="w-6 h-6 rounded-lg bg-[#F59E0B]/20 text-[#D97706] flex items-center justify-center shrink-0 mt-0.5">
+                  <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.3">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </span>
+                <div>
+                  <div class="font-extrabold text-[#78350F] mb-0.5">
+                    حساب کاربری در انتظار تأیید مدیر سامانه
+                  </div>
+                  <p id="auth-pending-approval-text" class="m-0 text-[11.5px] text-[#92400E]">
+                    حساب شما ثبت شده است و پس از بررسی و تأیید توسط مدیر سامانه، امکان ورود به پنل دانش‌آموزی برای شما فعال خواهد شد.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <!-- تب‌های دوگانه: ورود به حساب و ثبت‌نام دانش‌آموز -->
+            <div class="mb-4">
               <div
                 class="mode-tabs-bar"
                 role="tablist"
@@ -98,16 +134,21 @@
 
             <!-- بخش اول: ورود به حساب -->
             <div id="panel-login" role="tabpanel" aria-labelledby="tab-btn-login">
-              <h1 class="text-xl font-extrabold text-[#10375C] mb-4 m-0 text-justify">
-                ورود به حساب کاربری
-              </h1>
+              <div class="mb-3.5">
+                <h1 class="text-lg font-extrabold text-[#251B15] m-0">
+                  ورود به حساب کاربری
+                </h1>
+                <p class="text-xs text-[#6E5D4F] mt-1 m-0">
+                  شماره موبایل و رمز عبور خود را برای ورود به پنل آموزشی وارد نمایید.
+                </p>
+              </div>
 
               <form id="form-login" novalidate>
-                <div class="ice-steps-card space-y-4">
-                  <!-- اینپوت اول: شماره تلفن (با اعداد فارسی) -->
+                <div class="ice-steps-card space-y-3.5">
+                  <!-- اینپوت اول: شماره تلفن همراه -->
                   <div class="scool-input-group">
                     <label for="login-phone" class="scool-field-label">
-                      شماره تلفن
+                      شماره موبایل
                     </label>
                     <div class="school-input-wrapper">
                       <input
@@ -115,8 +156,8 @@
                         id="login-phone"
                         name="phone"
                         class="school-input tabular-nums"
-                        placeholder="۰۹۱۲۰۰۰۰۰۰۰"
-                        maxlength="11"
+                        placeholder="۰۹۱۲۳۴۵۶۷۸۹"
+                        maxlength="14"
                         autocomplete="tel"
                         required
                       />
@@ -124,11 +165,20 @@
                     <div class="field-error-msg" role="alert"></div>
                   </div>
 
-                  <!-- اینپوت دوم: رمز عبور + فراموشی رمز عبور در زیر آن -->
+                  <!-- اینپوت دوم: رمز عبور + فراموشی رمز عبور -->
                   <div class="scool-input-group">
-                    <label for="login-password" class="scool-field-label">
-                      رمز عبور
-                    </label>
+                    <div class="flex items-center justify-between mb-1.5">
+                      <label for="login-password" class="scool-field-label !mb-0">
+                        رمز عبور
+                      </label>
+                      <button
+                        type="button"
+                        id="btn-forgot-password"
+                        class="text-[11.5px] font-bold text-[#1B5E5A] hover:text-[#5A3A22] hover:underline bg-transparent border-none p-0 cursor-pointer"
+                      >
+                        فراموشی رمز عبور؟
+                      </button>
+                    </div>
                     <div class="school-input-wrapper">
                       <input
                         type="password"
@@ -156,46 +206,13 @@
                       </button>
                     </div>
                     <div class="field-error-msg" role="alert"></div>
-
-                    <!-- فراموشی رمز عبور دقیقاً زیر اینپوت رمز عبور + دسترسی سریع حساب ادمین و دانش‌آموز تست -->
-                    <div class="mt-2.5 space-y-2">
-                      <div class="flex items-center justify-between gap-2">
-                        <button
-                          type="button"
-                          id="btn-forgot-password"
-                          class="text-xs font-bold text-[#10375C] hover:underline bg-transparent border-none p-0 cursor-pointer"
-                        >
-                          فراموشی رمز عبور؟
-                        </button>
-
-                        <button
-                          type="button"
-                          id="btn-admin-quick-login"
-                          class="text-[11px] font-bold text-[#274C6E] hover:text-[#10375C] underline bg-transparent border-none p-0 cursor-pointer tabular-nums"
-                          title="شماره ادمین: ۰۹۱۲۰۰۰۰۰۰۰ | رمز: admin1234"
-                        >
-                          ورود با حساب ادمین (۰۹۱۲۰۰۰۰۰۰۰)
-                        </button>
-                      </div>
-
-                      <div class="flex items-center justify-end">
-                        <button
-                          type="button"
-                          id="btn-student-quick-login"
-                          class="text-[11px] font-extrabold text-[#0D9488] hover:text-[#0F766E] underline bg-transparent border-none p-0 cursor-pointer tabular-nums"
-                          title="اکانت دانش‌آموز تست: امیرحسین رضایی | شماره: ۰۹۱۲۱۱۱۲۲۳۳ | رمز: student1234"
-                        >
-                          ورود با اکانت دانش‌آموز تست (۰۹۱۲۱۱۱۲۲۳۳)
-                        </button>
-                      </div>
-                    </div>
                   </div>
                 </div>
 
-                <!-- دکمه ورود (بدون متن اضافه در زیر آن) -->
-                <div class="mt-5">
+                <!-- دکمه ورود -->
+                <div class="mt-4">
                   <button type="submit" id="btn-submit-login" class="btn-primary-school">
-                    <span>ورود به حساب</span>
+                    <span>ورود به سامانه</span>
                   </button>
                 </div>
               </form>
@@ -208,17 +225,22 @@
               role="tabpanel"
               aria-labelledby="tab-btn-register"
             >
-              <h2 class="text-xl font-extrabold text-[#10375C] mb-3.5 m-0 text-justify">
-                ثبت‌نام دانش‌آموز
-              </h2>
+              <div class="mb-3">
+                <h2 class="text-lg font-extrabold text-[#251B15] m-0">
+                  ثبت‌نام دانش‌آموز جدید
+                </h2>
+                <p class="text-xs text-[#6E5D4F] mt-0.5 m-0">
+                  تکمیل تمامی فیلدهای زیر برای ثبت‌نام دانش‌آموز الزامی است.
+                </p>
+              </div>
 
               <form id="form-student-register" novalidate>
-                <div class="ice-steps-card space-y-3">
-                  <!-- ردیف اول: نام و نام خانوادگی -->
-                  <div class="grid grid-cols-2 gap-3">
+                <div class="ice-steps-card space-y-2.5">
+                  <!-- ردیف اول: نام و نام خانوادگی (اجباری) -->
+                  <div class="grid grid-cols-2 gap-2.5">
                     <div class="scool-input-group">
                       <label for="reg-firstname" class="scool-field-label">
-                        نام
+                        نام <span class="text-[#E11D48]">*</span>
                       </label>
                       <div class="school-input-wrapper">
                         <input
@@ -235,7 +257,7 @@
 
                     <div class="scool-input-group">
                       <label for="reg-lastname" class="scool-field-label">
-                        نام خانوادگی
+                        نام خانوادگی <span class="text-[#E11D48]">*</span>
                       </label>
                       <div class="school-input-wrapper">
                         <input
@@ -251,11 +273,11 @@
                     </div>
                   </div>
 
-                  <!-- ردیف دوم: شماره تلفن و انتخاب کلاس (۹۰۱ / ۹۰۲ / ۹۰۳) -->
-                  <div class="grid grid-cols-2 gap-3">
+                  <!-- ردیف دوم: شماره موبایل و انتخاب کلاس (اجباری) -->
+                  <div class="grid grid-cols-2 gap-2.5">
                     <div class="scool-input-group">
                       <label for="reg-phone" class="scool-field-label">
-                        شماره تلفن
+                        شماره موبایل <span class="text-[#E11D48]">*</span>
                       </label>
                       <div class="school-input-wrapper">
                         <input
@@ -264,7 +286,7 @@
                           name="phone"
                           class="school-input tabular-nums"
                           placeholder="۰۹۱۲۳۴۵۶۷۸۹"
-                          maxlength="11"
+                          maxlength="14"
                           required
                         />
                       </div>
@@ -273,7 +295,7 @@
 
                     <div class="scool-input-group">
                       <label for="reg-class" class="scool-field-label">
-                        کلاس
+                        کلاس <span class="text-[#E11D48]">*</span>
                       </label>
                       <div class="school-input-wrapper">
                         <select id="reg-class" name="classCode" class="school-select" required>
@@ -287,11 +309,11 @@
                     </div>
                   </div>
 
-                  <!-- ردیف سوم: رمز عبور و تکرار رمز عبور -->
-                  <div class="grid grid-cols-2 gap-3">
+                  <!-- ردیف سوم: رمز عبور و تکرار رمز عبور (اجباری) -->
+                  <div class="grid grid-cols-2 gap-2.5">
                     <div class="scool-input-group">
                       <label for="reg-password" class="scool-field-label">
-                        رمز عبور
+                        رمز عبور <span class="text-[#E11D48]">*</span>
                       </label>
                       <div class="school-input-wrapper">
                         <input
@@ -322,7 +344,7 @@
 
                     <div class="scool-input-group">
                       <label for="reg-password-confirm" class="scool-field-label">
-                        تکرار رمز عبور
+                        تکرار رمز عبور <span class="text-[#E11D48]">*</span>
                       </label>
                       <div class="school-input-wrapper">
                         <input
@@ -354,9 +376,9 @@
                 </div>
 
                 <!-- دکمه ایجاد حساب کاربری -->
-                <div class="mt-4">
+                <div class="mt-3.5">
                   <button type="submit" id="btn-submit-register" class="btn-primary-school">
-                    <span>ایجاد حساب کاربری</span>
+                    <span>ثبت‌نام و ارسال درخواست عضویت</span>
                   </button>
                 </div>
               </form>
@@ -619,32 +641,36 @@
             </svg>
           </div>
           <div>
-            <h3 id="congrats-modal-title" class="text-lg font-extrabold text-[#10375C] m-0">
-              تبریک! حساب شما ایجاد شد
+            <h3 id="congrats-modal-title" class="text-lg font-extrabold text-[#251B15] m-0">
+              درخواست عضویت شما ثبت شد
             </h3>
-            <p class="text-xs text-[#274C6E] mt-1 m-0">
-              حساب کاربری دانش‌آموزی شما با موفقیت در اسکول میت ثبت گردید.
+            <p class="text-xs text-[#6E5D4F] mt-1 m-0 leading-relaxed">
+              حساب کاربری دانش‌آموزی شما ثبت گردید و در انتظار بررسی و تأیید مدیر سامانه است.
             </p>
           </div>
         </div>
 
         <div class="ice-steps-card space-y-2.5 text-xs mb-5">
           <div class="flex items-center justify-between">
-            <span class="text-[#274C6E] font-medium">نام و نام خانوادگی:</span>
-            <span id="modal-student-fullname" class="font-extrabold text-[#10375C]">—</span>
+            <span class="text-[#6E5D4F] font-medium">نام و نام خانوادگی:</span>
+            <span id="modal-student-fullname" class="font-extrabold text-[#251B15]">—</span>
           </div>
           <div class="flex items-center justify-between">
-            <span class="text-[#274C6E] font-medium">شماره تلفن:</span>
-            <span id="modal-student-phone" class="font-extrabold text-[#10375C] tabular-nums">—</span>
+            <span class="text-[#6E5D4F] font-medium">شماره موبایل:</span>
+            <span id="modal-student-phone" class="font-extrabold text-[#251B15] tabular-nums">—</span>
           </div>
           <div class="flex items-center justify-between">
-            <span class="text-[#274C6E] font-medium">کلاس انتخاب‌شده:</span>
-            <span id="modal-student-class" class="font-extrabold text-[#0D9488]">—</span>
+            <span class="text-[#6E5D4F] font-medium">کلاس انتخاب‌شده:</span>
+            <span id="modal-student-class" class="font-extrabold text-[#1B5E5A]">—</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-[#6E5D4F] font-medium">وضعیت حساب:</span>
+            <span class="font-extrabold text-[#D97706]">در انتظار تأیید مدیر</span>
           </div>
         </div>
 
         <button type="button" id="btn-congrats-go-login" class="btn-primary-school">
-          <span>ورود به حساب کاربری</span>
+          <span>متوجه شدم (بازگشت به صفحه ورود)</span>
         </button>
       </div>
     </div>
@@ -661,40 +687,21 @@
       aria-labelledby="forgot-modal-title"
     >
       <div class="scool-modal-card" dir="rtl">
-        <h3 id="forgot-modal-title" class="text-base font-extrabold text-[#10375C] mb-2 m-0">
-          بازیابی رمز عبور
+        <h3 id="forgot-modal-title" class="text-base font-extrabold text-[#251B15] mb-3 m-0">
+          فراموشی رمز عبور
         </h3>
-        <p class="text-xs text-[#274C6E] mb-4 leading-relaxed m-0">
-          شماره تلفن همراه ثبت‌شده خود را وارد کنید تا کد بازنشانی رمز عبور برای شما ارسال شود.
-        </p>
-
-        <form id="form-forgot-password" novalidate>
-          <div class="mb-4">
-            <label for="recovery-phone-input" class="scool-field-label">
-              شماره تلفن
-            </label>
-            <input
-              type="tel"
-              id="recovery-phone-input"
-              class="school-input tabular-nums"
-              placeholder="۰۹۱۲۳۴۵۶۷۸۹"
-              maxlength="11"
-              required
-            />
-          </div>
-          <div class="grid grid-cols-2 gap-2.5">
-            <button type="submit" class="btn-primary-school !h-10 text-xs">
-              <span>ارسال کد بازیابی</span>
-            </button>
-            <button
-              type="button"
-              id="btn-close-forgot-modal"
-              class="h-10 rounded-lg border border-[#C6DDF0] bg-white text-[#10375C] text-xs font-bold cursor-pointer"
-            >
-              <span>انصراف</span>
-            </button>
-          </div>
-        </form>
+        <div class="ice-steps-card mb-4">
+          <p class="text-sm font-bold text-[#251B15] leading-relaxed m-0">
+            برای بازنشانی رمزعبور، به معلم خود پیام دهید
+          </p>
+        </div>
+        <button
+          type="button"
+          id="btn-close-forgot-modal"
+          class="btn-primary-school !h-10 text-xs"
+        >
+          <span>متوجه شدم</span>
+        </button>
       </div>
     </div>
 
@@ -790,7 +797,7 @@
           </div>
 
           <div>
-            <label class="scool-field-label">آدرس ایمیل دانش‌آموز (اختیاری)</label>
+            <label class="scool-field-label">آدرس پست الکترونیکی (ایمیل) دانش‌آموز <span class="text-[#E11D48]">*</span></label>
             <input
               type="email"
               id="prof-modal-email"
@@ -798,6 +805,7 @@
               dir="ltr"
               placeholder="student@example.com"
               maxlength="150"
+              required
             />
           </div>
 
@@ -852,8 +860,8 @@
           </div>
           <div class="grid grid-cols-2 gap-3">
             <div>
-              <label class="scool-field-label">شماره تلفن</label>
-              <input type="tel" id="add-st-phone" class="school-input tabular-nums" placeholder="۰۹۱۲۳۴۵۶۷۸۹" maxlength="11" required />
+              <label class="scool-field-label">شماره موبایل</label>
+              <input type="tel" id="add-st-phone" class="school-input tabular-nums" placeholder="۰۹۱۲۳۴۵۶۷۸۹" maxlength="14" required />
             </div>
             <div>
               <label class="scool-field-label">کلاس</label>
@@ -864,6 +872,18 @@
                 <option value="903">۹۰۳</option>
               </select>
             </div>
+          </div>
+          <div>
+            <label class="scool-field-label">پست الکترونیکی (ایمیل) دانش‌آموز <span class="text-[#E11D48]">*</span></label>
+            <input
+              type="email"
+              id="add-st-email"
+              class="school-input text-left"
+              dir="ltr"
+              placeholder="student@example.com"
+              maxlength="150"
+              required
+            />
           </div>
           <div class="grid grid-cols-2 gap-2.5 pt-1">
             <button type="submit" class="btn-admin-primary !h-10">ثبت و تأیید دانش‌آموز</button>
@@ -1055,9 +1075,9 @@
 
           <div class="grid grid-cols-2 gap-3">
             <div>
-              <label class="scool-field-label">گیرندگان اطلاعیه</label>
+              <label class="scool-field-label">کلاس هدف</label>
               <select id="ann-target" class="school-select" required>
-                <option value="all">هر سه کلاس (۹۰۱، ۹۰۲ و ۹۰۳)</option>
+                <option value="all">همه دانش‌آموزان سامانه</option>
                 <option value="901">فقط کلاس ۹۰۱</option>
                 <option value="902">فقط کلاس ۹۰۲</option>
                 <option value="903">فقط کلاس ۹۰۳</option>
@@ -1071,6 +1091,13 @@
                 <option value="فوری">فوری</option>
               </select>
             </div>
+          </div>
+
+          <div>
+            <label class="scool-field-label">گیرنده اختصاصی (دانش‌آموز خاص - اختیاری)</label>
+            <select id="ann-target-student" class="school-select">
+              <option value="">همه دانش‌آموزان کلاس انتخاب‌شده</option>
+            </select>
           </div>
 
           <div>

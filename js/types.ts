@@ -33,6 +33,7 @@ export interface StudentRegistrationPayload {
   firstName: string;
   lastName: string;
   phone: string;
+  email?: string;
   classCode: ClassRoomCode;
   password: string;
   passwordConfirmation: string;
@@ -90,6 +91,8 @@ export interface AssignmentItem {
   title: string;
   description: string;
   classCode: TargetClassScope;
+  targetStudentId?: number;
+  targetStudentName?: string;
   dueDate: string;
   maxScore: number;
   attachmentName: string;
@@ -126,6 +129,8 @@ export interface EducationalResource {
   title: string;
   category: 'جزوه PDF' | 'فایل تمرین' | 'لینک آموزشی' | 'ویدیو ضبط‌شده';
   classCode: TargetClassScope;
+  targetStudentId?: number;
+  targetStudentName?: string;
   urlOrFileName: string;
   fileDataUrl?: string;
   fileSize: string;
@@ -147,6 +152,7 @@ export interface AnnouncementItem {
   content: string;
   targetClasses: TargetClassScope;
   targetStudentId?: number;
+  targetStudentName?: string;
   assignmentId?: number;
   notificationType?: 'general' | 'assignment' | 'feedback';
   priority: 'عادی' | 'مهم' | 'فوری';
@@ -224,8 +230,8 @@ export interface DatabaseState {
 export interface ApiAuthResponse {
   success: boolean;
   role?: 'admin' | 'student';
+  code?: string;
   message: string;
   student?: StudentRecord;
   admin?: Partial<AdminProfile>;
 }
-

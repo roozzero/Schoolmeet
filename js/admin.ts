@@ -29,9 +29,13 @@ import {
   TargetClassScope,
 } from './types';
 import {
+  formatPersianDateTime,
+  formatRecipientLabel,
   getAssignmentLockState,
-  isValidEmail,
+  isValidPhone,
+  isValidRequiredEmail,
   normalizeDigits,
+  normalizeIranianPhone,
   toPersianDigits,
 } from './validation';
 
@@ -74,7 +78,7 @@ let announcementFilter = 'all';
 let announcementSearchQuery = '';
 
 // Tickets state + downloadable attachment state
-let ticketFilter: 'all' | 'در انتظار پاسخ' | 'پاسخ داده شده' = 'all';
+let ticketFilter: 'all' | 'در انتظار پاسخ' | 'پاسخ داده شده' | 'بسته شده' = 'all';
 let activeTicketId: number | null = null;
 let pendingTicketAttachmentName = '';
 let pendingTicketAttachmentDataUrl = '';
@@ -86,8 +90,23 @@ let pendingConfirmCallback: (() => void | Promise<void>) | null = null;
 
 function formatClassLabel(code: TargetClassScope): string {
   if (!code || code === '-') return '—';
-  if (code === 'all') return 'هر سه کلاس (۹۰۱، ۹۰۲ و ۹۰۳)';
+  if (code === 'all') return 'همه دانش‌آموزان (همه کلاس‌ها)';
   return `کلاس ${toPersianDigits(code)}`;
+}
+
+function formatAdminItemRecipient(
+  state: DatabaseState,
+  classCodeOrTarget: string,
+  targetStudentId?: number,
+  targetStudentName?: string
+): string {
+  return formatRecipientLabel({
+    classCodeOrTarget,
+    targetStudentId,
+    targetStudentName,
+    students: state.students,
+    classes: state.classes,
+  });
 }
 
 function formatStatusLabel(status: 'pending' | 'approved' | 'rejected'): string {
@@ -280,12 +299,26 @@ function syncClassSelectOptions(state: DatabaseState): void {
   );
 
   const scopeOptionsHtml =
-    `<option value="all">همه کلاس‌ها</option>` +
+    `<option value="all">همه دانش‌آموزان (همه کلاس‌ها)</option>` +
     state.classes
       .map((c) => `<option value="${c.code}">کلاس ${toPersianDigits(c.code)}</option>`)
       .join('');
 
   $('#ann-target').html(scopeOptionsHtml);
+
+  const approvedStudents = state.students.filter((s) => s.status === 'approved');
+  const studentOptionsHtml =
+    `<option value="">همه دانش‌آموزانِ مخاطب انتخاب‌شده</option>` +
+    approvedStudents
+      .map(
+        (st) =>
+          `<option value="${st.id}">${st.firstName} ${st.lastName} (${
+            st.classCode ? `کلاس ${toPersianDigits(st.classCode)}` : 'بدون کلاس'
+          })</option>`
+      )
+      .join('');
+
+  $('#ann-target-student').html(studentOptionsHtml);
 }
 
 /**
@@ -1108,9 +1141,11 @@ function renderAssignmentsSection($container: JQuery<HTMLElement>, state: Databa
           filteredAssignments.length
             ? filteredAssignments
                 .map((hw) => {
-                  const targetStudents = state.students.filter((s) =>
-                    hw.classCode === 'all' ? Boolean(s.classCode) : s.classCode === hw.classCode
-                  );
+                  const targetStudents = hw.targetStudentId
+                    ? state.students.filter((s) => s.id === hw.targetStudentId)
+                    : state.students.filter((s) =>
+                        hw.classCode === 'all' ? Boolean(s.classCode) : s.classCode === hw.classCode
+                      );
                   const hwSubs = state.submissions.filter((sub) => sub.assignmentId === hw.id);
                   const submittedCount = hwSubs.length;
                   const notSubmittedCount = Math.max(0, targetStudents.length - submittedCount);
@@ -1121,13 +1156,21 @@ function renderAssignmentsSection($container: JQuery<HTMLElement>, state: Databa
                     ? `<span class="text-[11px] font-extrabold px-2.5 py-0.5 rounded-lg bg-[#FFFBEB] text-[#D97706] border border-[#FDE68A]">مهلت گذشته</span>`
                     : `<span class="text-[11px] font-extrabold px-2.5 py-0.5 rounded-lg bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0]">فعال</span>`;
 
+                  const recipientLabel = formatAdminItemRecipient(
+                    state,
+                    hw.classCode,
+                    hw.targetStudentId,
+                    hw.targetStudentName
+                  );
+                  const createdLabel = formatPersianDateTime(hw.createdAt);
+
                   return `
                     <div class="modern-class-card">
                       <div>
                         <div class="flex items-start justify-between gap-2 flex-wrap">
                           <div class="flex items-center gap-1.5 flex-wrap">
                             <span class="text-xs font-extrabold text-[#1B5E5A] bg-[#E2EFEA] px-2.5 py-1 rounded-lg">
-                              ${formatClassLabel(hw.classCode)}
+                              ${recipientLabel}
                             </span>
                             ${statusBadgeHtml}
                           </div>
@@ -1167,6 +1210,10 @@ function renderAssignmentsSection($container: JQuery<HTMLElement>, state: Databa
                         <div class="flex items-center justify-between text-[11px] text-[#6E5D4F]">
                           <span>مهلت: <strong class="text-[#251B15]">${toPersianDigits(hw.dueDate)}</strong></span>
                           <span>بارم: <strong class="text-[#251B15]">${toPersianDigits(hw.maxScore)} نمره</strong></span>
+                        </div>
+                        <div class="flex items-center justify-between text-[11px] text-[#6E5D4F] tabular-nums">
+                          <span>مخاطب: <strong class="text-[#5A3A22]">${recipientLabel}</strong></span>
+                          <span>ثبت: ${toPersianDigits(createdLabel)}</span>
                         </div>
 
                         <div class="flex items-center justify-between text-[11px] bg-[#FDFBF7] border border-[#E5DBCB] rounded-lg px-2.5 py-1.5">
@@ -1220,13 +1267,27 @@ function renderAssignmentFormPage($container: JQuery<HTMLElement>, state: Databa
     : null;
 
   const classOptionsHtml =
-    `<option value="all" ${editingItem?.classCode === 'all' ? 'selected' : ''}>همه کلاس‌ها</option>` +
+    `<option value="all" ${editingItem?.classCode === 'all' ? 'selected' : ''}>همه دانش‌آموزان (همه کلاس‌ها)</option>` +
     state.classes
       .map(
         (c) =>
           `<option value="${c.code}" ${
             editingItem?.classCode === c.code ? 'selected' : ''
           }>کلاس ${toPersianDigits(c.code)}</option>`
+      )
+      .join('');
+
+  const studentOptionsHtml =
+    `<option value="">همه دانش‌آموزانِ کلاس انتخاب‌شده</option>` +
+    state.students
+      .filter((s) => s.status === 'approved')
+      .map(
+        (st) =>
+          `<option value="${st.id}" ${
+            editingItem?.targetStudentId === st.id ? 'selected' : ''
+          }>${st.firstName} ${st.lastName} (${
+            st.classCode ? `کلاس ${toPersianDigits(st.classCode)}` : 'بدون کلاس'
+          })</option>`
       )
       .join('');
 
@@ -1238,7 +1299,7 @@ function renderAssignmentFormPage($container: JQuery<HTMLElement>, state: Databa
             ${editingItem ? `ویرایش تکلیف: ${toPersianDigits(editingItem.title)}` : 'صفحه ایجاد تکلیف جدید'}
           </h2>
           <p class="text-xs text-[#6E5D4F] mt-1 m-0">
-            مشخصات، مهلت تحویل، فایل پیوست و موارد مورد نیاز تکلیف را وارد نمایید.
+            مشخصات، مهلت تحویل، فایل پیوست و مخاطب هدف تکلیف را وارد نمایید.
           </p>
         </div>
         <button type="button" class="btn-admin-action js-back-to-assignments-list">
@@ -1248,7 +1309,7 @@ function renderAssignmentFormPage($container: JQuery<HTMLElement>, state: Databa
 
       <div class="admin-surface-card">
         <form id="form-save-assignment" class="space-y-4">
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label class="scool-field-label">عنوان تکلیف</label>
               <input
@@ -1265,6 +1326,13 @@ function renderAssignmentFormPage($container: JQuery<HTMLElement>, state: Databa
               <label class="scool-field-label">کلاس هدف</label>
               <select id="hw-class" class="school-select" required>
                 ${classOptionsHtml}
+              </select>
+            </div>
+
+            <div>
+              <label class="scool-field-label">دانش‌آموز هدف (اختیاری — برای تکلیف انفرادی)</label>
+              <select id="hw-target-student" class="school-select">
+                ${studentOptionsHtml}
               </select>
             </div>
           </div>
@@ -1357,9 +1425,11 @@ function renderAssignmentDetailPage(
     return;
   }
 
-  const targetStudents = state.students.filter((s) =>
-    hw.classCode === 'all' ? Boolean(s.classCode) : s.classCode === hw.classCode
-  );
+  const targetStudents = hw.targetStudentId
+    ? state.students.filter((s) => s.id === hw.targetStudentId)
+    : state.students.filter((s) =>
+        hw.classCode === 'all' ? Boolean(s.classCode) : s.classCode === hw.classCode
+      );
   const submissions = state.submissions.filter((sub) => sub.assignmentId === hw.id);
   const submittedCount = submissions.length;
   const notSubmittedCount = Math.max(0, targetStudents.length - submittedCount);
@@ -1385,7 +1455,7 @@ function renderAssignmentDetailPage(
                 }
               </td>
               <td class="tabular-nums text-xs">
-                ${sub ? toPersianDigits(sub.submittedAt) : '—'}
+                ${sub ? toPersianDigits(formatPersianDateTime(sub.submittedAt)) : '—'}
               </td>
               <td class="tabular-nums font-bold">
                 ${
@@ -1423,6 +1493,14 @@ function renderAssignmentDetailPage(
     ? `<span class="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-[#FFFBEB] text-[#D97706] border border-[#FDE68A]">مهلت تحویل به پایان رسیده</span>`
     : `<span class="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0]">فعال (در حال دریافت پاسخ)</span>`;
 
+  const hwRecipientLabel = formatAdminItemRecipient(
+    state,
+    hw.classCode,
+    hw.targetStudentId,
+    hw.targetStudentName
+  );
+  const hwCreatedLabel = formatPersianDateTime(hw.createdAt);
+
   $container.html(`
     <div class="space-y-4">
       <!-- هدر صفحه جزئیات تکلیف -->
@@ -1430,7 +1508,7 @@ function renderAssignmentDetailPage(
         <div>
           <div class="flex items-center gap-2 flex-wrap">
             <span class="text-xs font-extrabold text-[#1B5E5A] bg-[#E2EFEA] px-2.5 py-1 rounded-lg">
-              ${formatClassLabel(hw.classCode)}
+              ${hwRecipientLabel}
             </span>
             ${detailStatusBadgeHtml}
             <h2 class="text-base font-black text-[#251B15] m-0">
@@ -1470,7 +1548,7 @@ function renderAssignmentDetailPage(
       <div class="admin-surface-card space-y-3">
         <div class="flex items-center justify-between flex-wrap gap-2">
           <h3 class="text-sm font-extrabold text-[#251B15] m-0">موارد مورد نیاز و توضیحات تکلیف</h3>
-          <span class="text-xs text-[#6E5D4F] tabular-nums">تاریخ ثبت: ${toPersianDigits(hw.createdAt)}</span>
+          <span class="text-xs text-[#6E5D4F] tabular-nums">تاریخ ثبت: ${toPersianDigits(hwCreatedLabel)}</span>
         </div>
         <p class="text-xs text-[#3E3027] m-0 leading-relaxed">
           ${toPersianDigits(hw.description)}
@@ -1754,12 +1832,19 @@ function renderResourcesSection($container: JQuery<HTMLElement>, state: Database
             ? list
                 .map((res) => {
                   const viewersCount = res.viewers ? res.viewers.length : 0;
+                  const resRecipientLabel = formatAdminItemRecipient(
+                    state,
+                    res.classCode,
+                    res.targetStudentId,
+                    res.targetStudentName
+                  );
+                  const resCreatedLabel = formatPersianDateTime(res.createdAt);
                   return `
                     <div class="modern-class-card">
                       <div>
                         <div class="flex items-center justify-between gap-2">
                           <span class="text-[11px] font-extrabold text-[#1B5E5A] bg-[#E2EFEA] px-2.5 py-1 rounded-lg">
-                            ${res.category} · ${formatClassLabel(res.classCode)}
+                            ${res.category} · ${resRecipientLabel}
                           </span>
                           <div class="flex items-center gap-1">
                             <button
@@ -1798,6 +1883,10 @@ function renderResourcesSection($container: JQuery<HTMLElement>, state: Database
                           <span>حجم / نوع: <strong class="text-[#251B15]">${toPersianDigits(res.fileSize)}</strong></span>
                           <span>بازدید دانش‌آموزان: <strong class="text-[#059669]">${toPersianDigits(viewersCount)} نفر</strong></span>
                         </div>
+                        <div class="flex items-center justify-between text-[11px] text-[#6E5D4F] tabular-nums">
+                          <span>مخاطب: <strong class="text-[#5A3A22]">${resRecipientLabel}</strong></span>
+                          <span>ثبت: ${toPersianDigits(resCreatedLabel)}</span>
+                        </div>
 
                         <button
                           type="button"
@@ -1827,13 +1916,27 @@ function renderResourceFormPage($container: JQuery<HTMLElement>, state: Database
     : null;
 
   const classOptionsHtml =
-    `<option value="all" ${editingRes?.classCode === 'all' ? 'selected' : ''}>هر سه کلاس (۹۰۱ تا ۹۰۳)</option>` +
+    `<option value="all" ${editingRes?.classCode === 'all' ? 'selected' : ''}>همه دانش‌آموزان (همه کلاس‌ها)</option>` +
     state.classes
       .map(
         (c) =>
           `<option value="${c.code}" ${
             editingRes?.classCode === c.code ? 'selected' : ''
           }>کلاس ${toPersianDigits(c.code)}</option>`
+      )
+      .join('');
+
+  const studentOptionsHtml =
+    `<option value="">همه دانش‌آموزانِ کلاس انتخاب‌شده</option>` +
+    state.students
+      .filter((s) => s.status === 'approved')
+      .map(
+        (st) =>
+          `<option value="${st.id}" ${
+            editingRes?.targetStudentId === st.id ? 'selected' : ''
+          }>${st.firstName} ${st.lastName} (${
+            st.classCode ? `کلاس ${toPersianDigits(st.classCode)}` : 'بدون کلاس'
+          })</option>`
       )
       .join('');
 
@@ -1845,7 +1948,7 @@ function renderResourceFormPage($container: JQuery<HTMLElement>, state: Database
             ${editingRes ? `ویرایش منبع آموزشی: ${toPersianDigits(editingRes.title)}` : 'صفحه افزودن منبع آموزشی جدید'}
           </h2>
           <p class="text-xs text-[#6E5D4F] mt-1 m-0">
-            فایل آموزشی، جزوه، تمرین یا لینک مربوط به کلاس‌ها را در این صفحه ثبت کنید.
+            فایل آموزشی، جزوه، تمرین یا لینک مربوط به کلاس‌ها یا دانش‌آموز هدف را در این صفحه ثبت کنید.
           </p>
         </div>
         <button type="button" class="btn-admin-action js-back-to-resources-list">
@@ -1855,8 +1958,8 @@ function renderResourceFormPage($container: JQuery<HTMLElement>, state: Database
 
       <div class="admin-surface-card">
         <form id="form-save-resource" class="space-y-4">
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div class="md:col-span-1">
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div>
               <label class="scool-field-label">عنوان منبع آموزشی</label>
               <input
                 type="text"
@@ -1882,6 +1985,13 @@ function renderResourceFormPage($container: JQuery<HTMLElement>, state: Database
               <label class="scool-field-label">کلاس هدف</label>
               <select id="res-class" class="school-select">
                 ${classOptionsHtml}
+              </select>
+            </div>
+
+            <div>
+              <label class="scool-field-label">دانش‌آموز هدف (اختیاری)</label>
+              <select id="res-target-student" class="school-select">
+                ${studentOptionsHtml}
               </select>
             </div>
           </div>
@@ -1950,9 +2060,11 @@ function renderResourceDetailPage(
     return;
   }
 
-  const targetStudents = state.students.filter((s) =>
-    res.classCode === 'all' ? Boolean(s.classCode) : s.classCode === res.classCode
-  );
+  const targetStudents = res.targetStudentId
+    ? state.students.filter((s) => s.id === res.targetStudentId)
+    : state.students.filter((s) =>
+        res.classCode === 'all' ? Boolean(s.classCode) : s.classCode === res.classCode
+      );
   const viewers = res.viewers || [];
   const viewedCount = viewers.length;
   const notViewedCount = Math.max(0, targetStudents.length - viewedCount);
@@ -1978,13 +2090,21 @@ function renderResourceDetailPage(
                 }
               </td>
               <td class="tabular-nums text-xs">
-                ${viewLog ? toPersianDigits(viewLog.viewedAt) : '—'}
+                ${viewLog ? toPersianDigits(formatPersianDateTime(viewLog.viewedAt)) : '—'}
               </td>
             </tr>
           `;
         })
         .join('')
     : `<tr><td colspan="4" class="text-center py-6">دانش‌آموزی در این کلاس ثبت نشده است.</td></tr>`;
+
+  const resRecipientLabel = formatAdminItemRecipient(
+    state,
+    res.classCode,
+    res.targetStudentId,
+    res.targetStudentName
+  );
+  const resCreatedLabel = formatPersianDateTime(res.createdAt);
 
   $container.html(`
     <div class="space-y-4">
@@ -1993,14 +2113,14 @@ function renderResourceDetailPage(
         <div>
           <div class="flex items-center gap-2">
             <span class="text-xs font-extrabold text-[#1B5E5A] bg-[#E2EFEA] px-2.5 py-1 rounded-lg">
-              ${res.category} · ${formatClassLabel(res.classCode)}
+              ${res.category} · ${resRecipientLabel}
             </span>
             <h2 class="text-base font-black text-[#251B15] m-0">
               ${toPersianDigits(res.title)}
             </h2>
           </div>
           <p class="text-xs text-[#6E5D4F] mt-1.5 m-0 tabular-nums">
-            تاریخ ثبت: <strong class="text-[#251B15]">${toPersianDigits(res.createdAt)}</strong> · حجم / نوع: <strong class="text-[#251B15]">${toPersianDigits(res.fileSize)}</strong>
+            تاریخ ثبت: <strong class="text-[#251B15]">${toPersianDigits(resCreatedLabel)}</strong> · حجم / نوع: <strong class="text-[#251B15]">${toPersianDigits(res.fileSize)}</strong>
           </p>
         </div>
 
@@ -2022,7 +2142,7 @@ function renderResourceDetailPage(
       <div class="admin-surface-card space-y-3">
         <div class="flex items-center justify-between flex-wrap gap-2">
           <h3 class="text-sm font-extrabold text-[#251B15] m-0">توضیحات و فایل منبع آموزشی</h3>
-          <span class="text-xs font-bold text-[#1B5E5A]">${formatClassLabel(res.classCode)}</span>
+          <span class="text-xs font-bold text-[#1B5E5A]">${resRecipientLabel}</span>
         </div>
         <p class="text-xs text-[#3E3027] m-0 leading-relaxed">
           ${toPersianDigits(res.description)}
@@ -2158,6 +2278,13 @@ function renderAnnouncementsSection($container: JQuery<HTMLElement>, state: Data
             ? filteredAnnouncements
                 .map((ann) => {
                   const readers = ann.readers || [];
+                  const annRecipientLabel = formatAdminItemRecipient(
+                    state,
+                    ann.targetClasses,
+                    ann.targetStudentId,
+                    ann.targetStudentName
+                  );
+                  const annCreatedLabel = formatPersianDateTime(ann.createdAt);
                   return `
                   <div class="admin-surface-card">
                     <div class="flex items-center justify-between gap-2">
@@ -2171,6 +2298,9 @@ function renderAnnouncementsSection($container: JQuery<HTMLElement>, state: Data
                             : 'bg-[#ECFDF5] text-[#059669]'
                         }">
                           اولویت ${ann.priority}
+                        </span>
+                        <span class="text-[11px] font-extrabold px-2.5 py-0.5 rounded-md bg-[#E2EFEA] text-[#1B5E5A]">
+                          مخاطب: ${annRecipientLabel}
                         </span>
                         <span class="text-[11px] font-extrabold px-2.5 py-0.5 rounded-md bg-[#ECFDF5] text-[#059669] tabular-nums">
                           خوانده شده توسط ${toPersianDigits(readers.length)} نفر
@@ -2190,8 +2320,8 @@ function renderAnnouncementsSection($container: JQuery<HTMLElement>, state: Data
                     <p class="text-xs text-[#6E5D4F] mt-2 m-0 leading-relaxed">${toPersianDigits(ann.content)}</p>
                     <div class="mt-3 pt-2.5 border-t border-[#E6D8C5] flex items-center justify-between gap-2 flex-wrap text-[11px] text-[#6E5D4F]">
                       <div class="flex items-center gap-3 flex-wrap">
-                        <span>گیرندگان: <strong class="text-[#5A3A22]">${formatClassLabel(ann.targetClasses)}</strong></span>
-                        <span class="tabular-nums">تاریخ انتشار: ${toPersianDigits(ann.createdAt)}</span>
+                        <span>گیرندگان: <strong class="text-[#5A3A22]">${annRecipientLabel}</strong></span>
+                        <span class="tabular-nums">تاریخ انتشار: ${toPersianDigits(annCreatedLabel)}</span>
                       </div>
                       <button
                         type="button"
@@ -2213,18 +2343,23 @@ function renderAnnouncementsSection($container: JQuery<HTMLElement>, state: Data
 
 /* ============================================================================
    7. تیکت: عکس پروفایل دانش‌آموز، پاسخ‌گویی به تیکت‌ها + پیوست فایل با قابلیت دانلود مستقیم
+      + فیلتر تیکت‌های بسته شده (Requirement #2)
    ============================================================================ */
 function renderTicketsSection($container: JQuery<HTMLElement>, state: DatabaseState): void {
   const filteredTickets = state.tickets.filter((tk) =>
     ticketFilter === 'all' ? true : tk.status === ticketFilter
   );
 
+  const openPendingCount = state.tickets.filter((t) => t.status === 'در انتظار پاسخ').length;
+  const answeredCount = state.tickets.filter((t) => t.status === 'پاسخ داده شده').length;
+  const closedCount = state.tickets.filter((t) => t.status === 'بسته شده').length;
+
   if (!activeTicketId && filteredTickets.length > 0) {
     activeTicketId = filteredTickets[0].id;
   }
 
   const currentTicket =
-    state.tickets.find((t) => t.id === activeTicketId) || filteredTickets[0] || null;
+    filteredTickets.find((t) => t.id === activeTicketId) || filteredTickets[0] || null;
 
   const currentTicketStudent = currentTicket
     ? state.students.find((s) => s.id === currentTicket.studentId) || {
@@ -2240,49 +2375,58 @@ function renderTicketsSection($container: JQuery<HTMLElement>, state: DatabaseSt
       <!-- لیست تیکت‌ها با عکس پروفایل دانش‌آموز -->
       <div class="lg:col-span-5 admin-surface-card">
         <div class="flex items-center justify-between gap-2 mb-3.5 flex-wrap">
-          <h3 class="text-sm font-extrabold text-[#251B15] m-0">صندوق تیکت‌ها</h3>
-          <div class="admin-segmented-bar">
-            <button type="button" class="admin-seg-btn js-ticket-filter ${ticketFilter === 'all' ? 'is-active' : ''}" data-filter="all">همه</button>
-            <button type="button" class="admin-seg-btn js-ticket-filter ${ticketFilter === 'در انتظار پاسخ' ? 'is-active' : ''}" data-filter="در انتظار پاسخ">در انتظار پاسخ</button>
-            <button type="button" class="admin-seg-btn js-ticket-filter ${ticketFilter === 'پاسخ داده شده' ? 'is-active' : ''}" data-filter="پاسخ داده شده">پاسخ‌داده‌شده</button>
+          <h3 class="text-sm font-extrabold text-[#251B15] m-0">صندوق تیکت‌ها (${toPersianDigits(state.tickets.length)})</h3>
+          <div class="admin-segmented-bar flex-wrap">
+            <button type="button" class="admin-seg-btn js-ticket-filter ${ticketFilter === 'all' ? 'is-active' : ''}" data-filter="all">همه (${toPersianDigits(state.tickets.length)})</button>
+            <button type="button" class="admin-seg-btn js-ticket-filter ${ticketFilter === 'در انتظار پاسخ' ? 'is-active' : ''}" data-filter="در انتظار پاسخ">در انتظار پاسخ (${toPersianDigits(openPendingCount)})</button>
+            <button type="button" class="admin-seg-btn js-ticket-filter ${ticketFilter === 'پاسخ داده شده' ? 'is-active' : ''}" data-filter="پاسخ داده شده">پاسخ‌داده‌شده (${toPersianDigits(answeredCount)})</button>
+            <button type="button" class="admin-seg-btn js-ticket-filter ${ticketFilter === 'بسته شده' ? 'is-active' : ''}" data-filter="بسته شده">بسته شده (${toPersianDigits(closedCount)})</button>
           </div>
         </div>
 
         <div class="space-y-2.5">
-          ${filteredTickets
-            .map((tk) => {
-              const stObj = state.students.find((s) => s.id === tk.studentId) || {
-                id: tk.studentId,
-                firstName: tk.studentName,
-                lastName: '',
-                avatarUrl: '',
-              };
-              return `
-              <div
-                class="p-3.5 rounded-xl border cursor-pointer transition-all js-select-ticket ${
-                  currentTicket?.id === tk.id
-                    ? 'bg-[#F3ECE0] border-[#5A3A22]'
-                    : 'bg-[#FDFBF7] border-[#E5DBCB]'
-                }"
-                data-id="${tk.id}"
-              >
-                <div class="flex items-center justify-between gap-2">
-                  <div class="flex items-center gap-2.5 min-w-0">
-                    ${renderStudentAvatarHtml(stObj, 'sm')}
-                    <div class="min-w-0">
-                      <div class="text-xs font-extrabold text-[#251B15] truncate">${toPersianDigits(tk.subject)}</div>
-                      <div class="text-[11px] text-[#6E5D4F] mt-0.5 tabular-nums">
-                        ${tk.studentName} · ${tk.classCode ? `کلاس ${toPersianDigits(tk.classCode)}` : '—'}
+          ${
+            filteredTickets.length
+              ? filteredTickets
+                  .map((tk) => {
+                    const stObj = state.students.find((s) => s.id === tk.studentId) || {
+                      id: tk.studentId,
+                      firstName: tk.studentName,
+                      lastName: '',
+                      avatarUrl: '',
+                    };
+                    return `
+                    <div
+                      class="p-3.5 rounded-xl border cursor-pointer transition-all js-select-ticket ${
+                        currentTicket?.id === tk.id
+                          ? 'bg-[#F3ECE0] border-[#5A3A22]'
+                          : 'bg-[#FDFBF7] border-[#E5DBCB]'
+                      }"
+                      data-id="${tk.id}"
+                    >
+                      <div class="flex items-center justify-between gap-2">
+                        <div class="flex items-center gap-2.5 min-w-0">
+                          ${renderStudentAvatarHtml(stObj, 'sm')}
+                          <div class="min-w-0">
+                            <div class="text-xs font-extrabold text-[#251B15] truncate">${toPersianDigits(tk.subject)}</div>
+                            <div class="text-[11px] text-[#6E5D4F] mt-0.5 tabular-nums">
+                              ${tk.studentName} · ${tk.classCode ? `کلاس ${toPersianDigits(tk.classCode)}` : '—'} · ${toPersianDigits(formatPersianDateTime(tk.createdAt))}
+                            </div>
+                          </div>
+                        </div>
+                        <span class="text-[11px] font-bold shrink-0 ${
+                          tk.status === 'در انتظار پاسخ'
+                            ? 'text-[#D97706]'
+                            : tk.status === 'بسته شده'
+                            ? 'text-[#E11D48]'
+                            : 'text-[#059669]'
+                        }">${tk.status}</span>
                       </div>
-                    </div>
-                  </div>
-                  <span class="text-[11px] font-bold shrink-0 ${
-                    tk.status === 'در انتظار پاسخ' ? 'text-[#D97706]' : 'text-[#059669]'
-                  }">${tk.status}</span>
-                </div>
-              </div>`;
-            })
-            .join('')}
+                    </div>`;
+                  })
+                  .join('')
+              : `<div class="text-center py-6 text-xs text-[#6E5D4F]">تیکتی با وضعیت «${ticketFilter === 'all' ? 'همه' : ticketFilter}» یافت نشد.</div>`
+          }
         </div>
       </div>
 
@@ -3166,20 +3310,26 @@ export function initAdminPanelEvents(): void {
 
     const firstName = String($('#prof-modal-firstname').val() || '').trim();
     const lastName = String($('#prof-modal-lastname').val() || '').trim();
-    const phone = normalizeDigits(String($('#prof-modal-phone').val() || ''));
-    const email = String($('#prof-modal-email').val() || '').trim();
+    const rawPhone = String($('#prof-modal-phone').val() || '');
+    const phone = normalizeIranianPhone(rawPhone);
+    const email = normalizeDigits(String($('#prof-modal-email').val() || '').trim());
     const bio = String($('#prof-modal-bio').val() || '').trim();
     const classCode = String($('#prof-modal-class').val() || '');
     const status = String($('#prof-modal-status').val()) as typeof st.status;
     const notes = String($('#prof-modal-notes').val() || '').trim();
 
-    if (!firstName || !lastName || phone.length < 10) {
-      showToast('اطلاعات نامعتبر', 'لطفاً نام، نام خانوادگی و شماره موبایل معتبر وارد کنید.', 'error');
+    if (!firstName || !lastName) {
+      showToast('اطلاعات نامعتبر', 'لطفاً نام و نام خانوادگی دانش‌آموز را وارد کنید.', 'error');
       return;
     }
 
-    if (!isValidEmail(email)) {
-      showToast('ایمیل نامعتبر', 'لطفاً یک آدرس ایمیل معتبر وارد کنید یا فیلد ایمیل را خالی بگذارید.', 'error');
+    if (!isValidPhone(rawPhone)) {
+      showToast('شماره موبایل نامعتبر', 'لطفاً شماره موبایل معتبر ایرانی (مثال: ۰۹۱۲۳۴۵۶۷۸۹) وارد کنید.', 'error');
+      return;
+    }
+
+    if (!isValidRequiredEmail(email)) {
+      showToast('ایمیل الزامی و نامعتبر', 'وارد کردن یک آدرس ایمیل معتبر برای پروفایل دانش‌آموز الزامی است.', 'error');
       return;
     }
 
@@ -3242,11 +3392,23 @@ export function initAdminPanelEvents(): void {
 
     const firstName = String($('#add-st-firstname').val() || '').trim();
     const lastName = String($('#add-st-lastname').val() || '').trim();
-    const phone = normalizeDigits(String($('#add-st-phone').val() || ''));
+    const rawPhone = String($('#add-st-phone').val() || '');
+    const phone = normalizeIranianPhone(rawPhone);
+    const email = normalizeDigits(String($('#add-st-email').val() || '').trim());
     const classCode = String($('#add-st-class').val() || '');
 
-    if (!firstName || !lastName || phone.length < 10) {
-      showToast('اطلاعات ناقص', 'لطفاً نام، نام خانوادگی و شماره تلفن معتبر وارد کنید.', 'error');
+    if (!firstName || !lastName) {
+      showToast('اطلاعات ناقص', 'لطفاً نام و نام خانوادگی دانش‌آموز را وارد کنید.', 'error');
+      return;
+    }
+
+    if (!isValidPhone(rawPhone)) {
+      showToast('شماره موبایل نامعتبر', 'لطفاً شماره موبایل معتبر ایرانی (مثال: ۰۹۱۲۳۴۵۶۷۸۹) وارد کنید.', 'error');
+      return;
+    }
+
+    if (!isValidRequiredEmail(email)) {
+      showToast('ایمیل الزامی است', 'لطفاً یک آدرس ایمیل معتبر برای دانش‌آموز وارد کنید.', 'error');
       return;
     }
 
@@ -3257,6 +3419,7 @@ export function initAdminPanelEvents(): void {
         firstName,
         lastName,
         phone,
+        email,
         classCode,
         status: 'approved',
         password: '123456',
@@ -3404,6 +3567,7 @@ export function initAdminPanelEvents(): void {
 
     const title = String($('#hw-title').val() || '').trim();
     const classCode = String($('#hw-class').val() || 'all');
+    const targetStudentIdRaw = Number($('#hw-target-student').val() || 0);
     const dueDate = String($('#hw-duedate').val() || '').trim();
     const maxScore = Number(normalizeDigits(String($('#hw-maxscore').val() || '20'))) || 20;
     const attachmentName = String($('#hw-attachment').val() || 'فایل تمرین.pdf').trim();
@@ -3414,12 +3578,26 @@ export function initAdminPanelEvents(): void {
     const state = loadDbState();
     const isEditing = Boolean(editingAssignmentId);
     const nowId = Date.now();
+    const nowFa = formatPersianDateTime(new Date());
+    const targetStudentObj =
+      targetStudentIdRaw > 0
+        ? state.students.find((s) => s.id === targetStudentIdRaw) || null
+        : null;
+    const targetStudentId = targetStudentObj ? targetStudentObj.id : undefined;
+    const targetStudentName = targetStudentObj
+      ? `${targetStudentObj.firstName} ${targetStudentObj.lastName}`.trim()
+      : undefined;
+
+    const effectiveClassCode =
+      targetStudentObj && targetStudentObj.classCode ? targetStudentObj.classCode : classCode;
 
     if (editingAssignmentId) {
       const item = state.assignments.find((a) => a.id === editingAssignmentId);
       if (item) {
         item.title = title;
-        item.classCode = classCode;
+        item.classCode = effectiveClassCode;
+        item.targetStudentId = targetStudentId;
+        item.targetStudentName = targetStudentName;
         item.dueDate = dueDate;
         item.maxScore = maxScore;
         item.attachmentName = attachmentName;
@@ -3433,25 +3611,33 @@ export function initAdminPanelEvents(): void {
       state.assignments.unshift({
         id: newAssignmentId,
         title,
-        classCode,
+        classCode: effectiveClassCode,
+        targetStudentId,
+        targetStudentName,
         dueDate,
         maxScore,
         attachmentName,
         attachmentDataUrl: pendingAssignmentAttachmentDataUrl || undefined,
         description,
         status: 'active',
-        createdAt: '۱۴۰۵/۰۸/۱۵',
+        createdAt: nowFa,
       });
 
-      // Automatically notify the relevant class (Requirement #6)
-      const targetClassLabel = formatClassLabel(classCode);
+      const targetRecipientLabel = formatAdminItemRecipient(
+        state,
+        effectiveClassCode,
+        targetStudentId,
+        targetStudentName
+      );
       state.announcements.unshift({
         id: nowId + 1,
         title: `تکلیف جدید: ${title}`,
-        targetClasses: classCode,
+        targetClasses: effectiveClassCode,
+        targetStudentId,
+        targetStudentName,
         priority: 'مهم',
-        content: `تکلیف جدیدی با عنوان «${title}» ویژه ${targetClassLabel} ثبت شد. مهلت تحویل: ${dueDate || 'مطابق برنامه کلاسی'}. لطفاً از بخش تکالیف من نسبت به بررسی و ارسال پاسخ اقدام نمایید.`,
-        createdAt: '۱۴۰۵/۰۸/۱۵ · هم‌اکنون',
+        content: `تکلیف جدیدی با عنوان «${title}» ویژه ${targetRecipientLabel} ثبت شد. مهلت تحویل: ${dueDate || 'مطابق برنامه کلاسی'}. لطفاً از بخش تکالیف من نسبت به بررسی و ارسال پاسخ اقدام نمایید.`,
+        createdAt: nowFa,
         readers: [],
         assignmentId: newAssignmentId,
         notificationType: 'assignment',
@@ -3460,7 +3646,7 @@ export function initAdminPanelEvents(): void {
       logAdminActivity(
         state,
         `ایجاد تکلیف جدید: ${title}`,
-        `ویژه ${targetClassLabel} · مهلت: ${dueDate} (همراه با ارسال اعلان خودکار)`,
+        `ویژه ${targetRecipientLabel} · مهلت: ${dueDate} (همراه با ارسال اعلان خودکار)`,
         'assignment'
       );
     }
@@ -3482,7 +3668,7 @@ export function initAdminPanelEvents(): void {
       } else {
         showToast(
           'تکلیف منتشر و اطلاع‌رسانی شد',
-          `تکلیف «${title}» ثبت گردید و اعلان آن برای ${formatClassLabel(classCode)} ارسال شد.`,
+          `تکلیف «${title}» ثبت گردید و اعلان آن برای ${formatAdminItemRecipient(state, effectiveClassCode, targetStudentId, targetStudentName)} ارسال شد.`,
           'success'
         );
       }
@@ -3653,11 +3839,12 @@ export function initAdminPanelEvents(): void {
       title: `ثبت نمره و بازخورد تکلیف: ${hwTitle}`,
       targetClasses: sub.classCode || 'all',
       targetStudentId: sub.studentId,
+      targetStudentName: sub.studentName,
       assignmentId: sub.assignmentId,
       notificationType: 'feedback',
       priority: 'مهم',
       content: `دانش‌آموز گرامی ${sub.studentName}، تکلیف «${hwTitle}» بررسی شد و نمره ${toPersianDigits(score)}${hw ? ` از ${toPersianDigits(hw.maxScore)}` : ''} برای شما ثبت گردید. ${feedbackSummary}`,
-      createdAt: '۱۴۰۵/۰۸/۱۵ · هم‌اکنون',
+      createdAt: formatPersianDateTime(new Date()),
       readers: [],
     });
 
@@ -3819,6 +4006,7 @@ export function initAdminPanelEvents(): void {
       | 'لینک آموزشی'
       | 'ویدیو ضبط‌شده';
     const classCode = String($('#res-class').val() || 'all');
+    const targetStudentIdRaw = Number($('#res-target-student').val() || 0);
     const urlOrFileName = String($('#res-url').val() || '').trim();
     const description = String($('#res-desc').val() || '').trim();
 
@@ -3826,13 +4014,25 @@ export function initAdminPanelEvents(): void {
 
     const state = loadDbState();
     const isEditing = Boolean(editingResourceId);
+    const targetStudentObj =
+      targetStudentIdRaw > 0
+        ? state.students.find((s) => s.id === targetStudentIdRaw) || null
+        : null;
+    const targetStudentId = targetStudentObj ? targetStudentObj.id : undefined;
+    const targetStudentName = targetStudentObj
+      ? `${targetStudentObj.firstName} ${targetStudentObj.lastName}`.trim()
+      : undefined;
+    const effectiveClassCode =
+      targetStudentObj && targetStudentObj.classCode ? targetStudentObj.classCode : classCode;
 
     if (editingResourceId) {
       const item = state.resources.find((r) => r.id === editingResourceId);
       if (item) {
         item.title = title;
         item.category = category;
-        item.classCode = classCode;
+        item.classCode = effectiveClassCode;
+        item.targetStudentId = targetStudentId;
+        item.targetStudentName = targetStudentName;
         item.urlOrFileName = urlOrFileName;
         if (pendingResourceFileDataUrl) {
           item.fileDataUrl = pendingResourceFileDataUrl;
@@ -3847,14 +4047,16 @@ export function initAdminPanelEvents(): void {
         id: Date.now(),
         title,
         category,
-        classCode,
+        classCode: effectiveClassCode,
+        targetStudentId,
+        targetStudentName,
         urlOrFileName,
         fileDataUrl: pendingResourceFileDataUrl || undefined,
         fileSize:
           pendingResourceFileSize ||
           (category === 'لینک آموزشی' ? 'لینک وب' : 'فایل پیوست'),
         description,
-        createdAt: '۱۴۰۵/۰۸/۱۵',
+        createdAt: formatPersianDateTime(new Date()),
         viewers: [],
       });
     }
@@ -3948,6 +4150,7 @@ export function initAdminPanelEvents(): void {
     syncClassSelectOptions(state);
     $('#ann-title').val('');
     $('#ann-target').val('all');
+    $('#ann-target-student').val('');
     $('#ann-priority').val('عادی');
     $('#ann-content').val('');
     $('#admin-announcement-form-modal').addClass('is-open').attr('aria-hidden', 'false');
@@ -3960,24 +4163,45 @@ export function initAdminPanelEvents(): void {
 
     const title = String($('#ann-title').val() || '').trim();
     const targetClasses = String($('#ann-target').val() || 'all');
+    const targetStudentIdRaw = Number($('#ann-target-student').val() || 0);
     const priority = String($('#ann-priority').val() || 'عادی') as 'عادی' | 'مهم' | 'فوری';
     const content = String($('#ann-content').val() || '').trim();
 
     if (!title || !content) return;
 
     const state = loadDbState();
+    const targetStudentObj =
+      targetStudentIdRaw > 0
+        ? state.students.find((s) => s.id === targetStudentIdRaw) || null
+        : null;
+    const targetStudentId = targetStudentObj ? targetStudentObj.id : undefined;
+    const targetStudentName = targetStudentObj
+      ? `${targetStudentObj.firstName} ${targetStudentObj.lastName}`.trim()
+      : undefined;
+    const effectiveTargetClasses =
+      targetStudentObj && targetStudentObj.classCode ? targetStudentObj.classCode : targetClasses;
+    const recipientLabel = formatAdminItemRecipient(
+      state,
+      effectiveTargetClasses,
+      targetStudentId,
+      targetStudentName
+    );
+    const nowFa = formatPersianDateTime(new Date());
+
     state.announcements.unshift({
       id: Date.now(),
       title,
-      targetClasses,
+      targetClasses: effectiveTargetClasses,
+      targetStudentId,
+      targetStudentName,
       priority,
       content,
-      createdAt: '۱۴۰۵/۰۸/۱۵ · هم‌اکنون',
+      createdAt: nowFa,
       notificationType: 'general',
     });
     logAdminActivity(
       state,
-      `ارسال اطلاعیه به ${formatClassLabel(targetClasses)}`,
+      `ارسال اطلاعیه به ${recipientLabel}`,
       `عنوان: ${title}`,
       'announcement'
     );
@@ -3990,7 +4214,7 @@ export function initAdminPanelEvents(): void {
       renderActiveSection();
       showToast(
         'اطلاعیه ارسال شد',
-        `اطلاعیه «${title}» برای ${formatClassLabel(targetClasses)} منتشر گردید.`,
+        `اطلاعیه «${title}» برای ${recipientLabel} منتشر گردید.`,
         'success'
       );
     } catch (err) {
@@ -4029,9 +4253,16 @@ export function initAdminPanelEvents(): void {
     if (!ann) return;
 
     const readers = ann.readers || [];
+    const recipientLabel = formatAdminItemRecipient(
+      state,
+      ann.targetClasses,
+      ann.targetStudentId,
+      ann.targetStudentName
+    );
+    const createdLabel = formatPersianDateTime(ann.createdAt);
     $('#ann-readers-modal-title').text(`لیست خوانده‌ها: ${toPersianDigits(ann.title)}`);
     $('#ann-readers-modal-sub').text(
-      `گیرندگان: ${formatClassLabel(ann.targetClasses)} · تاریخ انتشار: ${toPersianDigits(ann.createdAt)}`
+      `گیرندگان: ${recipientLabel} · تاریخ انتشار: ${toPersianDigits(createdLabel)}`
     );
     $('#ann-readers-modal-count-badge').text(`${toPersianDigits(readers.length)} نفر`);
 
@@ -4247,7 +4478,7 @@ export function initAdminPanelEvents(): void {
       senderRole: 'admin',
       senderName: `${state.admin.firstName} ${state.admin.lastName}`,
       message: replyText,
-      sentAt: '۱۴۰۵/۰۸/۱۵ · هم‌اکنون',
+      sentAt: formatPersianDateTime(new Date()),
       attachmentName: pendingTicketAttachmentName || undefined,
       attachmentDataUrl: pendingTicketAttachmentDataUrl || undefined,
     });
@@ -4353,12 +4584,13 @@ export function initAdminPanelEvents(): void {
 
     const firstName = String($('#prof-firstname').val() || '').trim();
     const lastName = String($('#prof-lastname').val() || '').trim();
-    const phone = normalizeDigits(String($('#prof-phone').val() || ''));
+    const rawPhone = String($('#prof-phone').val() || '');
+    const phone = normalizeIranianPhone(rawPhone);
     const roleTitle = String($('#prof-role').val() || '').trim();
     const bio = String($('#prof-bio').val() || '').trim();
 
-    if (!firstName || !lastName || phone.length < 10) {
-      showToast('اطلاعات ناقص', 'لطفاً نام، نام خانوادگی و شماره همراه معتبر وارد کنید.', 'error');
+    if (!firstName || !lastName || !isValidPhone(rawPhone)) {
+      showToast('اطلاعات ناقص', 'لطفاً نام، نام خانوادگی و شماره همراه معتبر ایرانی وارد کنید.', 'error');
       return;
     }
 
@@ -4820,10 +5052,11 @@ export function initAdminPanelEvents(): void {
             title: `بازخورد و نمره کلاسی (${session.title})`,
             targetClasses: session.classCode,
             targetStudentId: st.id,
+            targetStudentName: `${st.firstName} ${st.lastName}`.trim(),
             notificationType: 'feedback',
             priority: 'عادی',
             content: `دانش‌آموز گرامی ${st.firstName} ${st.lastName}، در جلسه «${session.title}» (${session.sessionDate})${en.classScore !== null ? ` نمره کلاسی ${toPersianDigits(en.classScore)} ثبت شد.` : ''}${currentNote ? ` یادداشت و بازخورد دبیر: «${currentNote}»` : ''}`,
-            createdAt: '۱۴۰۵/۰۸/۱۵ · هم‌اکنون',
+            createdAt: formatPersianDateTime(new Date()),
             readers: [],
           });
         }
