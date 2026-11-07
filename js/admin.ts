@@ -13,6 +13,7 @@ import {
 import { showToast } from './modal';
 import { AppRoutePath, updateBrowserUrl } from './router';
 import {
+  clearAuthSession,
   getAuthoritativeNowMs,
   loadDbState,
   logAdminActivity,
@@ -600,12 +601,13 @@ function renderDashboardSection($container: JQuery<HTMLElement>, state: Database
           ${state.classes
             .map((cls) => {
               const membersCount = state.students.filter(
-                (s) => s.classCode === cls.code && s.status === 'approved'
+                (s) => s.classCode === cls.code
               ).length;
-              const fillWidth = Math.min(
-                100,
-                Math.max(12, Math.round((membersCount / cls.capacity) * 100))
-              );
+              const cap = Math.max(1, Number(cls.capacity) || 30);
+              const fillWidth =
+                membersCount <= 0
+                  ? 0
+                  : Math.min(100, Math.max(0, Math.round((membersCount / cap) * 100)));
               return `
                 <div class="modern-class-card">
                   <div>
@@ -714,15 +716,6 @@ function renderClassesSection($container: JQuery<HTMLElement>, state: DatabaseSt
     state.classes.find((c) => c.code === selectedClassTab) || state.classes[0];
   selectedClassTab = currentClass.code;
 
-  const classMembers = state.students.filter((s) => s.classCode === currentClass.code);
-  const availableStudentsToAdd = state.students.filter(
-    (s) => s.classCode !== currentClass.code
-  );
-  const classAssignments = state.assignments.filter(
-    (a) => a.classCode === currentClass.code || a.classCode === 'all'
-  );
-  const isCurrentDefault = PROTECTED_DEFAULT_CLASS_CODES.includes(currentClass.code);
-
   $container.html(`
     <div class="space-y-5">
       <!-- نوار ابزار بالای مدیریت کلاس‌ها: دکمه ایجاد کلاس جدید -->
@@ -743,10 +736,10 @@ function renderClassesSection($container: JQuery<HTMLElement>, state: DatabaseSt
             const isSelected = cls.code === currentClass.code;
             const isDefaultClass = PROTECTED_DEFAULT_CLASS_CODES.includes(cls.code);
             const cap = Math.max(1, Number(cls.capacity) || 30);
-            const fillWidth = Math.min(
-              100,
-              Math.max(12, Math.round((count / cap) * 100))
-            );
+            const fillWidth =
+              count <= 0
+                ? 0
+                : Math.min(100, Math.max(0, Math.round((count / cap) * 100)));
             return `
               <div
                 class="modern-class-card cursor-pointer js-select-class-card ${
@@ -814,204 +807,6 @@ function renderClassesSection($container: JQuery<HTMLElement>, state: DatabaseSt
             `;
           })
           .join('')}
-      </div>
-
-      <!-- جزئیات کامل کلاس انتخاب‌شده و مدیریت اعضای کلاس -->
-      <div class="w-full admin-surface-card space-y-4">
-        <div class="flex items-start justify-between gap-3 flex-wrap pb-3.5 border-b border-[#E6D8C5]">
-          <div>
-            <div class="flex items-center gap-2 flex-wrap">
-              <h3 class="text-sm font-extrabold text-[#251B15] m-0">
-                جزئیات و اعضای ${toPersianDigits(currentClass.title)} (کد ${toPersianDigits(currentClass.code)})
-              </h3>
-              <span class="text-xs font-bold text-[#5A3A22]">
-                (${toPersianDigits(classMembers.length)} از ${toPersianDigits(currentClass.capacity)} نفر)
-              </span>
-            </div>
-            <p class="text-xs text-[#6E5D4F] mt-1.5 m-0 leading-relaxed">
-              ${toPersianDigits(currentClass.description || 'بدون توضیحات')}
-            </p>
-          </div>
-          <div class="flex items-center gap-2 flex-wrap">
-            <button
-              type="button"
-              class="btn-admin-action js-edit-class-modal"
-              data-code="${currentClass.code}"
-            >
-              ویرایش اطلاعات کلاس
-            </button>
-            ${
-              !isCurrentDefault
-                ? `<button
-                    type="button"
-                    class="btn-admin-danger !h-9 js-delete-class"
-                    data-code="${currentClass.code}"
-                  >
-                    حذف این کلاس
-                  </button>`
-                : ''
-            }
-            <button
-              type="button"
-              class="btn-admin-primary !h-9 js-open-add-student-modal"
-              data-class="${currentClass.code}"
-            >
-              + ثبت دانش‌آموز جدید در کلاس ${toPersianDigits(currentClass.code)}
-            </button>
-          </div>
-        </div>
-
-        <!-- خلاصه مشخصات کلاس انتخاب‌شده -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <div class="p-3 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB]">
-            <div class="text-[11px] text-[#6E5D4F]">پایه تحصیلی و کد کلاس</div>
-            <div class="text-xs font-extrabold text-[#251B15] mt-1">
-              ${toPersianDigits(currentClass.gradeLevel || 'پایه نهم')} · کد ${toPersianDigits(currentClass.code)}
-            </div>
-          </div>
-          <div class="p-3 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB]">
-            <div class="text-[11px] text-[#6E5D4F]">مدرس کلاس</div>
-            <div class="text-xs font-extrabold text-[#251B15] mt-1">
-              ${toPersianDigits(currentClass.instructorName || `${state.admin.firstName} ${state.admin.lastName}`)}
-            </div>
-          </div>
-          <div class="p-3 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB]">
-            <div class="text-[11px] text-[#6E5D4F]">محل برگزاری / لینک کلاس</div>
-            <div class="text-xs font-extrabold text-[#251B15] mt-1">
-              ${toPersianDigits(currentClass.roomOrLink || 'اتاق ۳۰۱ / تالار آنلاین')}
-            </div>
-          </div>
-          <div class="p-3 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB]">
-            <div class="text-[11px] text-[#6E5D4F]">زمان‌بندی جلسات</div>
-            <div class="text-xs font-extrabold text-[#251B15] mt-1">
-              ${toPersianDigits(currentClass.scheduleSummary || 'ثبت‌نشده')}
-            </div>
-          </div>
-        </div>
-
-        <!-- افزودن دانش‌آموز موجود در سامانه به این کلاس -->
-        <div class="p-3.5 rounded-xl bg-[#F8F3EA] border border-[#E5DBCB] flex items-center justify-between gap-3 flex-wrap">
-          <div class="text-xs font-extrabold text-[#251B15]">
-            افزودن یا انتقال دانش‌آموز ثبت‌نام‌شده به کلاس ${toPersianDigits(currentClass.code)}:
-          </div>
-          <div class="flex items-center gap-2 flex-wrap flex-1 sm:flex-initial justify-end">
-            <select
-              id="select-add-existing-student-to-class"
-              class="school-select !h-9 !py-0 !text-xs min-w-[230px]"
-            >
-              <option value="">— انتخاب دانش‌آموز برای افزودن به کلاس ${toPersianDigits(currentClass.code)} —</option>
-              ${availableStudentsToAdd
-                .map(
-                  (st) =>
-                    `<option value="${st.id}">${st.firstName} ${st.lastName} (${
-                      st.classCode ? `کلاس فعلی: ${toPersianDigits(st.classCode)}` : 'بدون کلاس'
-                    })</option>`
-                )
-                .join('')}
-            </select>
-            <button
-              type="button"
-              id="btn-add-existing-student-to-class"
-              data-class="${currentClass.code}"
-              class="btn-admin-action !h-9"
-              ${availableStudentsToAdd.length === 0 ? 'disabled' : ''}
-            >
-              افزودن به این کلاس
-            </button>
-          </div>
-        </div>
-
-        <div class="admin-table-wrap">
-          <table class="admin-table">
-            <thead>
-              <tr>
-                <th>دانش‌آموز</th>
-                <th>شماره تلفن</th>
-                <th>تاریخ ثبت‌نام</th>
-                <th>وضعیت</th>
-                <th>تغییر کلاس</th>
-                <th>عملیات</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${
-                classMembers.length
-                  ? classMembers
-                      .map(
-                        (st) => `
-                        <tr>
-                          <td>
-                            <div class="flex items-center gap-2.5">
-                              ${renderStudentAvatarHtml(st, 'sm')}
-                              <span class="font-extrabold text-[#251B15]">${st.firstName} ${st.lastName}</span>
-                            </div>
-                          </td>
-                          <td class="tabular-nums">${toPersianDigits(st.phone)}</td>
-                          <td class="tabular-nums">${toPersianDigits(st.createdAt)}</td>
-                          <td>
-                            <span class="font-extrabold ${
-                              st.status === 'approved'
-                                ? 'text-[#059669]'
-                                : st.status === 'pending'
-                                ? 'text-[#D97706]'
-                                : 'text-[#E11D48]'
-                            }">
-                              ${formatStatusLabel(st.status)}
-                            </span>
-                          </td>
-                          <td>
-                            <select
-                              class="school-select !h-8 !py-0 !text-xs !w-32 js-change-student-class"
-                              data-id="${st.id}"
-                            >
-                              <option value="">— (بدون کلاس)</option>
-                              ${state.classes
-                                .map(
-                                  (c) =>
-                                    `<option value="${c.code}" ${
-                                      st.classCode === c.code ? 'selected' : ''
-                                    }>کلاس ${toPersianDigits(c.code)}</option>`
-                                )
-                                .join('')}
-                            </select>
-                          </td>
-                          <td>
-                            <div class="flex items-center gap-1.5">
-                              <button
-                                type="button"
-                                class="btn-icon-action js-open-student-profile"
-                                data-id="${st.id}"
-                                title="مشاهده و ویرایش پروفایل"
-                              >
-                                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                                  <path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                                </svg>
-                              </button>
-                              <button
-                                type="button"
-                                class="btn-icon-action btn-icon-danger js-remove-student-from-class"
-                                data-id="${st.id}"
-                                title="حذف دانش‌آموز از این کلاس"
-                              >
-                                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                                  <path stroke-linecap="round" stroke-linejoin="round" d="M13 7a4 4 0 11-8 0 4 4 0 018 0zM9 14a6 6 0 00-6 6v1h12v-1a6 6 0 00-6-6zM21 12h-6" />
-                                </svg>
-                              </button>
-                            </div>
-                          </td>
-                        </tr>`
-                      )
-                      .join('')
-                  : `<tr><td colspan="6" class="text-center py-6">دانش‌آموزی در این کلاس ثبت نشده است.</td></tr>`
-              }
-            </tbody>
-          </table>
-        </div>
-
-        <div class="mt-4 pt-3.5 border-t border-[#E6D8C5] flex items-center justify-between text-xs text-[#6E5D4F] flex-wrap gap-2">
-          <span>تکالیف مرتبط با این کلاس: <strong class="text-[#251B15]">${toPersianDigits(classAssignments.length)} تکلیف</strong></span>
-          <span>مدرس: <strong class="text-[#251B15]">${toPersianDigits(currentClass.instructorName || `${state.admin.firstName} ${state.admin.lastName}`)}</strong></span>
-        </div>
       </div>
     </div>
   `);
@@ -1451,20 +1246,6 @@ function renderAssignmentFormPage($container: JQuery<HTMLElement>, state: Databa
       )
       .join('');
 
-  const studentOptionsHtml =
-    `<option value="">همه دانش‌آموزانِ کلاس انتخاب‌شده</option>` +
-    state.students
-      .filter((s) => s.status === 'approved')
-      .map(
-        (st) =>
-          `<option value="${st.id}" ${
-            editingItem?.targetStudentId === st.id ? 'selected' : ''
-          }>${st.firstName} ${st.lastName} (${
-            st.classCode ? `کلاس ${toPersianDigits(st.classCode)}` : 'بدون کلاس'
-          })</option>`
-      )
-      .join('');
-
   $container.html(`
     <div class="space-y-4">
       <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap">
@@ -1473,7 +1254,7 @@ function renderAssignmentFormPage($container: JQuery<HTMLElement>, state: Databa
             ${editingItem ? `ویرایش تکلیف: ${toPersianDigits(editingItem.title)}` : 'صفحه ایجاد تکلیف جدید'}
           </h2>
           <p class="text-xs text-[#6E5D4F] mt-1 m-0">
-            مشخصات، مهلت تحویل، فایل پیوست و مخاطب هدف تکلیف را وارد نمایید.
+            مشخصات، مهلت تحویل، فایل پیوست و کلاس هدف تکلیف را وارد نمایید.
           </p>
         </div>
         <button type="button" class="btn-admin-action js-back-to-assignments-list">
@@ -1483,7 +1264,7 @@ function renderAssignmentFormPage($container: JQuery<HTMLElement>, state: Databa
 
       <div class="admin-surface-card">
         <form id="form-save-assignment" class="space-y-4">
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label class="scool-field-label">عنوان تکلیف</label>
               <input
@@ -1500,13 +1281,6 @@ function renderAssignmentFormPage($container: JQuery<HTMLElement>, state: Databa
               <label class="scool-field-label">کلاس هدف</label>
               <select id="hw-class" class="school-select" required>
                 ${classOptionsHtml}
-              </select>
-            </div>
-
-            <div>
-              <label class="scool-field-label">دانش‌آموز هدف (اختیاری — برای تکلیف انفرادی)</label>
-              <select id="hw-target-student" class="school-select">
-                ${studentOptionsHtml}
               </select>
             </div>
           </div>
@@ -1617,7 +1391,7 @@ function renderAssignmentDetailPage(
               <td>
                 <div class="flex items-center gap-2.5">
                   ${renderStudentAvatarHtml(st, 'sm')}
-                  <span class="font-extrabold text-[#251B15]">${st.firstName} ${st.lastName}</span>
+                  <span class="font-extrabold text-[#251B15]">${sub?.studentName || `${st.firstName} ${st.lastName}`.trim()}</span>
                 </div>
               </td>
               <td class="font-bold text-[#5A3A22]">${st.classCode ? `کلاس ${toPersianDigits(st.classCode)}` : '—'}</td>
@@ -2100,20 +1874,6 @@ function renderResourceFormPage($container: JQuery<HTMLElement>, state: Database
       )
       .join('');
 
-  const studentOptionsHtml =
-    `<option value="">همه دانش‌آموزانِ کلاس انتخاب‌شده</option>` +
-    state.students
-      .filter((s) => s.status === 'approved')
-      .map(
-        (st) =>
-          `<option value="${st.id}" ${
-            editingRes?.targetStudentId === st.id ? 'selected' : ''
-          }>${st.firstName} ${st.lastName} (${
-            st.classCode ? `کلاس ${toPersianDigits(st.classCode)}` : 'بدون کلاس'
-          })</option>`
-      )
-      .join('');
-
   $container.html(`
     <div class="space-y-4">
       <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap">
@@ -2122,7 +1882,7 @@ function renderResourceFormPage($container: JQuery<HTMLElement>, state: Database
             ${editingRes ? `ویرایش منبع آموزشی: ${toPersianDigits(editingRes.title)}` : 'صفحه افزودن منبع آموزشی جدید'}
           </h2>
           <p class="text-xs text-[#6E5D4F] mt-1 m-0">
-            فایل آموزشی، جزوه، تمرین یا لینک مربوط به کلاس‌ها یا دانش‌آموز هدف را در این صفحه ثبت کنید.
+            فایل آموزشی، جزوه، تمرین یا لینک مربوط به کلاس‌ها را در این صفحه ثبت کنید.
           </p>
         </div>
         <button type="button" class="btn-admin-action js-back-to-resources-list">
@@ -2132,7 +1892,7 @@ function renderResourceFormPage($container: JQuery<HTMLElement>, state: Database
 
       <div class="admin-surface-card">
         <form id="form-save-resource" class="space-y-4">
-          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label class="scool-field-label">عنوان منبع آموزشی</label>
               <input
@@ -2159,13 +1919,6 @@ function renderResourceFormPage($container: JQuery<HTMLElement>, state: Database
               <label class="scool-field-label">کلاس هدف</label>
               <select id="res-class" class="school-select">
                 ${classOptionsHtml}
-              </select>
-            </div>
-
-            <div>
-              <label class="scool-field-label">دانش‌آموز هدف (اختیاری)</label>
-              <select id="res-target-student" class="school-select">
-                ${studentOptionsHtml}
               </select>
             </div>
           </div>
@@ -2464,6 +2217,11 @@ function renderAnnouncementsSection($container: JQuery<HTMLElement>, state: Data
                     <div class="flex items-center justify-between gap-2">
                       <div class="flex items-center gap-2 flex-wrap">
                         <span class="text-sm font-black text-[#251B15]">${toPersianDigits(ann.title)}</span>
+                        ${
+                          ann.notificationType === 'resource'
+                            ? `<span class="text-[11px] font-extrabold px-2 py-0.5 rounded-md bg-[#E2EFEA] text-[#1B5E5A]">منبع آموزشی جدید</span>`
+                            : ''
+                        }
                         <span class="text-[11px] font-bold px-2 py-0.5 rounded-md ${
                           ann.priority === 'فوری'
                             ? 'bg-[#FFF1F2] text-[#E11D48]'
@@ -3030,7 +2788,7 @@ export function initAdminPanelEvents(): void {
 
   // Logout from Admin Panel back to Auth View (/login)
   $('#btn-admin-logout').on('click', () => {
-    setActiveUserRole('');
+    clearAuthSession();
     $('#admin-workspace-view').addClass('view-hidden');
     $('#public-auth-view').removeClass('view-hidden');
     updateBrowserUrl('/login');
@@ -3059,8 +2817,6 @@ export function initAdminPanelEvents(): void {
     $('#cls-modal-title').val('');
     $('#cls-modal-grade').val('پایه نهم');
     $('#cls-modal-instructor').val(defaultInstructor);
-    $('#cls-modal-schedule').val('شنبه‌ها و دوشنبه‌ها · ساعت ۱۶:۰۰ تا ۱۷:۳۰');
-    $('#cls-modal-room').val('اتاق ۳۰۱ / تالار آنلاین');
     $('#cls-modal-desc').val('آموزش طراحی سایت، توسعه فرانت‌اند و پیاده‌سازی پروژه‌های عملی وب.');
     $('#admin-class-form-modal').addClass('is-open').attr('aria-hidden', 'false');
   });
@@ -3083,8 +2839,6 @@ export function initAdminPanelEvents(): void {
     $('#cls-modal-title').val(toPersianDigits(cls.title));
     $('#cls-modal-grade').val(toPersianDigits(cls.gradeLevel || 'پایه نهم'));
     $('#cls-modal-instructor').val(toPersianDigits(cls.instructorName || defaultInstructor));
-    $('#cls-modal-schedule').val(toPersianDigits(cls.scheduleSummary));
-    $('#cls-modal-room').val(toPersianDigits(cls.roomOrLink));
     $('#cls-modal-desc').val(toPersianDigits(cls.description));
     $('#admin-class-form-modal').addClass('is-open').attr('aria-hidden', 'false');
   });
@@ -3094,22 +2848,46 @@ export function initAdminPanelEvents(): void {
     const $btn = $(this).find('button[type="submit"]');
     if ($btn.prop('disabled')) return;
 
+    const state = loadDbState();
     const mode = String($('#cls-modal-mode').val());
     const rawCode = normalizeDigits(String($('#cls-modal-code').val() || '').trim());
-    const capacity = Number(normalizeDigits(String($('#cls-modal-capacity').val() || '30'))) || 30;
-    const title =
-      String($('#cls-modal-title').val() || '').trim() ||
-      `کلاس ${toPersianDigits(rawCode)} - برنامه‌نویسی`;
-    const gradeLevel = String($('#cls-modal-grade').val() || 'پایه نهم').trim() || 'پایه نهم';
-    const instructorName = String($('#cls-modal-instructor').val() || '').trim();
-    const scheduleSummary = String($('#cls-modal-schedule').val() || '').trim();
-    const roomOrLink = String($('#cls-modal-room').val() || '').trim();
-    const description = String($('#cls-modal-desc').val() || '').trim();
+    const rawCapStr = normalizeDigits(String($('#cls-modal-capacity').val() || '').trim());
+    const parsedCapacity = Number(rawCapStr);
 
     if (!rawCode) {
       showToast('کد کلاس الزامی است', 'لطفاً کد کلاس را وارد نمایید.', 'error');
       return;
     }
+
+    if (!rawCapStr || !Number.isInteger(parsedCapacity) || parsedCapacity < 1 || parsedCapacity > 500) {
+      showToast(
+        'ظرفیت کلاس نامعتبر است',
+        'ظرفیت کلاس باید یک عدد صحیح مثبت (بین ۱ تا ۵۰۰ نفر) باشد.',
+        'error'
+      );
+      return;
+    }
+
+    const capacity = parsedCapacity;
+    const existingClass = state.classes.find((c) => c.code === rawCode);
+    const enrolledCount = state.students.filter((s) => s.classCode === rawCode).length;
+    if (mode === 'edit' && capacity < enrolledCount) {
+      showToast(
+        'ظرفیت کمتر از تعداد دانش‌آموزان فعلی',
+        `در حال حاضر ${toPersianDigits(enrolledCount)} دانش‌آموز در این کلاس عضو هستند و ظرفیت نمی‌تواند کمتر از این تعداد باشد.`,
+        'error'
+      );
+      return;
+    }
+
+    const title =
+      String($('#cls-modal-title').val() || '').trim() ||
+      `کلاس ${toPersianDigits(rawCode)} - برنامه‌نویسی`;
+    const gradeLevel = String($('#cls-modal-grade').val() || 'پایه نهم').trim() || 'پایه نهم';
+    const instructorName = String($('#cls-modal-instructor').val() || '').trim();
+    const scheduleSummary = existingClass?.scheduleSummary || 'مطابق برنامه هفتگی آموزشگاه';
+    const roomOrLink = existingClass?.roomOrLink || 'تالار آنلاین اسکول میت';
+    const description = String($('#cls-modal-desc').val() || '').trim();
 
     const origText = $btn.text();
     $btn.prop('disabled', true).text('در حال ذخیره...');
@@ -3870,7 +3648,6 @@ export function initAdminPanelEvents(): void {
 
     const title = String($('#hw-title').val() || '').trim();
     const classCode = String($('#hw-class').val() || 'all');
-    const targetStudentIdRaw = Number($('#hw-target-student').val() || 0);
     const dueDate = String($('#hw-duedate').val() || '').trim();
     const maxScore = Number(normalizeDigits(String($('#hw-maxscore').val() || '20'))) || 20;
     const attachmentName = String($('#hw-attachment').val() || 'فایل تمرین.pdf').trim();
@@ -3882,25 +3659,17 @@ export function initAdminPanelEvents(): void {
     const isEditing = Boolean(editingAssignmentId);
     const nowId = Date.now();
     const nowFa = formatPersianDateTime(new Date());
-    const targetStudentObj =
-      targetStudentIdRaw > 0
-        ? state.students.find((s) => s.id === targetStudentIdRaw) || null
-        : null;
-    const targetStudentId = targetStudentObj ? targetStudentObj.id : undefined;
-    const targetStudentName = targetStudentObj
-      ? `${targetStudentObj.firstName} ${targetStudentObj.lastName}`.trim()
-      : undefined;
-
-    const effectiveClassCode =
-      targetStudentObj && targetStudentObj.classCode ? targetStudentObj.classCode : classCode;
+    const targetStudentId: number | undefined = undefined;
+    const targetStudentName: string | undefined = undefined;
+    const effectiveClassCode = classCode;
 
     if (editingAssignmentId) {
       const item = state.assignments.find((a) => a.id === editingAssignmentId);
       if (item) {
         item.title = title;
         item.classCode = effectiveClassCode;
-        item.targetStudentId = targetStudentId;
-        item.targetStudentName = targetStudentName;
+        item.targetStudentId = undefined;
+        item.targetStudentName = undefined;
         item.dueDate = dueDate;
         item.maxScore = maxScore;
         item.attachmentName = attachmentName;
@@ -3957,7 +3726,11 @@ export function initAdminPanelEvents(): void {
     const origText = $btn.text();
     $btn.prop('disabled', true).text('در حال ذخیره...');
     try {
-      await persistDbState(state);
+      const saved = await persistDbState(state);
+      if (!saved.success) {
+        showToast('خطا در ذخیره تکلیف', saved.message || 'ذخیره تکلیف انجام نشد.', 'error');
+        return;
+      }
       editingAssignmentId = null;
       pendingAssignmentAttachmentName = '';
       pendingAssignmentAttachmentDataUrl = '';
@@ -4161,7 +3934,11 @@ export function initAdminPanelEvents(): void {
     const origText = $btn.text();
     $btn.prop('disabled', true).text('در حال ثبت نمره...');
     try {
-      await persistDbState(state);
+      const saved = await persistDbState(state);
+      if (!saved.success) {
+        showToast('خطا در ثبت نمره', saved.message || 'ثبت نمره انجام نشد.', 'error');
+        return;
+      }
       assignmentSubView = 'detail';
       updateBrowserUrl('/admin/assignments/detail');
       renderActiveSection();
@@ -4309,7 +4086,6 @@ export function initAdminPanelEvents(): void {
       | 'لینک آموزشی'
       | 'ویدیو ضبط‌شده';
     const classCode = String($('#res-class').val() || 'all');
-    const targetStudentIdRaw = Number($('#res-target-student').val() || 0);
     const urlOrFileName = String($('#res-url').val() || '').trim();
     const description = String($('#res-desc').val() || '').trim();
 
@@ -4317,16 +4093,17 @@ export function initAdminPanelEvents(): void {
 
     const state = loadDbState();
     const isEditing = Boolean(editingResourceId);
-    const targetStudentObj =
-      targetStudentIdRaw > 0
-        ? state.students.find((s) => s.id === targetStudentIdRaw) || null
-        : null;
-    const targetStudentId = targetStudentObj ? targetStudentObj.id : undefined;
-    const targetStudentName = targetStudentObj
-      ? `${targetStudentObj.firstName} ${targetStudentObj.lastName}`.trim()
-      : undefined;
-    const effectiveClassCode =
-      targetStudentObj && targetStudentObj.classCode ? targetStudentObj.classCode : classCode;
+    const nowId = Date.now();
+    const nowFa = formatPersianDateTime(new Date());
+    const targetStudentId: number | undefined = undefined;
+    const targetStudentName: string | undefined = undefined;
+    const effectiveClassCode = classCode;
+    const targetRecipientLabel = formatAdminItemRecipient(
+      state,
+      effectiveClassCode,
+      targetStudentId,
+      targetStudentName
+    );
 
     if (editingResourceId) {
       const item = state.resources.find((r) => r.id === editingResourceId);
@@ -4334,8 +4111,8 @@ export function initAdminPanelEvents(): void {
         item.title = title;
         item.category = category;
         item.classCode = effectiveClassCode;
-        item.targetStudentId = targetStudentId;
-        item.targetStudentName = targetStudentName;
+        item.targetStudentId = undefined;
+        item.targetStudentName = undefined;
         item.urlOrFileName = urlOrFileName;
         if (pendingResourceFileDataUrl) {
           item.fileDataUrl = pendingResourceFileDataUrl;
@@ -4347,7 +4124,7 @@ export function initAdminPanelEvents(): void {
       }
     } else {
       state.resources.unshift({
-        id: Date.now(),
+        id: nowId,
         title,
         category,
         classCode: effectiveClassCode,
@@ -4359,15 +4136,48 @@ export function initAdminPanelEvents(): void {
           pendingResourceFileSize ||
           (category === 'لینک آموزشی' ? 'لینک وب' : 'فایل پیوست'),
         description,
-        createdAt: formatPersianDateTime(new Date()),
+        createdAt: nowFa,
         viewers: [],
       });
+
+      const announcementTitle = `منبع آموزشی جدید: ${title}`;
+      const alreadyExists = state.announcements.some(
+        (ann) =>
+          ann.notificationType === 'resource' &&
+          ann.title === announcementTitle &&
+          String(ann.targetClasses) === String(effectiveClassCode)
+      );
+      if (!alreadyExists) {
+        state.announcements.unshift({
+          id: nowId + 1,
+          title: announcementTitle,
+          targetClasses: effectiveClassCode,
+          targetStudentId,
+          targetStudentName,
+          priority: 'عادی',
+          content: `منبع آموزشی جدیدی با عنوان «${title}» (${category}) ویژه ${targetRecipientLabel} منتشر شد.${description ? ` توضیحات: ${description}` : ''} لطفاً از بخش منابع آموزشی نسبت به مشاهده و دریافت آن اقدام نمایید.`,
+          createdAt: nowFa,
+          readers: [],
+          notificationType: 'resource',
+        });
+      }
+
+      logAdminActivity(
+        state,
+        `انتشار منبع آموزشی جدید: ${title}`,
+        `نوع: ${category} · ویژه ${targetRecipientLabel} (همراه با ارسال اعلان خودکار)`,
+        'announcement'
+      );
     }
 
     const origText = $btn.text();
     $btn.prop('disabled', true).text('در حال ذخیره...');
     try {
-      await persistDbState(state);
+      const saved = await persistDbState(state);
+      if (!saved.success) {
+        showToast('خطا در ذخیره منبع آموزشی', saved.message || 'ذخیره منبع آموزشی انجام نشد.', 'error');
+        return;
+      }
       editingResourceId = null;
       pendingResourceFileName = '';
       pendingResourceFileDataUrl = '';
@@ -4380,7 +4190,11 @@ export function initAdminPanelEvents(): void {
       if (isEditing) {
         showToast('منبع آموزشی ویرایش شد', `تغییرات «${title}» در دیتابیس ذخیره گردید.`, 'success');
       } else {
-        showToast('منبع آموزشی اضافه شد', `«${title}» با موفقیت در دیتابیس ذخیره گردید.`, 'success');
+        showToast(
+          'منبع آموزشی منتشر و اطلاع‌رسانی شد',
+          `«${title}» ثبت گردید و اعلان آن برای ${targetRecipientLabel} ارسال شد.`,
+          'success'
+        );
       }
     } catch (err) {
       showToast('خطا در ذخیره منبع آموزشی', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
@@ -5004,6 +4818,25 @@ export function initAdminPanelEvents(): void {
     if ($btn.prop('disabled')) return;
 
     const state = loadDbState();
+    let validationError = '';
+
+    $('.js-cls-set-cap').each(function () {
+      if (validationError) return;
+      const code = String($(this).attr('data-code'));
+      const rawCap = normalizeDigits(String($(this).val() || '').trim());
+      const parsedCap = Number(rawCap);
+      const enrolledCount = state.students.filter((s) => s.classCode === code).length;
+      if (!rawCap || !Number.isInteger(parsedCap) || parsedCap < 1 || parsedCap > 500) {
+        validationError = `ظرفیت کلاس ${toPersianDigits(code)} باید یک عدد صحیح بین ۱ تا ۵۰۰ باشد.`;
+      } else if (parsedCap < enrolledCount) {
+        validationError = `ظرفیت کلاس ${toPersianDigits(code)} نمی‌تواند کمتر از تعداد دانش‌آموزان فعلی (${toPersianDigits(enrolledCount)} نفر) باشد.`;
+      }
+    });
+
+    if (validationError) {
+      showToast('ظرفیت کلاس نامعتبر است', validationError, 'error');
+      return;
+    }
 
     $('.js-cls-set-title').each(function () {
       const code = String($(this).attr('data-code'));
@@ -5144,6 +4977,7 @@ export function initAdminPanelEvents(): void {
         id: newSessionId + idx + 1,
         sessionId: newSessionId,
         studentId: st.id,
+        studentName: `${st.firstName} ${st.lastName}`.trim(),
         classCode: targetClassCode,
         attendance: 'present',
         classScore: null,
@@ -5163,7 +4997,11 @@ export function initAdminPanelEvents(): void {
     const origText = $btn.text();
     $btn.prop('disabled', true).text('در حال ثبت...');
     try {
-      await persistDbState(state);
+      const saved = await persistDbState(state);
+      if (!saved.success) {
+        showToast('خطا در ثبت جلسه', saved.message || 'ثبت جلسه انجام نشد.', 'error');
+        return;
+      }
       $('#admin-gradebook-session-modal').removeClass('is-open').attr('aria-hidden', 'true');
       renderActiveSection();
       showToast(
@@ -5185,6 +5023,8 @@ export function initAdminPanelEvents(): void {
     studentId: number
   ): GradebookEntry {
     if (!state.gradebookEntries) state.gradebookEntries = [];
+    const stObj = state.students.find((s) => Number(s.id) === Number(studentId));
+    const resolvedStudentName = stObj ? `${stObj.firstName} ${stObj.lastName}`.trim() : '';
     let entry = state.gradebookEntries.find(
       (e) => Number(e.sessionId) === Number(sessionId) && Number(e.studentId) === Number(studentId)
     );
@@ -5194,6 +5034,7 @@ export function initAdminPanelEvents(): void {
         id: Date.now() + Math.floor(Math.random() * 1000),
         sessionId: Number(sessionId),
         studentId: Number(studentId),
+        studentName: resolvedStudentName,
         classCode: ses ? ses.classCode : '901',
         attendance: 'present',
         classScore: null,
@@ -5202,6 +5043,8 @@ export function initAdminPanelEvents(): void {
         teacherNote: '',
       };
       state.gradebookEntries.push(entry);
+    } else if (resolvedStudentName && !entry.studentName) {
+      entry.studentName = resolvedStudentName;
     }
     entry.positiveCount = Number(entry.positiveCount) || 0;
     entry.negativeCount = Number(entry.negativeCount) || 0;
@@ -5357,6 +5200,7 @@ export function initAdminPanelEvents(): void {
       );
       classStudents.forEach((st, idx) => {
         const en = ensureGradebookEntry(state, sessionId, st.id);
+        en.studentName = `${st.firstName} ${st.lastName}`.trim();
         if (en.attendance === 'absent') {
           en.classScore = null;
           en.positiveCount = 0;
@@ -5394,7 +5238,11 @@ export function initAdminPanelEvents(): void {
     const origText = $btn.text();
     $btn.prop('disabled', true).text('در حال ذخیره...');
     try {
-      await persistDbState(state);
+      const saved = await persistDbState(state);
+      if (!saved.success) {
+        showToast('خطا در ذخیره دفتر نمره', saved.message || 'ذخیره دفتر نمره انجام نشد.', 'error');
+        return;
+      }
       renderActiveSection();
       showToast(
         'دفتر نمره ذخیره شد',
@@ -5705,7 +5553,7 @@ function renderGradebookSessionDetailPage(
                               <div class="flex items-center gap-2.5">
                                 ${renderStudentAvatarHtml(st, 'sm')}
                                 <div>
-                                  <div class="font-extrabold text-[#251B15]">${st.firstName} ${st.lastName}</div>
+                                  <div class="font-extrabold text-[#251B15]">${existingEntry?.studentName || `${st.firstName} ${st.lastName}`.trim()}</div>
                                   <div class="text-[11px] text-[#6E5D4F] tabular-nums">${toPersianDigits(st.phone)}</div>
                                 </div>
                               </div>

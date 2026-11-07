@@ -17,6 +17,7 @@ import {
   updateBrowserUrl,
 } from './router';
 import {
+  clearAuthSession,
   getActiveUserRole,
   loadDbState,
   onDbStateSynced,
@@ -164,38 +165,41 @@ export function enterStudentWorkspace(
   renderActiveStudentSection();
 }
 
+let initialBackendSyncComplete = false;
+
 /**
  * Apply any route path (`/login`, `/register`, `/admin/*`, `/student/*`)
+ * Preserves authenticated admin and approved student sessions across browser refreshes.
  */
 export function applyRouteState(updateHistory = false): void {
   const resolved = parseCurrentLocation();
+  const role = getActiveUserRole();
 
-  if (resolved.view === 'admin') {
-    if (getActiveUserRole() !== 'admin') {
-      $('#admin-workspace-view').addClass('view-hidden');
-      $('#student-workspace-view').addClass('view-hidden');
-      $('#public-auth-view').removeClass('view-hidden');
-      switchPublicTab('login', true);
-      return;
+  // 1. Authenticated Administrator
+  if (role === 'admin') {
+    if (resolved.view === 'admin') {
+      enterAdminWorkspace(
+        resolved.section || 'dashboard',
+        updateHistory,
+        resolved.subPage
+      );
+    } else {
+      enterAdminWorkspace('dashboard', true);
     }
-    enterAdminWorkspace(
-      resolved.section || 'dashboard',
-      updateHistory,
-      resolved.subPage
-    );
     return;
   }
 
-  if (resolved.view === 'student') {
+  // 2. Authenticated Student
+  if (role === 'student') {
+    if (!initialBackendSyncComplete) {
+      // Wait for initial MySQL state sync before validating student record
+      return;
+    }
+
     const state = loadDbState();
     const activeSt = state.students.find((s) => s.id === state.activeStudentId);
-    if (
-      getActiveUserRole() !== 'student' ||
-      !activeSt ||
-      activeSt.status !== 'approved'
-    ) {
-      setActiveUserRole('');
-      setActiveStudentSessionId(0);
+    if (!activeSt || activeSt.status !== 'approved') {
+      clearAuthSession();
       $('#admin-workspace-view').addClass('view-hidden');
       $('#student-workspace-view').addClass('view-hidden');
       $('#public-auth-view').removeClass('view-hidden');
@@ -205,11 +209,25 @@ export function applyRouteState(updateHistory = false): void {
       }
       return;
     }
-    enterStudentWorkspace(
-      resolved.section || 'dashboard',
-      updateHistory,
-      resolved.subPage
-    );
+
+    if (resolved.view === 'student') {
+      enterStudentWorkspace(
+        resolved.section || 'dashboard',
+        updateHistory,
+        resolved.subPage
+      );
+    } else {
+      enterStudentWorkspace('dashboard', true);
+    }
+    return;
+  }
+
+  // 3. Unauthenticated User
+  if (resolved.view === 'admin' || resolved.view === 'student') {
+    $('#admin-workspace-view').addClass('view-hidden');
+    $('#student-workspace-view').addClass('view-hidden');
+    $('#public-auth-view').removeClass('view-hidden');
+    switchPublicTab('login', true);
     return;
   }
 
@@ -225,15 +243,6 @@ let isAppInitialized = false;
 export function initScoolMeetApp(): void {
   if (isAppInitialized) return;
   isAppInitialized = true;
-
-  // Synchronize relational state from Node.js + MySQL backend on startup
-  void syncStateFromBackend().then(() => {
-    syncRegistrationClassOptions();
-    const resolved = parseCurrentLocation();
-    if (resolved.view === 'student') {
-      applyRouteState(false);
-    }
-  });
 
   onDbStateSynced(() => {
     syncRegistrationClassOptions();
@@ -489,7 +498,22 @@ export function initScoolMeetApp(): void {
   window.addEventListener('popstate', () => {
     applyRouteState(false);
   });
-  applyRouteState(false);
+
+  const existingRole = getActiveUserRole();
+  if (existingRole === 'admin' || existingRole === 'student') {
+    // Restore authenticated session from MySQL before applying route guards so login page never flashes
+    void syncStateFromBackend().finally(() => {
+      initialBackendSyncComplete = true;
+      syncRegistrationClassOptions();
+      applyRouteState(false);
+    });
+  } else {
+    initialBackendSyncComplete = true;
+    applyRouteState(false);
+    void syncStateFromBackend().then(() => {
+      syncRegistrationClassOptions();
+    });
+  }
 }
 
 // Automatically initialize the application when the module loads

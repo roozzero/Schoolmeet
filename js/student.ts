@@ -531,10 +531,15 @@ function renderStudentDashboard($container: JQuery<HTMLElement>, state: Database
         <div class="kpi-stat-card">
           <div class="min-w-0">
             <div class="text-[11px] font-bold text-[#6E5D4F]">حضور و امتیاز کلاسی</div>
-            <div class="text-[15px] font-black text-[#251B15] mt-0.5 tabular-nums">
-              +${toPersianDigits(totalPositives)} مثبت / -${toPersianDigits(totalNegatives)} منفی
+            <div class="flex items-center gap-1.5 mt-1 flex-wrap tabular-nums">
+              <span class="inline-flex items-center px-2 py-0.5 rounded-lg bg-[#ECFDF5] border border-[#A7F3D0] text-[#059669] text-[12px] font-black">
+                +${toPersianDigits(totalPositives)} مثبت
+              </span>
+              <span class="inline-flex items-center px-2 py-0.5 rounded-lg bg-[#FFF1F2] border border-[#FECDD3] text-[#E11D48] text-[12px] font-black">
+                −${toPersianDigits(totalNegatives)} منفی
+              </span>
             </div>
-            <div class="text-[10.5px] font-semibold text-[#1B5E5A] mt-0.5 truncate">
+            <div class="text-[10.5px] font-semibold text-[#1B5E5A] mt-1 truncate">
               ${toPersianDigits(presentSessions)} جلسه حضور ثبت‌شده
             </div>
           </div>
@@ -671,6 +676,8 @@ function renderStudentDashboard($container: JQuery<HTMLElement>, state: Database
                               ? `<span class="text-[10.5px] font-extrabold px-2 py-0.5 rounded-md bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0]">بازخورد اختصاصی مدرس</span>`
                               : ann.notificationType === 'assignment'
                               ? `<span class="text-[10.5px] font-extrabold px-2 py-0.5 rounded-md bg-[#E2EFEA] text-[#1B5E5A]">اعلان تکلیف جدید</span>`
+                              : ann.notificationType === 'resource'
+                              ? `<span class="text-[10.5px] font-extrabold px-2 py-0.5 rounded-md bg-[#F3E5D0] text-[#5A3A22] border border-[#DFC8A9]">منبع آموزشی جدید</span>`
                               : ''
                           }
                         </div>
@@ -742,7 +749,7 @@ function renderStudentAssignments($container: JQuery<HTMLElement>, state: Databa
                             <span class="text-[11px] font-extrabold px-2.5 py-1 rounded-lg ${
                               sub
                                 ? sub.score !== null
-                                  ? 'bg-[#ECFDF5] text-[#059669]'
+                                  ? 'bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0]'
                                   : 'bg-[#E2EFEA] text-[#1B5E5A]'
                                 : lockInfo.isLocked
                                 ? 'bg-[#FFF1F2] text-[#E11D48]'
@@ -751,7 +758,7 @@ function renderStudentAssignments($container: JQuery<HTMLElement>, state: Databa
                               ${
                                 sub
                                   ? sub.score !== null
-                                    ? `نمره ثبت‌شده: ${toPersianDigits(sub.score)} از ${toPersianDigits(hw.maxScore)}`
+                                    ? `نمره کسب‌شده: ${toPersianDigits(sub.score)} از ${toPersianDigits(hw.maxScore)}`
                                     : 'تحویل داده شده (در انتظار نمره)'
                                   : lockInfo.isClosedByAdmin
                                   ? 'بسته شده توسط مدرس'
@@ -788,6 +795,14 @@ function renderStudentAssignments($container: JQuery<HTMLElement>, state: Databa
                           <span>مهلت تحویل:</span>
                           <strong class="${lockInfo.isDeadlineExpired ? 'text-[#E11D48]' : 'text-[#251B15]'}">${toPersianDigits(hw.dueDate)}</strong>
                         </div>
+                        ${
+                          sub && sub.score !== null
+                            ? `<div class="p-2.5 rounded-xl bg-[#ECFDF5] border border-[#A7F3D0] flex items-center justify-between gap-2">
+                                <span class="text-[11px] font-extrabold text-[#065F46]">نمره نهایی مدرس:</span>
+                                <span class="text-xs font-black text-[#059669] tabular-nums">${toPersianDigits(sub.score)} از ${toPersianDigits(hw.maxScore)}</span>
+                              </div>`
+                            : ''
+                        }
 
                         <button
                           type="button"
@@ -812,6 +827,79 @@ function renderStudentAssignments($container: JQuery<HTMLElement>, state: Databa
             : `<div class="col-span-full admin-surface-card text-center py-8 text-xs text-[#6E5D4F]">تکلیفی برای کلاس شما ثبت نشده است.</div>`
         }
       </div>
+
+      <!-- جدول تکالیف پاسخ داده شده همراه با نام دانش‌آموز -->
+      <div class="admin-surface-card space-y-3">
+        <div class="flex items-center justify-between gap-2 flex-wrap">
+          <h3 class="text-sm font-extrabold text-[#251B15] m-0">
+            جدول تکالیف پاسخ داده شده (${toPersianDigits(mySubmissions.length)} مورد)
+          </h3>
+          <span class="text-xs font-bold text-[#6E5D4F]">
+            سوابق پاسخ‌های ثبت‌شده و نمرات دریافتی
+          </span>
+        </div>
+
+        <div class="admin-table-wrap">
+          <table class="admin-table">
+            <thead>
+              <tr>
+                <th>ردیف</th>
+                <th>نام دانش‌آموز</th>
+                <th>عنوان تکلیف</th>
+                <th>فایل پیوست</th>
+                <th>زمان ثبت پاسخ</th>
+                <th>نمره مدرس</th>
+                <th>عملیات</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${
+                mySubmissions.length
+                  ? mySubmissions
+                      .map((sub, idx) => {
+                        const hw = state.assignments.find((a) => a.id === sub.assignmentId);
+                        const stFullName =
+                          (sub.studentName || '').trim() ||
+                          `${student.firstName} ${student.lastName}`.trim();
+                        return `
+                          <tr>
+                            <td class="tabular-nums font-bold">${toPersianDigits(idx + 1)}</td>
+                            <td class="font-extrabold text-[#251B15]">${toPersianDigits(stFullName)}</td>
+                            <td class="font-bold text-[#5A3A22]">${toPersianDigits(hw ? hw.title : `تکلیف #${sub.assignmentId}`)}</td>
+                            <td>
+                              ${
+                                sub.fileName
+                                  ? `<span class="text-xs font-bold text-[#1B5E5A]">${toPersianDigits(sub.fileName)}</span>`
+                                  : `<span class="text-xs text-[#6E5D4F]">بدون فایل پیوست</span>`
+                              }
+                            </td>
+                            <td class="tabular-nums text-xs text-[#6E5D4F]">${toPersianDigits(sub.submittedAt)}</td>
+                            <td class="tabular-nums">
+                              ${
+                                sub.score !== null && sub.score !== undefined
+                                  ? `<span class="inline-flex items-center px-2.5 py-1 rounded-lg bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0] text-xs font-black">${toPersianDigits(sub.score)} از ${toPersianDigits(hw ? hw.maxScore : 20)}</span>`
+                                  : `<span class="inline-flex items-center px-2.5 py-1 rounded-lg bg-[#FFFBEB] text-[#D97706] border border-[#FDE68A] text-[11px] font-bold">در انتظار نمره</span>`
+                              }
+                            </td>
+                            <td>
+                              <button
+                                type="button"
+                                class="btn-admin-action !h-8 !px-3 !text-xs js-st-open-hw-detail"
+                                data-id="${sub.assignmentId}"
+                              >
+                                مشاهده جزئیات
+                              </button>
+                            </td>
+                          </tr>
+                        `;
+                      })
+                      .join('')
+                  : `<tr><td colspan="7" class="text-center py-6 text-xs text-[#6E5D4F]">هنوز پاسخی برای تکالیف ثبت نشده است.</td></tr>`
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   `);
 }
@@ -835,6 +923,10 @@ function renderStudentAssignmentDetailPage(
   const lockInfo = getAssignmentLockState(hw, getAuthoritativeNowMs());
   const isGraded = Boolean(existingSub && existingSub.score !== null);
   const isSubmissionBlocked = lockInfo.isLocked || isGraded;
+  const studentDisplayName =
+    existingSub && existingSub.studentName
+      ? existingSub.studentName
+      : `${student.firstName} ${student.lastName}`.trim();
 
   $container.html(`
     <div class="space-y-4">
@@ -886,32 +978,66 @@ function renderStudentAssignmentDetailPage(
           ${
             existingSub
               ? `
-              <div class="admin-surface-card space-y-2.5">
-                <div class="flex items-center justify-between">
-                  <h3 class="text-sm font-extrabold text-[#251B15] m-0">وضعیت بررسی و نمره مدرس</h3>
-                  <span class="text-xs font-extrabold ${
-                    existingSub.score !== null ? 'text-[#059669]' : 'text-[#D97706]'
-                  }">
-                    ${
-                      existingSub.score !== null
-                        ? `نمره شما: ${toPersianDigits(existingSub.score)} از ${toPersianDigits(hw.maxScore)}`
-                        : 'در انتظار بررسی و نمره‌دهی مدرس'
-                    }
-                  </span>
+              <div class="admin-surface-card space-y-3.5 ${
+                existingSub.score !== null ? 'border-[#A7F3D0] bg-[#FAFDFC]' : ''
+              }">
+                <div class="flex items-center justify-between gap-3 flex-wrap pb-3 border-b border-[#E6D8C5]">
+                  <div>
+                    <h3 class="text-sm font-black text-[#251B15] m-0">نتیجه ارزیابی و پاسخ ارسالی</h3>
+                    <div class="text-[11px] font-bold text-[#6E5D4F] mt-1">
+                      دانش‌آموز: <strong class="text-[#251B15]">${toPersianDigits(studentDisplayName)}</strong> · زمان ثبت: <span class="tabular-nums">${toPersianDigits(existingSub.submittedAt)}</span>
+                    </div>
+                  </div>
+                  ${
+                    existingSub.score !== null
+                      ? `<div class="px-3.5 py-2 rounded-xl bg-[#ECFDF5] border border-[#A7F3D0] text-center shrink-0">
+                          <div class="text-[10.5px] font-bold text-[#047857]">نمره کسب‌شده</div>
+                          <div class="text-base font-black text-[#059669] tabular-nums mt-0.5">
+                            ${toPersianDigits(existingSub.score)} <span class="text-xs font-bold">از ${toPersianDigits(hw.maxScore)}</span>
+                          </div>
+                        </div>`
+                      : `<span class="px-3 py-1.5 rounded-xl bg-[#FFFBEB] border border-[#FDE68A] text-xs font-extrabold text-[#D97706]">
+                          در انتظار بررسی و نمره‌دهی مدرس
+                        </span>`
+                  }
                 </div>
-                <div class="p-3 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] space-y-1.5">
+
+                <div class="p-3.5 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] space-y-2">
+                  <div class="text-xs font-extrabold text-[#5A3A22]">متن پاسخ ارسالی شما:</div>
                   <div class="text-xs text-[#251B15] leading-relaxed whitespace-pre-line">
-                    <strong class="text-[#5A3A22]">پاسخ ارسالی شما:</strong> ${toPersianDigits(existingSub.fileContent)}
+                    ${toPersianDigits(existingSub.fileContent)}
                   </div>
-                  <div class="text-[11px] text-[#6E5D4F] pt-1.5 border-t border-[#E6D8C5] flex items-center justify-between flex-wrap gap-2">
-                    <span>فایل ارسالی: <strong class="text-[#1B5E5A]">${toPersianDigits(existingSub.fileName)}</strong></span>
-                    <span>زمان ارسال: ${toPersianDigits(existingSub.submittedAt)}</span>
+                  <div class="text-[11px] text-[#6E5D4F] pt-2 border-t border-[#E6D8C5] flex items-center justify-between flex-wrap gap-2">
+                    <span>
+                      فایل ضمیمه:
+                      <strong class="text-[#1B5E5A]">
+                        ${existingSub.fileName ? toPersianDigits(existingSub.fileName) : 'بدون فایل ضمیمه'}
+                      </strong>
+                    </span>
+                    ${
+                      existingSub.fileName
+                        ? `<button
+                            type="button"
+                            class="btn-admin-action !h-7 !px-2.5 !text-[11px] js-st-download-own-submission"
+                            data-id="${existingSub.id}"
+                          >
+                            دانلود فایل ارسالی
+                          </button>`
+                        : ''
+                    }
                   </div>
                 </div>
+
                 ${
-                  existingSub.teacherFeedback
-                    ? `<div class="p-3 rounded-xl bg-[#ECFDF5] border border-[#A7F3D0] text-xs text-[#065F46] leading-relaxed">
-                        <strong>بازخورد مدرس:</strong> ${toPersianDigits(existingSub.teacherFeedback)}
+                  existingSub.score !== null || existingSub.teacherFeedback
+                    ? `<div class="p-3.5 rounded-xl bg-[#ECFDF5] border border-[#A7F3D0] space-y-1.5">
+                        <div class="flex items-center justify-between gap-2">
+                          <span class="text-xs font-black text-[#065F46]">بازخورد و نظر مدرس:</span>
+                          <span class="text-[11px] font-extrabold text-[#059669]">تصحیح شده</span>
+                        </div>
+                        <p class="text-xs text-[#064E3B] m-0 leading-relaxed whitespace-pre-line">
+                          ${toPersianDigits(existingSub.teacherFeedback || 'تکلیف شما بررسی و نمره نهایی ثبت گردید.')}
+                        </p>
                       </div>`
                     : `<p class="text-xs text-[#6E5D4F] m-0">تکلیف شما در تاریخ ${toPersianDigits(existingSub.submittedAt)} ارسال شده است و پس از تصحیح مدرس، نمره و بازخورد در این بخش قرار می‌گیرد.</p>`
                 }
@@ -973,21 +1099,20 @@ function renderStudentAssignmentDetailPage(
                 </div>
 
                 <div>
-                  <label class="scool-field-label">فایل پروژه / تمرین ارسالی</label>
+                  <label class="scool-field-label">فایل پروژه / تمرین ارسالی (اختیاری)</label>
                   <div class="flex items-center gap-2">
                     <input
                       type="text"
                       id="st-hw-filename"
                       class="school-input flex-1"
-                      placeholder="نام فایل ارسالی (مثال: project-901.zip)"
+                      placeholder="فایلی انتخاب نشده است (در صورت نیاز فایل را انتخاب کنید)"
                       value="${
                         pendingStudentHwFileName
                           ? toPersianDigits(pendingStudentHwFileName)
-                          : existingSub
+                          : existingSub && existingSub.fileName
                           ? toPersianDigits(existingSub.fileName)
-                          : `${student.firstName}-hw-${hw.id}.zip`
+                          : ''
                       }"
-                      required
                     />
                     <label for="st-hw-file-input" class="btn-admin-action !h-[42px] cursor-pointer shrink-0">
                       انتخاب فایل
@@ -1099,11 +1224,13 @@ function renderStudentGrades($container: JQuery<HTMLElement>, state: DatabaseSta
 
                         <div class="mt-4 pt-3 border-t border-[#E6D8C5] space-y-3">
                           <div class="flex items-center justify-between gap-2 flex-wrap tabular-nums">
-                            <span class="text-xs font-bold text-[#251B15]">
-                              نمره جلسه:
-                              <strong class="font-black text-[#1B5E5A]">
-                                ${entry.classScore !== null ? `${toPersianDigits(entry.classScore)} از ۲۰` : 'ثبت نشده'}
-                              </strong>
+                            <span class="inline-flex items-center gap-1.5 text-xs font-bold text-[#251B15]">
+                              <span>نمره جلسه:</span>
+                              ${
+                                entry.classScore !== null && entry.classScore !== undefined
+                                  ? `<strong class="px-2.5 py-0.5 rounded-lg bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0] font-black">${toPersianDigits(entry.classScore)} از ۲۰</strong>`
+                                  : `<strong class="px-2.5 py-0.5 rounded-lg bg-[#FFFBEB] text-[#D97706] border border-[#FDE68A] font-extrabold text-[11px]">ثبت نشده</strong>`
+                              }
                             </span>
 
                             <div class="flex items-center gap-1.5">
@@ -1392,6 +1519,8 @@ function renderStudentAnnouncements($container: JQuery<HTMLElement>, state: Data
                               ? `<span class="text-[11px] font-extrabold px-2 py-0.5 rounded-md bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0]">بازخورد مدرس</span>`
                               : ann.notificationType === 'assignment'
                               ? `<span class="text-[11px] font-extrabold px-2 py-0.5 rounded-md bg-[#E2EFEA] text-[#1B5E5A]">تکلیف جدید</span>`
+                              : ann.notificationType === 'resource'
+                              ? `<span class="text-[11px] font-extrabold px-2 py-0.5 rounded-md bg-[#F3E5D0] text-[#5A3A22] border border-[#DFC8A9]">منبع آموزشی جدید</span>`
                               : ''
                           }
                           ${
@@ -1426,6 +1555,14 @@ function renderStudentAnnouncements($container: JQuery<HTMLElement>, state: Data
                                   data-section="grades"
                                 >
                                   مشاهده نمرات من
+                                </button>`
+                              : ann.notificationType === 'resource'
+                              ? `<button
+                                  type="button"
+                                  class="btn-admin-action !h-8 !px-3 !text-xs js-st-go-section"
+                                  data-section="resources"
+                                >
+                                  مشاهده منابع آموزشی
                                 </button>`
                               : ''
                           }
@@ -2085,6 +2222,18 @@ export function initStudentPanelEvents(): void {
     }
   });
 
+  $(document).on('click', '.js-st-download-own-submission', function () {
+    const subId = Number($(this).attr('data-id'));
+    const state = loadDbState();
+    const sub = state.submissions.find((s) => s.id === subId);
+    if (!sub || !sub.fileName) return;
+    triggerStudentFileDownload(
+      sub.fileName,
+      sub.fileDataUrl,
+      `پاسخ ارسالی دانش‌آموز: ${sub.studentName}\nزمان ارسال: ${sub.submittedAt}\n\n${sub.fileContent}`
+    );
+  });
+
   $(document).on('submit', '#form-student-submit-hw', async function (e) {
     e.preventDefault();
     if (isUploadingStudentHwFile) {
@@ -2094,7 +2243,9 @@ export function initStudentPanelEvents(): void {
 
     const hwId = Number($(this).attr('data-hw-id'));
     const responseText = String($('#st-hw-response-text').val() || '').trim();
-    const fileName = String($('#st-hw-filename').val() || 'homework.zip').trim();
+    const fileName = String(
+      $('#st-hw-filename').val() || pendingStudentHwFileName || ''
+    ).trim();
     if (!responseText) return;
 
     const state = loadDbState();
@@ -2168,10 +2319,22 @@ export function initStudentPanelEvents(): void {
       </div>
 
       <div class="grid grid-cols-3 gap-3 tabular-nums">
-        <div class="p-3 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] text-center">
-          <div class="text-[11px] font-bold text-[#6E5D4F]">نمره کلاسی جلسه</div>
-          <div class="text-sm font-black text-[#251B15] mt-1">
-            ${entry.classScore !== null ? `${toPersianDigits(entry.classScore)} از ۲۰` : 'ثبت نشده'}
+        <div class="p-3 rounded-xl ${
+          entry.classScore !== null && entry.classScore !== undefined
+            ? 'bg-[#ECFDF5] border border-[#A7F3D0]'
+            : 'bg-[#FFFBEB] border border-[#FDE68A]'
+        } text-center">
+          <div class="text-[11px] font-bold ${
+            entry.classScore !== null && entry.classScore !== undefined
+              ? 'text-[#047857]'
+              : 'text-[#B45309]'
+          }">نمره کلاسی جلسه</div>
+          <div class="text-sm font-black ${
+            entry.classScore !== null && entry.classScore !== undefined
+              ? 'text-[#059669]'
+              : 'text-[#D97706]'
+          } mt-1">
+            ${entry.classScore !== null && entry.classScore !== undefined ? `${toPersianDigits(entry.classScore)} از ۲۰` : 'ثبت نشده'}
           </div>
         </div>
 

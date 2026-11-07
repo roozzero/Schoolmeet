@@ -940,20 +940,29 @@ app.get('/api/state', async (req: Request, res: Response) => {
       topic: String(gs.topic || ''),
     }));
 
-    const allGradebookEntries = gbEntryRows.map((ge) => ({
-      id: Number(ge.id),
-      sessionId: Number(ge.session_id),
-      studentId: Number(ge.student_id),
-      classCode: String(ge.class_code || '901'),
-      attendance: String(ge.attendance || 'present'),
-      positiveCount: Number(ge.positive_count || 0),
-      negativeCount: Number(ge.negative_count || 0),
-      classScore:
-        ge.class_score !== null && ge.class_score !== undefined
-          ? Number(ge.class_score)
-          : null,
-      teacherNote: String(ge.teacher_note || ''),
-    }));
+    const allGradebookEntries = gbEntryRows.map((ge) => {
+      const stId = Number(ge.student_id);
+      const stObj = studentMap.get(stId);
+      const stName =
+        String(ge.student_name || '').trim() ||
+        (stObj ? `${stObj.firstName} ${stObj.lastName}`.trim() : 'دانش‌آموز');
+
+      return {
+        id: Number(ge.id),
+        sessionId: Number(ge.session_id),
+        studentId: stId,
+        studentName: stName,
+        classCode: String(ge.class_code || '901'),
+        attendance: String(ge.attendance || 'present'),
+        positiveCount: Number(ge.positive_count || 0),
+        negativeCount: Number(ge.negative_count || 0),
+        classScore:
+          ge.class_score !== null && ge.class_score !== undefined
+            ? Number(ge.class_score)
+            : null,
+        teacherNote: String(ge.teacher_note || ''),
+      };
+    });
 
     const allActivities = activityRows.map((act) => ({
       id: Number(act.id),
@@ -1514,12 +1523,41 @@ app.post('/api/state', async (req: Request, res: Response) => {
       }
     }
 
+    // Build a lookup map of student full names from the database (and incoming state)
+    const [dbStNameRows] = await conn.query<RowDataPacket[]>(
+      'SELECT `id`, `first_name`, `last_name` FROM `students`'
+    );
+    const studentNameById = new Map<number, string>();
+    for (const r of dbStNameRows) {
+      const fullName = `${String(r.first_name || '').trim()} ${String(
+        r.last_name || ''
+      ).trim()}`.trim();
+      if (fullName) {
+        studentNameById.set(Number(r.id), fullName);
+      }
+    }
+    if (Array.isArray(incomingState.students)) {
+      for (const st of incomingState.students) {
+        const fullName = `${String(st.firstName || '').trim()} ${String(
+          st.lastName || ''
+        ).trim()}`.trim();
+        if (st.id && fullName) {
+          studentNameById.set(Number(st.id), fullName);
+        }
+      }
+    }
+
     // 5. Sync Assignment Submissions in relational `assignment_submissions` table
     if (Array.isArray(incomingState.submissions)) {
       const keptSubIds: number[] = [];
       for (const s of incomingState.submissions) {
         const subId = Number(s.id) || Date.now();
         keptSubIds.push(subId);
+        const stId = Number(s.studentId || 0);
+        const stName =
+          String(s.studentName || '').trim() ||
+          studentNameById.get(stId) ||
+          'دانش‌آموز';
         const submittedFa = formatServerPersianDateTime(
           new Date(),
           s.submittedAt
@@ -1529,6 +1567,7 @@ app.post('/api/state', async (req: Request, res: Response) => {
             (\`id\`, \`assignment_id\`, \`student_id\`, \`student_name\`, \`class_code\`, \`file_name\`, \`file_content\`, \`file_url\`, \`submitted_at\`, \`score\`, \`teacher_feedback\`, \`status\`)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON DUPLICATE KEY UPDATE
+             \`student_name\` = VALUES(\`student_name\`),
              \`file_name\` = VALUES(\`file_name\`),
              \`file_content\` = VALUES(\`file_content\`),
              \`file_url\` = VALUES(\`file_url\`),
@@ -1538,8 +1577,8 @@ app.post('/api/state', async (req: Request, res: Response) => {
           [
             subId,
             Number(s.assignmentId || 0),
-            Number(s.studentId || 0),
-            String(s.studentName || ''),
+            stId,
+            stName,
             String(s.classCode || ''),
             String(s.fileName || ''),
             String(s.fileContent || ''),
@@ -1777,15 +1816,21 @@ app.post('/api/state', async (req: Request, res: Response) => {
     if (Array.isArray(incomingState.gradebookEntries)) {
       for (const ge of incomingState.gradebookEntries) {
         const entryId = Number(ge.id) || Date.now();
+        const stId = Number(ge.studentId || 0);
+        const stName =
+          String(ge.studentName || '').trim() ||
+          studentNameById.get(stId) ||
+          '';
         const attendanceVal =
           ge.attendance === 'absent' || ge.attendance === 'late'
             ? ge.attendance
             : 'present';
         await conn.query(
           `INSERT INTO \`gradebook_entries\`
-            (\`id\`, \`session_id\`, \`student_id\`, \`class_code\`, \`attendance\`, \`positive_count\`, \`negative_count\`, \`class_score\`, \`teacher_note\`)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (\`id\`, \`session_id\`, \`student_id\`, \`student_name\`, \`class_code\`, \`attendance\`, \`positive_count\`, \`negative_count\`, \`class_score\`, \`teacher_note\`)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON DUPLICATE KEY UPDATE
+             \`student_name\` = VALUES(\`student_name\`),
              \`attendance\` = VALUES(\`attendance\`),
              \`positive_count\` = VALUES(\`positive_count\`),
              \`negative_count\` = VALUES(\`negative_count\`),
@@ -1794,7 +1839,8 @@ app.post('/api/state', async (req: Request, res: Response) => {
           [
             entryId,
             Number(ge.sessionId || 0),
-            Number(ge.studentId || 0),
+            stId,
+            stName,
             String(ge.classCode || '901'),
             attendanceVal,
             attendanceVal === 'absent' ? 0 : Number(ge.positiveCount || 0),
@@ -2898,7 +2944,15 @@ app.post('/api/admin/classes', async (req: Request, res: Response) => {
     const title = String(req.body?.title || '').trim();
     const gradeLevel = String(req.body?.gradeLevel || 'پایه نهم').trim() || 'پایه نهم';
     let instructorName = String(req.body?.instructorName || '').trim();
-    const capacity = Math.max(1, Math.min(200, Number(req.body?.capacity) || 30));
+    const parsedCap = Number(normalizeDigitsServer(String(req.body?.capacity ?? '30')).trim());
+    if (!Number.isFinite(parsedCap) || !Number.isInteger(parsedCap) || parsedCap < 1 || parsedCap > 500) {
+      res.status(422).json({
+        success: false,
+        message: 'ظرفیت کلاس باید یک عدد صحیح مثبت بین ۱ تا ۵۰۰ نفر باشد.',
+      });
+      return;
+    }
+    const capacity = parsedCap;
     const roomOrLink = String(req.body?.roomOrLink || 'اتاق ۳۰۱ / تالار آنلاین').trim();
     const scheduleSummary = String(req.body?.scheduleSummary || 'شنبه‌ها ۱۶:۰۰ تا ۱۷:۳۰').trim();
     const description = String(req.body?.description || '').trim();
@@ -2933,9 +2987,12 @@ app.post('/api/admin/classes', async (req: Request, res: Response) => {
 
     if (!instructorName) {
       const [adminRows] = await pool.query<RowDataPacket[]>(
-        'SELECT `full_name` FROM `admins` ORDER BY `id` ASC LIMIT 1'
+        'SELECT `first_name`, `last_name` FROM `admins` ORDER BY `id` ASC LIMIT 1'
       );
-      instructorName = String(adminRows[0]?.full_name || 'روزبه توکلی').trim();
+      const adminFullName = adminRows[0]
+        ? `${String(adminRows[0].first_name || '').trim()} ${String(adminRows[0].last_name || '').trim()}`.trim()
+        : '';
+      instructorName = adminFullName || 'روزبه توکلی';
     }
 
     await pool.query(
@@ -2955,11 +3012,12 @@ app.post('/api/admin/classes', async (req: Request, res: Response) => {
     );
 
     await pool.query(
-      'INSERT INTO `activity_logs` (`text`, `created_at_label`, `type`) VALUES (?, ?, ?)',
+      'INSERT INTO `activity_logs` (`title`, `detail`, `time_ago`, `category`) VALUES (?, ?, ?, ?)',
       [
-        `کلاس جدید «${title}» (کد ${code}) توسط مدیر ایجاد گردید.`,
+        `ایجاد کلاس جدید (${title} — کد ${code})`,
+        `ظرفیت: ${capacity} نفر · مدرس: ${instructorName}`,
         formatServerPersianDateTime(new Date()),
-        'system',
+        'student',
       ]
     );
 
@@ -3031,10 +3089,33 @@ app.put('/api/admin/classes/:code', async (req: Request, res: Response) => {
       req.body?.instructorName !== undefined
         ? String(req.body.instructorName).trim() || String(current.instructor_name || 'روزبه توکلی')
         : String(current.instructor_name || 'روزبه توکلی');
-    const capacity =
-      req.body?.capacity !== undefined
-        ? Math.max(1, Math.min(200, Number(req.body.capacity) || 30))
-        : Number(current.capacity) || 30;
+
+    let capacity = Number(current.capacity) || 30;
+    if (req.body?.capacity !== undefined) {
+      const parsedCap = Number(normalizeDigitsServer(String(req.body.capacity)).trim());
+      if (!Number.isFinite(parsedCap) || !Number.isInteger(parsedCap) || parsedCap < 1 || parsedCap > 500) {
+        res.status(422).json({
+          success: false,
+          message: 'ظرفیت کلاس باید یک عدد صحیح مثبت بین ۱ تا ۵۰۰ نفر باشد.',
+        });
+        return;
+      }
+      capacity = parsedCap;
+    }
+
+    const [enrolledRows] = await pool.query<RowDataPacket[]>(
+      'SELECT COUNT(*) AS `cnt` FROM `students` WHERE `class_code` = ?',
+      [code]
+    );
+    const enrolledCount = Number(enrolledRows[0]?.cnt) || 0;
+    if (capacity < enrolledCount) {
+      res.status(422).json({
+        success: false,
+        message: `ظرفیت کلاس (${capacity} نفر) نمی‌تواند کمتر از تعداد دانش‌آموزان فعلی عضو این کلاس (${enrolledCount} نفر) باشد.`,
+      });
+      return;
+    }
+
     const roomOrLink =
       req.body?.roomOrLink !== undefined
         ? String(req.body.roomOrLink).trim()
@@ -3073,11 +3154,12 @@ app.put('/api/admin/classes/:code', async (req: Request, res: Response) => {
     );
 
     await pool.query(
-      'INSERT INTO `activity_logs` (`text`, `created_at_label`, `type`) VALUES (?, ?, ?)',
+      'INSERT INTO `activity_logs` (`title`, `detail`, `time_ago`, `category`) VALUES (?, ?, ?, ?)',
       [
-        `مشخصات کلاس «${title}» (کد ${code}) توسط مدیر بروزرسانی شد.`,
+        `بروزرسانی مشخصات کلاس (${title} — کد ${code})`,
+        `ظرفیت: ${capacity} نفر · مدرس: ${instructorName}`,
         formatServerPersianDateTime(new Date()),
-        'system',
+        'student',
       ]
     );
 
@@ -3164,11 +3246,12 @@ app.delete('/api/admin/classes/:code', async (req: Request, res: Response) => {
     await conn.query('DELETE FROM `classes` WHERE `code` = ?', [code]);
 
     await conn.query(
-      'INSERT INTO `activity_logs` (`text`, `created_at_label`, `type`) VALUES (?, ?, ?)',
+      'INSERT INTO `activity_logs` (`title`, `detail`, `time_ago`, `category`) VALUES (?, ?, ?, ?)',
       [
-        `کلاس «${classTitle}» (کد ${code}) توسط مدیر حذف شد (${unassignRes.affectedRows} دانش‌آموز به وضعیت بدون کلاس منتقل شدند).`,
+        `حذف کلاس (${classTitle} — کد ${code})`,
+        `${unassignRes.affectedRows} دانش‌آموز به وضعیت بدون کلاس منتقل شدند.`,
         formatServerPersianDateTime(new Date()),
-        'system',
+        'student',
       ]
     );
 
@@ -3268,7 +3351,7 @@ app.post(
     try {
       const assignmentId = Number(req.params.id);
       const studentId = Number(req.body?.studentId);
-      const fileName = String(req.body?.fileName || 'homework.zip').trim();
+      const fileName = String(req.body?.fileName || '').trim();
       const fileContent = String(req.body?.fileContent || '').trim();
       const fileDataUrl = req.body?.fileDataUrl
         ? String(req.body.fileDataUrl)

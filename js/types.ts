@@ -78,6 +78,7 @@ export interface GradebookEntry {
   id: number;
   sessionId: number;
   studentId: number;
+  studentName?: string;
   classCode: ClassRoomCode;
   attendance: AttendanceStatus;
   positiveCount: number;
@@ -154,7 +155,7 @@ export interface AnnouncementItem {
   targetStudentId?: number;
   targetStudentName?: string;
   assignmentId?: number;
-  notificationType?: 'general' | 'assignment' | 'feedback';
+  notificationType?: 'general' | 'assignment' | 'feedback' | 'resource';
   priority: 'عادی' | 'مهم' | 'فوری';
   createdAt: string;
   readers?: AnnouncementReaderLog[];

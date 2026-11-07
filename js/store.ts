@@ -33,11 +33,19 @@ export function onDbStateSynced(listener: (state: DatabaseState) => void): void 
 
 /**
  * Get or set the currently logged-in user role ('admin' | 'student' | '')
+ * Persisted in both sessionStorage and localStorage so browser refreshes never lose the session.
  */
 export function getActiveUserRole(): 'admin' | 'student' | '' {
   try {
-    const val = sessionStorage.getItem(SESSION_ROLE_KEY) || '';
-    if (val === 'admin' || val === 'student') return val;
+    const val =
+      sessionStorage.getItem(SESSION_ROLE_KEY) ||
+      localStorage.getItem(SESSION_ROLE_KEY) ||
+      '';
+    if (val === 'admin' || val === 'student') {
+      sessionStorage.setItem(SESSION_ROLE_KEY, val);
+      localStorage.setItem(SESSION_ROLE_KEY, val);
+      return val;
+    }
     return '';
   } catch {
     return '';
@@ -48,8 +56,10 @@ export function setActiveUserRole(role: 'admin' | 'student' | ''): void {
   try {
     if (!role) {
       sessionStorage.removeItem(SESSION_ROLE_KEY);
+      localStorage.removeItem(SESSION_ROLE_KEY);
     } else {
       sessionStorage.setItem(SESSION_ROLE_KEY, role);
+      localStorage.setItem(SESSION_ROLE_KEY, role);
     }
   } catch {
     // Ignore storage errors
@@ -58,8 +68,15 @@ export function setActiveUserRole(role: 'admin' | 'student' | ''): void {
 
 export function getActiveStudentSessionId(): number {
   try {
-    const raw = sessionStorage.getItem(SESSION_STUDENT_ID_KEY);
-    return raw ? Number(raw) || 0 : 0;
+    const raw =
+      sessionStorage.getItem(SESSION_STUDENT_ID_KEY) ||
+      localStorage.getItem(SESSION_STUDENT_ID_KEY);
+    const parsed = raw ? Number(raw) || 0 : 0;
+    if (parsed > 0) {
+      sessionStorage.setItem(SESSION_STUDENT_ID_KEY, String(parsed));
+      localStorage.setItem(SESSION_STUDENT_ID_KEY, String(parsed));
+    }
+    return parsed;
   } catch {
     return 0;
   }
@@ -67,17 +84,24 @@ export function getActiveStudentSessionId(): number {
 
 export function setActiveStudentSessionId(studentId: number): void {
   try {
-    if (!studentId) {
+    if (!studentId || studentId <= 0) {
       sessionStorage.removeItem(SESSION_STUDENT_ID_KEY);
+      localStorage.removeItem(SESSION_STUDENT_ID_KEY);
     } else {
       sessionStorage.setItem(SESSION_STUDENT_ID_KEY, String(studentId));
+      localStorage.setItem(SESSION_STUDENT_ID_KEY, String(studentId));
     }
     if (memoryDbCache) {
-      memoryDbCache.activeStudentId = studentId;
+      memoryDbCache.activeStudentId = studentId > 0 ? studentId : 0;
     }
   } catch {
     // Ignore storage errors
   }
+}
+
+export function clearAuthSession(): void {
+  setActiveUserRole('');
+  setActiveStudentSessionId(0);
 }
 
 /**
@@ -342,7 +366,7 @@ export function logAdminActivity(
   title: string,
   detail: string,
   category: ActivityLogItem['category'],
-  skipSave = false
+  skipSave = true
 ): void {
   state.activities.unshift({
     id: Date.now(),

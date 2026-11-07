@@ -570,6 +570,36 @@ const MIGRATIONS: Migration[] = [
       await ensureDefaultClassesSeeded(conn);
     },
   },
+  {
+    name: '008_add_student_name_to_gradebook_entries',
+    up: async (conn: PoolConnection) => {
+      const [gbCols] = await conn.query<RowDataPacket[]>(
+        `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'gradebook_entries' AND COLUMN_NAME = 'student_name' LIMIT 1`
+      );
+      if (gbCols.length === 0) {
+        await conn.query(
+          `ALTER TABLE \`gradebook_entries\` ADD COLUMN \`student_name\` VARCHAR(150) NOT NULL DEFAULT '' AFTER \`student_id\``
+        );
+      }
+
+      // Backfill student_name in gradebook_entries from students
+      await conn.query(`
+        UPDATE \`gradebook_entries\` ge
+        INNER JOIN \`students\` s ON s.\`id\` = ge.\`student_id\`
+        SET ge.\`student_name\` = TRIM(CONCAT(s.\`first_name\`, ' ', s.\`last_name\`))
+        WHERE ge.\`student_name\` IS NULL OR ge.\`student_name\` = ''
+      `);
+
+      // Backfill student_name in assignment_submissions from students
+      await conn.query(`
+        UPDATE \`assignment_submissions\` sub
+        INNER JOIN \`students\` s ON s.\`id\` = sub.\`student_id\`
+        SET sub.\`student_name\` = TRIM(CONCAT(s.\`first_name\`, ' ', s.\`last_name\`))
+        WHERE sub.\`student_name\` IS NULL OR sub.\`student_name\` = ''
+      `);
+    },
+  },
 ];
 
 export const REQUIRED_DEFAULT_CLASS_CODES = ['901', '902', '903'] as const;
