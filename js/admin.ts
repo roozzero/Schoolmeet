@@ -1,8 +1,11 @@
 import $ from 'jquery';
 import {
+  adminCreateClassApi,
   adminCreateStudentApi,
+  adminDeleteClassApi,
   adminRemoveStudentAvatarApi,
   adminSetAssignmentStatusApi,
+  adminUpdateClassApi,
   adminUpdateStudentApi,
   changeAdminPasswordApi,
   updateAdminProfileApi,
@@ -17,6 +20,7 @@ import {
   persistDbState,
   resetDbState,
   setActiveUserRole,
+  syncStateFromBackend,
   uploadFileWithProgress,
 } from './store';
 import {
@@ -290,13 +294,39 @@ function openConfirmModal(options: {
  * Sync Class Select Options Dynamically
  */
 function syncClassSelectOptions(state: DatabaseState): void {
+  const prevProfClass = String($('#prof-modal-class').val() || '');
+  const prevAddStClass = String($('#add-st-class').val() || '');
+  const prevAnnTarget = String($('#ann-target').val() || 'all');
+  const prevAnnStudent = String($('#ann-target-student').val() || '');
+  const prevGbClass = String($('#gb-session-class').val() || '');
+
   const classOptionsHtml = state.classes
-    .map((c) => `<option value="${c.code}">${toPersianDigits(c.code)}</option>`)
+    .map(
+      (c) =>
+        `<option value="${c.code}">کلاس ${toPersianDigits(c.code)} — ${toPersianDigits(c.title)}</option>`
+    )
     .join('');
 
-  $('#prof-modal-class, #add-st-class').html(
+  $('#prof-modal-class').html(
     `<option value="">— (بدون کلاس)</option>${classOptionsHtml}`
   );
+  if (prevProfClass && state.classes.some((c) => c.code === prevProfClass)) {
+    $('#prof-modal-class').val(prevProfClass);
+  }
+
+  $('#add-st-class').html(
+    `<option value="">— (بدون کلاس)</option>${classOptionsHtml}`
+  );
+  if (prevAddStClass && state.classes.some((c) => c.code === prevAddStClass)) {
+    $('#add-st-class').val(prevAddStClass);
+  }
+
+  if ($('#gb-session-class').length) {
+    $('#gb-session-class').html(classOptionsHtml);
+    if (prevGbClass && state.classes.some((c) => c.code === prevGbClass)) {
+      $('#gb-session-class').val(prevGbClass);
+    }
+  }
 
   const scopeOptionsHtml =
     `<option value="all">همه دانش‌آموزان (همه کلاس‌ها)</option>` +
@@ -305,6 +335,9 @@ function syncClassSelectOptions(state: DatabaseState): void {
       .join('');
 
   $('#ann-target').html(scopeOptionsHtml);
+  if (prevAnnTarget === 'all' || state.classes.some((c) => c.code === prevAnnTarget)) {
+    $('#ann-target').val(prevAnnTarget);
+  }
 
   const approvedStudents = state.students.filter((s) => s.status === 'approved');
   const studentOptionsHtml =
@@ -319,6 +352,9 @@ function syncClassSelectOptions(state: DatabaseState): void {
       .join('');
 
   $('#ann-target-student').html(studentOptionsHtml);
+  if (prevAnnStudent) {
+    $('#ann-target-student').val(prevAnnStudent);
+  }
 }
 
 /**
@@ -640,13 +676,52 @@ function renderDashboardSection($container: JQuery<HTMLElement>, state: Database
 /* ============================================================================
    2. مدیریت کلاس‌ها: دکمه ایجاد کلاس، آیکون ویرایش در هر کارت، و اعضای کلاس با عکس پروفایل
    ============================================================================ */
+const PROTECTED_DEFAULT_CLASS_CODES = ['901', '902', '903'];
+let classesRecoveryRequested = false;
+
 function renderClassesSection($container: JQuery<HTMLElement>, state: DatabaseState): void {
+  if (!Array.isArray(state.classes) || state.classes.length === 0) {
+    if (!classesRecoveryRequested) {
+      classesRecoveryRequested = true;
+      void syncStateFromBackend().finally(() => {
+        classesRecoveryRequested = false;
+      });
+    }
+    $container.html(`
+      <div class="space-y-5">
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+          <h2 class="text-sm font-extrabold text-[#251B15] m-0">
+            لیست کلاس‌های آموزشی (۰ کلاس)
+          </h2>
+          <button type="button" id="btn-open-create-class" class="btn-admin-primary !h-9">
+            + ایجاد کلاس جدید
+          </button>
+        </div>
+        <div class="admin-surface-card text-center py-10 space-y-3">
+          <p class="text-sm font-extrabold text-[#251B15] m-0">
+            در حال بارگذاری کلاس‌ها از پایگاه داده MySQL...
+          </p>
+          <p class="text-xs text-[#6E5D4F] m-0">
+            چنانچه کلاسی در پایگاه داده وجود ندارد، می‌توانید با دکمه «+ ایجاد کلاس جدید» کلاس جدیدی ثبت کنید.
+          </p>
+        </div>
+      </div>
+    `);
+    return;
+  }
+
   const currentClass =
     state.classes.find((c) => c.code === selectedClassTab) || state.classes[0];
+  selectedClassTab = currentClass.code;
+
   const classMembers = state.students.filter((s) => s.classCode === currentClass.code);
+  const availableStudentsToAdd = state.students.filter(
+    (s) => s.classCode !== currentClass.code
+  );
   const classAssignments = state.assignments.filter(
     (a) => a.classCode === currentClass.code || a.classCode === 'all'
   );
+  const isCurrentDefault = PROTECTED_DEFAULT_CLASS_CODES.includes(currentClass.code);
 
   $container.html(`
     <div class="space-y-5">
@@ -660,15 +735,17 @@ function renderClassesSection($container: JQuery<HTMLElement>, state: DatabaseSt
         </button>
       </div>
 
-      <!-- کارت‌های همسان کلاس‌ها با آیکون ویرایش -->
+      <!-- کارت‌های همسان کلاس‌ها با آیکون ویرایش و حذف (برای کلاس‌های سفارشی) -->
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch">
         ${state.classes
           .map((cls) => {
             const count = state.students.filter((s) => s.classCode === cls.code).length;
             const isSelected = cls.code === currentClass.code;
+            const isDefaultClass = PROTECTED_DEFAULT_CLASS_CODES.includes(cls.code);
+            const cap = Math.max(1, Number(cls.capacity) || 30);
             const fillWidth = Math.min(
               100,
-              Math.max(12, Math.round((count / cls.capacity) * 100))
+              Math.max(12, Math.round((count / cap) * 100))
             );
             return `
               <div
@@ -679,20 +756,39 @@ function renderClassesSection($container: JQuery<HTMLElement>, state: DatabaseSt
               >
                 <div>
                   <div class="flex items-center justify-between gap-2">
-                    <h3 class="text-sm font-black text-[#5A3A22] m-0">
-                      ${toPersianDigits(cls.title)}
-                    </h3>
-                    <button
-                      type="button"
-                      class="btn-icon-action js-edit-class-modal"
-                      data-code="${cls.code}"
-                      title="ویرایش مشخصات کلاس ${toPersianDigits(cls.code)}"
-                      aria-label="ویرایش مشخصات کلاس"
-                    >
-                      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                      </svg>
-                    </button>
+                    <div class="flex items-center gap-1.5 min-w-0">
+                      <h3 class="text-sm font-black text-[#5A3A22] m-0 truncate">
+                        ${toPersianDigits(cls.title)}
+                      </h3>
+                    </div>
+                    <div class="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        class="btn-icon-action js-edit-class-modal"
+                        data-code="${cls.code}"
+                        title="ویرایش مشخصات کلاس ${toPersianDigits(cls.code)}"
+                        aria-label="ویرایش مشخصات کلاس"
+                      >
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
+                      </button>
+                      ${
+                        !isDefaultClass
+                          ? `<button
+                              type="button"
+                              class="btn-icon-action btn-icon-danger js-delete-class"
+                              data-code="${cls.code}"
+                              title="حذف کلاس ${toPersianDigits(cls.code)}"
+                              aria-label="حذف کلاس"
+                            >
+                              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            </button>`
+                          : ''
+                      }
+                    </div>
                   </div>
                   <p class="text-xs text-[#6E5D4F] mt-2 m-0 leading-relaxed">
                     ${toPersianDigits(cls.description)}
@@ -701,16 +797,17 @@ function renderClassesSection($container: JQuery<HTMLElement>, state: DatabaseSt
 
                 <div class="mt-4 pt-3 border-t border-[#E6D8C5] space-y-2">
                   <div class="flex items-center justify-between text-xs">
-                    <span class="text-[#6E5D4F] font-medium">اعضای کلاس</span>
+                    <span class="text-[#6E5D4F] font-medium">اعضای کلاس (کد ${toPersianDigits(cls.code)})</span>
                     <span class="font-extrabold text-[#251B15] tabular-nums">
-                      ${toPersianDigits(count)} از ${toPersianDigits(cls.capacity)} نفر
+                      ${toPersianDigits(count)} از ${toPersianDigits(cap)} نفر
                     </span>
                   </div>
                   <div class="class-progress-track">
                     <div class="class-progress-fill" style="width: ${fillWidth}%"></div>
                   </div>
-                  <div class="text-[11px] text-[#6E5D4F] pt-1">
-                    ${toPersianDigits(cls.scheduleSummary)}
+                  <div class="flex items-center justify-between text-[11px] text-[#6E5D4F] pt-1 gap-2">
+                    <span class="truncate">${toPersianDigits(cls.scheduleSummary)}</span>
+                    <span class="font-bold text-[#5A3A22] shrink-0">${toPersianDigits(cls.gradeLevel || 'پایه نهم')}</span>
                   </div>
                 </div>
               </div>
@@ -719,18 +816,23 @@ function renderClassesSection($container: JQuery<HTMLElement>, state: DatabaseSt
           .join('')}
       </div>
 
-      <!-- لیست اعضای کلاس انتخاب‌شده با عکس پروفایل هر دانش‌آموز -->
-      <div class="w-full admin-surface-card">
-        <div class="flex items-center justify-between gap-2 mb-3.5 flex-wrap">
+      <!-- جزئیات کامل کلاس انتخاب‌شده و مدیریت اعضای کلاس -->
+      <div class="w-full admin-surface-card space-y-4">
+        <div class="flex items-start justify-between gap-3 flex-wrap pb-3.5 border-b border-[#E6D8C5]">
           <div>
-            <h3 class="text-sm font-extrabold text-[#251B15] m-0">
-              اعضای ${toPersianDigits(currentClass.title)} (${toPersianDigits(classMembers.length)} نفر)
-            </h3>
-            <p class="text-[11px] text-[#6E5D4F] mt-1 m-0">
-              محل برگزاری: ${toPersianDigits(currentClass.roomOrLink)} · زمان‌بندی: ${toPersianDigits(currentClass.scheduleSummary)}
+            <div class="flex items-center gap-2 flex-wrap">
+              <h3 class="text-sm font-extrabold text-[#251B15] m-0">
+                جزئیات و اعضای ${toPersianDigits(currentClass.title)} (کد ${toPersianDigits(currentClass.code)})
+              </h3>
+              <span class="text-xs font-bold text-[#5A3A22]">
+                (${toPersianDigits(classMembers.length)} از ${toPersianDigits(currentClass.capacity)} نفر)
+              </span>
+            </div>
+            <p class="text-xs text-[#6E5D4F] mt-1.5 m-0 leading-relaxed">
+              ${toPersianDigits(currentClass.description || 'بدون توضیحات')}
             </p>
           </div>
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-2 flex-wrap">
             <button
               type="button"
               class="btn-admin-action js-edit-class-modal"
@@ -738,12 +840,83 @@ function renderClassesSection($container: JQuery<HTMLElement>, state: DatabaseSt
             >
               ویرایش اطلاعات کلاس
             </button>
+            ${
+              !isCurrentDefault
+                ? `<button
+                    type="button"
+                    class="btn-admin-danger !h-9 js-delete-class"
+                    data-code="${currentClass.code}"
+                  >
+                    حذف این کلاس
+                  </button>`
+                : ''
+            }
             <button
               type="button"
               class="btn-admin-primary !h-9 js-open-add-student-modal"
               data-class="${currentClass.code}"
             >
-              + افزودن دانش‌آموز به کلاس ${toPersianDigits(currentClass.code)}
+              + ثبت دانش‌آموز جدید در کلاس ${toPersianDigits(currentClass.code)}
+            </button>
+          </div>
+        </div>
+
+        <!-- خلاصه مشخصات کلاس انتخاب‌شده -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div class="p-3 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB]">
+            <div class="text-[11px] text-[#6E5D4F]">پایه تحصیلی و کد کلاس</div>
+            <div class="text-xs font-extrabold text-[#251B15] mt-1">
+              ${toPersianDigits(currentClass.gradeLevel || 'پایه نهم')} · کد ${toPersianDigits(currentClass.code)}
+            </div>
+          </div>
+          <div class="p-3 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB]">
+            <div class="text-[11px] text-[#6E5D4F]">مدرس کلاس</div>
+            <div class="text-xs font-extrabold text-[#251B15] mt-1">
+              ${toPersianDigits(currentClass.instructorName || `${state.admin.firstName} ${state.admin.lastName}`)}
+            </div>
+          </div>
+          <div class="p-3 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB]">
+            <div class="text-[11px] text-[#6E5D4F]">محل برگزاری / لینک کلاس</div>
+            <div class="text-xs font-extrabold text-[#251B15] mt-1">
+              ${toPersianDigits(currentClass.roomOrLink || 'اتاق ۳۰۱ / تالار آنلاین')}
+            </div>
+          </div>
+          <div class="p-3 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB]">
+            <div class="text-[11px] text-[#6E5D4F]">زمان‌بندی جلسات</div>
+            <div class="text-xs font-extrabold text-[#251B15] mt-1">
+              ${toPersianDigits(currentClass.scheduleSummary || 'ثبت‌نشده')}
+            </div>
+          </div>
+        </div>
+
+        <!-- افزودن دانش‌آموز موجود در سامانه به این کلاس -->
+        <div class="p-3.5 rounded-xl bg-[#F8F3EA] border border-[#E5DBCB] flex items-center justify-between gap-3 flex-wrap">
+          <div class="text-xs font-extrabold text-[#251B15]">
+            افزودن یا انتقال دانش‌آموز ثبت‌نام‌شده به کلاس ${toPersianDigits(currentClass.code)}:
+          </div>
+          <div class="flex items-center gap-2 flex-wrap flex-1 sm:flex-initial justify-end">
+            <select
+              id="select-add-existing-student-to-class"
+              class="school-select !h-9 !py-0 !text-xs min-w-[230px]"
+            >
+              <option value="">— انتخاب دانش‌آموز برای افزودن به کلاس ${toPersianDigits(currentClass.code)} —</option>
+              ${availableStudentsToAdd
+                .map(
+                  (st) =>
+                    `<option value="${st.id}">${st.firstName} ${st.lastName} (${
+                      st.classCode ? `کلاس فعلی: ${toPersianDigits(st.classCode)}` : 'بدون کلاس'
+                    })</option>`
+                )
+                .join('')}
+            </select>
+            <button
+              type="button"
+              id="btn-add-existing-student-to-class"
+              data-class="${currentClass.code}"
+              class="btn-admin-action !h-9"
+              ${availableStudentsToAdd.length === 0 ? 'disabled' : ''}
+            >
+              افزودن به این کلاس
             </button>
           </div>
         </div>
@@ -788,9 +961,10 @@ function renderClassesSection($container: JQuery<HTMLElement>, state: DatabaseSt
                           </td>
                           <td>
                             <select
-                              class="school-select !h-8 !py-0 !text-xs !w-28 js-change-student-class"
+                              class="school-select !h-8 !py-0 !text-xs !w-32 js-change-student-class"
                               data-id="${st.id}"
                             >
+                              <option value="">— (بدون کلاس)</option>
                               ${state.classes
                                 .map(
                                   (c) =>
@@ -836,7 +1010,7 @@ function renderClassesSection($container: JQuery<HTMLElement>, state: DatabaseSt
 
         <div class="mt-4 pt-3.5 border-t border-[#E6D8C5] flex items-center justify-between text-xs text-[#6E5D4F] flex-wrap gap-2">
           <span>تکالیف مرتبط با این کلاس: <strong class="text-[#251B15]">${toPersianDigits(classAssignments.length)} تکلیف</strong></span>
-          <span>مدرس: <strong class="text-[#251B15]">${currentClass.instructorName}</strong></span>
+          <span>مدرس: <strong class="text-[#251B15]">${toPersianDigits(currentClass.instructorName || `${state.admin.firstName} ${state.admin.lastName}`)}</strong></span>
         </div>
       </div>
     </div>
@@ -2864,23 +3038,29 @@ export function initAdminPanelEvents(): void {
   });
 
   /* --------------------------------------------------------------------------
-     Classes Management: Select Card, Create Class Modal & Edit Class Icon Modal
+     Classes Management: Select Card, Create Class Modal, Edit Class, Delete Class & Add Existing Student
      -------------------------------------------------------------------------- */
   $(document).on('click', '.js-select-class-card', function (e) {
-    if ($(e.target).closest('.js-edit-class-modal').length) return;
+    if ($(e.target).closest('.js-edit-class-modal, .js-delete-class').length) return;
     const code = String($(this).attr('data-code') || '901');
     selectedClassTab = code;
     renderActiveSection();
   });
 
   $(document).on('click', '#btn-open-create-class', function () {
+    const state = loadDbState();
+    const defaultInstructor =
+      `${state.admin.firstName || ''} ${state.admin.lastName || ''}`.trim() ||
+      'روزبه توکلی';
     $('#class-modal-heading').text('ایجاد کلاس جدید');
     $('#cls-modal-mode').val('create');
     $('#cls-modal-code').val('').prop('readonly', false);
     $('#cls-modal-capacity').val('۳۰');
     $('#cls-modal-title').val('');
+    $('#cls-modal-grade').val('پایه نهم');
+    $('#cls-modal-instructor').val(defaultInstructor);
     $('#cls-modal-schedule').val('شنبه‌ها و دوشنبه‌ها · ساعت ۱۶:۰۰ تا ۱۷:۳۰');
-    $('#cls-modal-room').val('تالار آنلاین');
+    $('#cls-modal-room').val('اتاق ۳۰۱ / تالار آنلاین');
     $('#cls-modal-desc').val('آموزش طراحی سایت، توسعه فرانت‌اند و پیاده‌سازی پروژه‌های عملی وب.');
     $('#admin-class-form-modal').addClass('is-open').attr('aria-hidden', 'false');
   });
@@ -2892,11 +3072,17 @@ export function initAdminPanelEvents(): void {
     const cls = state.classes.find((c) => c.code === code);
     if (!cls) return;
 
+    const defaultInstructor =
+      `${state.admin.firstName || ''} ${state.admin.lastName || ''}`.trim() ||
+      'روزبه توکلی';
+
     $('#class-modal-heading').text(`ویرایش مشخصات کلاس ${toPersianDigits(cls.code)}`);
     $('#cls-modal-mode').val('edit');
     $('#cls-modal-code').val(toPersianDigits(cls.code)).prop('readonly', true);
     $('#cls-modal-capacity').val(toPersianDigits(cls.capacity));
     $('#cls-modal-title').val(toPersianDigits(cls.title));
+    $('#cls-modal-grade').val(toPersianDigits(cls.gradeLevel || 'پایه نهم'));
+    $('#cls-modal-instructor').val(toPersianDigits(cls.instructorName || defaultInstructor));
     $('#cls-modal-schedule').val(toPersianDigits(cls.scheduleSummary));
     $('#cls-modal-room').val(toPersianDigits(cls.roomOrLink));
     $('#cls-modal-desc').val(toPersianDigits(cls.description));
@@ -2914,53 +3100,170 @@ export function initAdminPanelEvents(): void {
     const title =
       String($('#cls-modal-title').val() || '').trim() ||
       `کلاس ${toPersianDigits(rawCode)} - برنامه‌نویسی`;
+    const gradeLevel = String($('#cls-modal-grade').val() || 'پایه نهم').trim() || 'پایه نهم';
+    const instructorName = String($('#cls-modal-instructor').val() || '').trim();
     const scheduleSummary = String($('#cls-modal-schedule').val() || '').trim();
     const roomOrLink = String($('#cls-modal-room').val() || '').trim();
     const description = String($('#cls-modal-desc').val() || '').trim();
 
-    if (!rawCode) return;
-
-    const state = loadDbState();
-    if (mode === 'edit') {
-      const cls = state.classes.find((c) => c.code === rawCode);
-      if (cls) {
-        cls.capacity = capacity;
-        cls.title = title;
-        cls.scheduleSummary = scheduleSummary;
-        cls.roomOrLink = roomOrLink;
-        cls.description = description;
-      }
-    } else {
-      if (state.classes.some((c) => c.code === rawCode)) {
-        showToast('کد تکراری', `کلاس با کد ${toPersianDigits(rawCode)} قبلاً ثبت شده است.`, 'error');
-        return;
-      }
-      state.classes.push({
-        code: rawCode,
-        title,
-        gradeLevel: '',
-        instructorName: `${state.admin.firstName} ${state.admin.lastName}`,
-        capacity,
-        roomOrLink,
-        scheduleSummary,
-        description,
-      });
-      selectedClassTab = rawCode;
+    if (!rawCode) {
+      showToast('کد کلاس الزامی است', 'لطفاً کد کلاس را وارد نمایید.', 'error');
+      return;
     }
 
     const origText = $btn.text();
     $btn.prop('disabled', true).text('در حال ذخیره...');
     try {
-      await persistDbState(state);
-      $('#admin-class-form-modal').removeClass('is-open').attr('aria-hidden', 'true');
-      renderActiveSection();
       if (mode === 'edit') {
-        showToast('کلاس ویرایش شد', `مشخصات کلاس ${toPersianDigits(rawCode)} بروزرسانی گردید.`, 'success');
+        const res = await adminUpdateClassApi(rawCode, {
+          title,
+          gradeLevel,
+          instructorName,
+          capacity,
+          roomOrLink,
+          scheduleSummary,
+          description,
+        });
+        if (!res.success) {
+          showToast('خطا در ویرایش کلاس', res.message || 'ویرایش کلاس انجام نشد.', 'error');
+          return;
+        }
+        $('#admin-class-form-modal').removeClass('is-open').attr('aria-hidden', 'true');
+        renderActiveSection();
+        showToast(
+          'کلاس ویرایش شد',
+          res.message || `مشخصات کلاس ${toPersianDigits(rawCode)} بروزرسانی گردید.`,
+          'success'
+        );
       } else {
-        showToast('کلاس جدید ایجاد شد', `${toPersianDigits(title)} با موفقیت اضافه گردید.`, 'success');
+        const res = await adminCreateClassApi({
+          code: rawCode,
+          title,
+          gradeLevel,
+          instructorName,
+          capacity,
+          roomOrLink,
+          scheduleSummary,
+          description,
+        });
+        if (!res.success) {
+          showToast('خطا در ایجاد کلاس', res.message || 'ایجاد کلاس انجام نشد.', 'error');
+          return;
+        }
+        selectedClassTab = rawCode;
+        $('#admin-class-form-modal').removeClass('is-open').attr('aria-hidden', 'true');
+        renderActiveSection();
+        showToast(
+          'کلاس جدید ایجاد شد',
+          res.message || `${toPersianDigits(title)} با موفقیت اضافه گردید.`,
+          'success'
+        );
       }
     } catch (err) {
       showToast('خطا در ذخیره کلاس', err instanceof Error ? err.message : 'ارتباط با سرور برقرار نشد.', 'error');
+    } finally {
+      $btn.prop('disabled', false).text(origText);
+    }
+  });
+
+  $(document).on('click', '.js-delete-class', function (e) {
+    e.stopPropagation();
+    const code = normalizeDigits(String($(this).attr('data-code') || '').trim());
+    if (!code) return;
+
+    if (PROTECTED_DEFAULT_CLASS_CODES.includes(code)) {
+      showToast(
+        'حذف غیرمجاز',
+        `کلاس پیش‌فرض ${toPersianDigits(code)} جزء کلاس‌های اصلی سامانه است و قابل حذف نیست.`,
+        'error'
+      );
+      return;
+    }
+
+    const state = loadDbState();
+    const cls = state.classes.find((c) => c.code === code);
+    if (!cls) return;
+
+    const memberCount = state.students.filter((s) => s.classCode === code).length;
+
+    openConfirmModal({
+      title: `حذف کلاس ${toPersianDigits(cls.title)}`,
+      message:
+        memberCount > 0
+          ? `آیا از حذف «${toPersianDigits(cls.title)}» اطمینان دارید؟ ${toPersianDigits(memberCount)} دانش‌آموز عضو این کلاس حذف نخواهند شد بلکه به وضعیت «بدون کلاس» منتقل می‌شوند.`
+          : `آیا از حذف «${toPersianDigits(cls.title)}» (کد ${toPersianDigits(code)}) از پایگاه داده اطمینان دارید؟`,
+      confirmText: 'بله، کلاس حذف شود',
+      isDanger: true,
+      onConfirm: async () => {
+        try {
+          const res = await adminDeleteClassApi(code);
+          if (!res.success) {
+            showToast('خطا در حذف کلاس', res.message || 'حذف کلاس انجام نشد.', 'error');
+            return;
+          }
+          const updatedState = loadDbState();
+          if (selectedClassTab === code) {
+            selectedClassTab = updatedState.classes[0]?.code || '901';
+          }
+          renderActiveSection();
+          showToast(
+            'کلاس حذف شد',
+            res.message || `کلاس ${toPersianDigits(code)} با موفقیت از پایگاه داده حذف گردید.`,
+            'info'
+          );
+        } catch (err) {
+          showToast(
+            'خطا در حذف کلاس',
+            err instanceof Error ? err.message : 'خطا در ارتباط با سرور',
+            'error'
+          );
+        }
+      },
+    });
+  });
+
+  $(document).on('click', '#btn-add-existing-student-to-class', async function () {
+    const $btn = $(this);
+    if ($btn.prop('disabled')) return;
+
+    const targetClassCode = String($btn.attr('data-class') || selectedClassTab).trim();
+    const studentId = Number($('#select-add-existing-student-to-class').val() || 0);
+
+    if (!studentId || !targetClassCode) {
+      showToast(
+        'انتخاب دانش‌آموز',
+        'لطفاً ابتدا یک دانش‌آموز را از فهرست کشویی انتخاب نمایید.',
+        'error'
+      );
+      return;
+    }
+
+    const state = loadDbState();
+    const st = state.students.find((s) => s.id === studentId);
+    if (!st) return;
+
+    const origText = $btn.text();
+    $btn.prop('disabled', true).text('در حال ثبت...');
+    try {
+      const res = await adminUpdateStudentApi(studentId, { classCode: targetClassCode });
+      if (!res.success) {
+        showToast('خطا در افزودن به کلاس', res.message || 'عملیات انجام نشد.', 'error');
+        return;
+      }
+      st.classCode = targetClassCode;
+      await persistDbState(state);
+      renderActiveSection();
+      showToast(
+        'دانش‌آموز به کلاس اضافه شد',
+        `«${st.firstName} ${st.lastName}» با موفقیت به کلاس ${toPersianDigits(targetClassCode)} اضافه گردید.`,
+        'success'
+      );
+    } catch (err) {
+      showToast(
+        'خطا در افزودن به کلاس',
+        err instanceof Error ? err.message : 'خطا در ارتباط با سرور',
+        'error'
+      );
     } finally {
       $btn.prop('disabled', false).text(origText);
     }
@@ -4723,7 +5026,25 @@ export function initAdminPanelEvents(): void {
     const origText = $btn.text();
     $btn.prop('disabled', true).text('در حال ذخیره...');
     try {
-      await persistDbState(state);
+      for (const cls of state.classes) {
+        const res = await adminUpdateClassApi(cls.code, {
+          title: cls.title,
+          gradeLevel: cls.gradeLevel,
+          instructorName: cls.instructorName,
+          capacity: cls.capacity,
+          roomOrLink: cls.roomOrLink,
+          scheduleSummary: cls.scheduleSummary,
+          description: cls.description,
+        });
+        if (!res.success) {
+          showToast(
+            'خطا در ذخیره مشخصات کلاس‌ها',
+            res.message || `خطا در بروزرسانی کلاس ${toPersianDigits(cls.code)}`,
+            'error'
+          );
+          return;
+        }
+      }
       renderActiveSection();
       showToast('مشخصات کلاس‌ها بروزرسانی شد', 'اطلاعات کلاس‌ها در دیتابیس ذخیره گردید.', 'success');
     } catch (err) {

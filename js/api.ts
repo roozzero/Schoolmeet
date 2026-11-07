@@ -12,6 +12,7 @@ import {
   ApiAuthResponse,
   AssignmentItem,
   AssignmentSubmission,
+  ClassRoomInfo,
   LoginPayload,
   StudentRecord,
   StudentRegistrationPayload,
@@ -487,3 +488,132 @@ export async function studentReplyTicketApi(
     };
   }
 }
+
+/**
+ * Admin: Fetch all classes from MySQL via GET /api/admin/classes
+ */
+export async function adminGetClassesApi(): Promise<{
+  success: boolean;
+  classes?: Array<ClassRoomInfo & { studentCount?: number; isDefaultClass?: boolean }>;
+  message?: string;
+}> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/admin/classes`, {
+      method: 'GET',
+      headers: buildJsonHeaders('admin'),
+    });
+    return await res.json();
+  } catch {
+    return {
+      success: false,
+      message: 'خطا در دریافت لیست کلاس‌ها از سرور.',
+    };
+  }
+}
+
+/**
+ * Admin: Create a new class in MySQL via POST /api/admin/classes
+ */
+export async function adminCreateClassApi(payload: {
+  code: string;
+  title: string;
+  gradeLevel?: string;
+  instructorName?: string;
+  capacity?: number;
+  roomOrLink?: string;
+  scheduleSummary?: string;
+  description?: string;
+}): Promise<{
+  success: boolean;
+  classItem?: ClassRoomInfo;
+  message: string;
+}> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/admin/classes`, {
+      method: 'POST',
+      headers: buildJsonHeaders('admin'),
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (data?.success) {
+      await syncStateFromBackend();
+    }
+    return data;
+  } catch {
+    return {
+      success: false,
+      message: 'خطا در ارتباط با سرور جهت ایجاد کلاس جدید.',
+    };
+  }
+}
+
+/**
+ * Admin: Update an existing class in MySQL via PUT /api/admin/classes/:code
+ */
+export async function adminUpdateClassApi(
+  code: string,
+  payload: {
+    title?: string;
+    gradeLevel?: string;
+    instructorName?: string;
+    capacity?: number;
+    roomOrLink?: string;
+    scheduleSummary?: string;
+    description?: string;
+  }
+): Promise<{
+  success: boolean;
+  classItem?: ClassRoomInfo;
+  message: string;
+}> {
+  try {
+    const res = await fetch(
+      `${API_BASE_URL}/admin/classes/${encodeURIComponent(code)}`,
+      {
+        method: 'PUT',
+        headers: buildJsonHeaders('admin'),
+        body: JSON.stringify(payload),
+      }
+    );
+    const data = await res.json();
+    if (data?.success) {
+      await syncStateFromBackend();
+    }
+    return data;
+  } catch {
+    return {
+      success: false,
+      message: 'خطا در ارتباط با سرور جهت ویرایش مشخصات کلاس.',
+    };
+  }
+}
+
+/**
+ * Admin: Delete a custom class from MySQL via DELETE /api/admin/classes/:code
+ */
+export async function adminDeleteClassApi(code: string): Promise<{
+  success: boolean;
+  unassignedStudents?: number;
+  message: string;
+}> {
+  try {
+    const res = await fetch(
+      `${API_BASE_URL}/admin/classes/${encodeURIComponent(code)}`,
+      {
+        method: 'DELETE',
+        headers: buildJsonHeaders('admin'),
+      }
+    );
+    const data = await res.json();
+    if (data?.success) {
+      await syncStateFromBackend();
+    }
+    return data;
+  } catch {
+    return {
+      success: false,
+      message: 'خطا در ارتباط با سرور جهت حذف کلاس.',
+    };
+  }
+}
+

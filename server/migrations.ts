@@ -564,15 +564,138 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    name: '007_restore_required_default_classes',
+    up: async (conn: PoolConnection) => {
+      await ensureDefaultClassesSeeded(conn);
+    },
+  },
+];
+
+export const REQUIRED_DEFAULT_CLASS_CODES = ['901', '902', '903'] as const;
+
+export interface DefaultClassSeed {
+  code: string;
+  title: string;
+  gradeLevel: string;
+  instructorName: string;
+  capacity: number;
+  roomOrLink: string;
+  scheduleSummary: string;
+  description: string;
+}
+
+export const DEFAULT_SCHOOLMEET_CLASSES: DefaultClassSeed[] = [
+  {
+    code: '901',
+    title: 'کلاس ۹۰۱ - برنامه‌نویسی',
+    gradeLevel: 'پایه نهم',
+    instructorName: 'روزبه توکلی',
+    capacity: 30,
+    roomOrLink: 'اتاق ۳۰۱ / تالار آنلاین',
+    scheduleSummary: 'شنبه‌ها و دوشنبه‌ها · ساعت ۱۶:۰۰ تا ۱۷:۳۰',
+    description:
+      'آموزش طراحی سایت، توسعه فرانت‌اند و پیاده‌سازی پروژه‌های عملی وب.',
+  },
+  {
+    code: '902',
+    title: 'کلاس ۹۰۲ - برنامه‌نویسی',
+    gradeLevel: 'پایه نهم',
+    instructorName: 'روزبه توکلی',
+    capacity: 30,
+    roomOrLink: 'اتاق ۳۰۲ / تالار آنلاین',
+    scheduleSummary: 'یکشنبه‌ها و سه‌شنبه‌ها · ساعت ۱۶:۰۰ تا ۱۷:۳۰',
+    description:
+      'آموزش جاوااسکریپت، منطق برنامه‌نویسی و پیاده‌سازی رابط‌های کاربری تعاملی.',
+  },
+  {
+    code: '903',
+    title: 'کلاس ۹۰۳ - برنامه‌نویسی',
+    gradeLevel: 'پایه نهم',
+    instructorName: 'روزبه توکلی',
+    capacity: 30,
+    roomOrLink: 'کارگاه کامپیوتر / تالار آنلاین',
+    scheduleSummary: 'دوشنبه‌ها و چهارشنبه‌ها · ساعت ۱۷:۳۰ تا ۱۹:۰۰',
+    description:
+      'کارگاه عملی پروژه‌های گروهی، طراحی واکنش‌گرا و توسعه وب مدرن.',
+  },
 ];
 
 /**
- * Initialize `schema_migrations` tracking table and execute any pending migrations.
- * Preserves all existing tables and data. Does not insert any demo records.
+ * Repeatable, non-destructive seeding for the required SchoolMeet default classes (`901`, `902`, `903`).
+ * - Uses `INSERT IGNORE` (and checks existing class codes) so it never creates duplicate classes.
+ * - Preserves any edits made by the administrator to existing class records.
+ * - Preserves all custom classes and student memberships.
+ */
+export async function ensureDefaultClassesSeeded(
+  existingConn?: PoolConnection
+): Promise<{ restoredCodes: string[] }> {
+  const conn = existingConn || (await pool.getConnection());
+  const restoredCodes: string[] = [];
+
+  try {
+    let defaultInstructor = 'روزبه توکلی';
+    try {
+      const [adminRows] = await conn.query<RowDataPacket[]>(
+        'SELECT `first_name`, `last_name` FROM `admins` ORDER BY `id` ASC LIMIT 1'
+      );
+      if (adminRows.length > 0) {
+        const fullName = `${String(adminRows[0].first_name || '').trim()} ${String(
+          adminRows[0].last_name || ''
+        ).trim()}`.trim();
+        if (fullName) {
+          defaultInstructor = fullName;
+        }
+      }
+    } catch {
+      // Fallback to default instructor name if admins table is not yet populated
+    }
+
+    const [existingRows] = await conn.query<RowDataPacket[]>(
+      'SELECT `code` FROM `classes` WHERE `code` IN (?, ?, ?)',
+      [...REQUIRED_DEFAULT_CLASS_CODES]
+    );
+    const existingCodes = new Set(existingRows.map((r) => String(r.code).trim()));
+
+    for (const cls of DEFAULT_SCHOOLMEET_CLASSES) {
+      if (existingCodes.has(cls.code)) {
+        continue;
+      }
+      await conn.query(
+        `INSERT IGNORE INTO \`classes\`
+          (\`code\`, \`title\`, \`grade_level\`, \`instructor_name\`, \`capacity\`, \`room_or_link\`, \`schedule_summary\`, \`description\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          cls.code,
+          cls.title,
+          cls.gradeLevel,
+          defaultInstructor || cls.instructorName,
+          cls.capacity,
+          cls.roomOrLink,
+          cls.scheduleSummary,
+          cls.description,
+        ]
+      );
+      restoredCodes.push(cls.code);
+    }
+
+    return { restoredCodes };
+  } finally {
+    if (!existingConn) {
+      conn.release();
+    }
+  }
+}
+
+/**
+ * Initialize `schema_migrations` tracking table, execute any pending migrations,
+ * and ensure the required default classes (`901`, `902`, `903`) exist in MySQL.
+ * Preserves all existing tables and data. Does not insert any demo student/user records.
  */
 export async function runMigrations(): Promise<{
   applied: string[];
   totalExecuted: number;
+  restoredDefaultClasses: string[];
 }> {
   const conn = await pool.getConnection();
   const appliedNow: string[] = [];
@@ -614,11 +737,21 @@ export async function runMigrations(): Promise<{
       }
     }
 
+    // Always ensure the required default classes (901, 902, 903) are present in MySQL
+    const seedRes = await ensureDefaultClassesSeeded(conn);
+    if (seedRes.restoredCodes.length > 0) {
+      console.log(
+        `[ScoolMeet Migrations] Restored missing default classes: ${seedRes.restoredCodes.join(', ')}`
+      );
+    }
+
     return {
       applied: appliedNow,
       totalExecuted: executedSet.size + appliedNow.length,
+      restoredDefaultClasses: seedRes.restoredCodes,
     };
   } finally {
     conn.release();
   }
 }
+

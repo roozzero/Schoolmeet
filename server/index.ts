@@ -6,7 +6,11 @@ import { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import path from 'path';
 import { getAssignmentLockState } from '../js/validation';
 import { getDbInfo, pool, testDatabaseConnection } from './db';
-import { runMigrations } from './migrations';
+import {
+  ensureDefaultClassesSeeded,
+  REQUIRED_DEFAULT_CLASS_CODES,
+  runMigrations,
+} from './migrations';
 
 const app = express();
 const PORT = Number(process.env.API_PORT || 3001);
@@ -661,6 +665,8 @@ app.get('/api/state', async (req: Request, res: Response) => {
       scopedStudentRow = check.studentRow || null;
     }
 
+    await ensureDefaultClassesSeeded();
+
     const [adminRows] = await pool.query<RowDataPacket[]>(
       'SELECT * FROM `admins` ORDER BY `id` ASC LIMIT 1'
     );
@@ -1311,20 +1317,21 @@ app.post('/api/state', async (req: Request, res: Response) => {
       }
     }
 
-    // 2. Sync Classes
+    // 2. Sync Classes (never delete required default classes 901, 902, 903 via bulk state sync)
     if (Array.isArray(incomingState.classes)) {
       const incomingCodes = incomingState.classes
         .map((c: { code?: string }) => String(c.code || '').trim())
         .filter(Boolean);
 
-      if (incomingCodes.length > 0) {
-        const placeholders = incomingCodes.map(() => '?').join(',');
+      const protectedCodes = Array.from(
+        new Set([...REQUIRED_DEFAULT_CLASS_CODES, ...incomingCodes])
+      );
+      if (incomingCodes.length > 0 && protectedCodes.length > 0) {
+        const placeholders = protectedCodes.map(() => '?').join(',');
         await conn.query(
           `DELETE FROM \`classes\` WHERE \`code\` NOT IN (${placeholders})`,
-          incomingCodes
+          protectedCodes
         );
-      } else {
-        await conn.query('DELETE FROM `classes`');
       }
 
       for (const c of incomingState.classes) {
@@ -1353,6 +1360,8 @@ app.post('/api/state', async (req: Request, res: Response) => {
           ]
         );
       }
+
+      await ensureDefaultClassesSeeded(conn);
     }
 
     // 3. Sync Students
@@ -2817,6 +2826,373 @@ app.delete(
     }
   }
 );
+
+/**
+ * 12B. Admin: Class Management Endpoints (GET, POST, PUT, DELETE /api/admin/classes)
+ */
+app.get('/api/admin/classes', async (req: Request, res: Response) => {
+  try {
+    const callerRole = String(req.headers['x-user-role'] || '').trim();
+    if (callerRole === 'student') {
+      res.status(403).json({
+        success: false,
+        message: 'فقط مدیر سامانه مجاز به مشاهده و مدیریت کلاس‌ها است.',
+      });
+      return;
+    }
+
+    await ensureDefaultClassesSeeded();
+
+    const [classRows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM `classes` ORDER BY `code` ASC'
+    );
+    const [studentCountRows] = await pool.query<RowDataPacket[]>(
+      'SELECT `class_code`, COUNT(*) AS `cnt` FROM `students` GROUP BY `class_code`'
+    );
+    const countByCode = new Map<string, number>();
+    studentCountRows.forEach((r) => {
+      countByCode.set(String(r.class_code || ''), Number(r.cnt) || 0);
+    });
+
+    const classes = classRows.map((c) => {
+      const code = String(c.code);
+      return {
+        code,
+        title: String(c.title),
+        gradeLevel: String(c.grade_level || 'پایه نهم'),
+        instructorName: String(c.instructor_name || ''),
+        capacity: Number(c.capacity) || 30,
+        roomOrLink: String(c.room_or_link || ''),
+        scheduleSummary: String(c.schedule_summary || ''),
+        description: String(c.description || ''),
+        studentCount: countByCode.get(code) || 0,
+        isDefaultClass: (REQUIRED_DEFAULT_CLASS_CODES as readonly string[]).includes(code),
+      };
+    });
+
+    res.json({
+      success: true,
+      classes,
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message:
+        err instanceof Error ? err.message : 'خطا در دریافت لیست کلاس‌ها از پایگاه داده.',
+    });
+  }
+});
+
+app.post('/api/admin/classes', async (req: Request, res: Response) => {
+  try {
+    const callerRole = String(req.headers['x-user-role'] || '').trim();
+    if (callerRole === 'student') {
+      res.status(403).json({
+        success: false,
+        message: 'فقط مدیر سامانه مجاز به ایجاد کلاس جدید است.',
+      });
+      return;
+    }
+
+    const code = normalizeDigitsServer(req.body?.code || '').trim();
+    const title = String(req.body?.title || '').trim();
+    const gradeLevel = String(req.body?.gradeLevel || 'پایه نهم').trim() || 'پایه نهم';
+    let instructorName = String(req.body?.instructorName || '').trim();
+    const capacity = Math.max(1, Math.min(200, Number(req.body?.capacity) || 30));
+    const roomOrLink = String(req.body?.roomOrLink || 'اتاق ۳۰۱ / تالار آنلاین').trim();
+    const scheduleSummary = String(req.body?.scheduleSummary || 'شنبه‌ها ۱۶:۰۰ تا ۱۷:۳۰').trim();
+    const description = String(req.body?.description || '').trim();
+
+    if (!code || code.length < 2 || code.length > 20) {
+      res.status(422).json({
+        success: false,
+        message: 'کد کلاس الزامی است و باید بین ۲ تا ۲۰ کاراکتر باشد (مثال: 904).',
+      });
+      return;
+    }
+
+    if (!title || title.length < 2) {
+      res.status(422).json({
+        success: false,
+        message: 'عنوان کلاس الزامی است و باید حداقل ۲ کاراکتر باشد.',
+      });
+      return;
+    }
+
+    const [existingRows] = await pool.query<RowDataPacket[]>(
+      'SELECT `code` FROM `classes` WHERE `code` = ? LIMIT 1',
+      [code]
+    );
+    if (existingRows.length > 0) {
+      res.status(409).json({
+        success: false,
+        message: `کلاسی با کد «${code}» قبلاً در پایگاه داده ثبت شده است.`,
+      });
+      return;
+    }
+
+    if (!instructorName) {
+      const [adminRows] = await pool.query<RowDataPacket[]>(
+        'SELECT `full_name` FROM `admins` ORDER BY `id` ASC LIMIT 1'
+      );
+      instructorName = String(adminRows[0]?.full_name || 'روزبه توکلی').trim();
+    }
+
+    await pool.query(
+      `INSERT INTO \`classes\`
+        (\`code\`, \`title\`, \`grade_level\`, \`instructor_name\`, \`capacity\`, \`room_or_link\`, \`schedule_summary\`, \`description\`)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        code,
+        title,
+        gradeLevel,
+        instructorName,
+        capacity,
+        roomOrLink,
+        scheduleSummary,
+        description,
+      ]
+    );
+
+    await pool.query(
+      'INSERT INTO `activity_logs` (`text`, `created_at_label`, `type`) VALUES (?, ?, ?)',
+      [
+        `کلاس جدید «${title}» (کد ${code}) توسط مدیر ایجاد گردید.`,
+        formatServerPersianDateTime(new Date()),
+        'system',
+      ]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: `کلاس «${title}» با کد ${code} با موفقیت در پایگاه داده ایجاد شد.`,
+      classItem: {
+        code,
+        title,
+        gradeLevel,
+        instructorName,
+        capacity,
+        roomOrLink,
+        scheduleSummary,
+        description,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message:
+        err instanceof Error ? err.message : 'خطا در ایجاد کلاس جدید در پایگاه داده.',
+    });
+  }
+});
+
+app.put('/api/admin/classes/:code', async (req: Request, res: Response) => {
+  try {
+    const callerRole = String(req.headers['x-user-role'] || '').trim();
+    if (callerRole === 'student') {
+      res.status(403).json({
+        success: false,
+        message: 'فقط مدیر سامانه مجاز به ویرایش اطلاعات کلاس است.',
+      });
+      return;
+    }
+
+    const code = normalizeDigitsServer(req.params.code || '').trim();
+    if (!code) {
+      res.status(400).json({
+        success: false,
+        message: 'کد کلاس نامعتبر است.',
+      });
+      return;
+    }
+
+    const [existingRows] = await pool.query<RowDataPacket[]>(
+      'SELECT * FROM `classes` WHERE `code` = ? LIMIT 1',
+      [code]
+    );
+    if (existingRows.length === 0) {
+      res.status(404).json({
+        success: false,
+        message: `کلاسی با کد «${code}» در پایگاه داده یافت نشد.`,
+      });
+      return;
+    }
+
+    const current = existingRows[0];
+    const title =
+      req.body?.title !== undefined
+        ? String(req.body.title).trim()
+        : String(current.title || '');
+    const gradeLevel =
+      req.body?.gradeLevel !== undefined
+        ? String(req.body.gradeLevel).trim() || 'پایه نهم'
+        : String(current.grade_level || 'پایه نهم');
+    const instructorName =
+      req.body?.instructorName !== undefined
+        ? String(req.body.instructorName).trim() || String(current.instructor_name || 'روزبه توکلی')
+        : String(current.instructor_name || 'روزبه توکلی');
+    const capacity =
+      req.body?.capacity !== undefined
+        ? Math.max(1, Math.min(200, Number(req.body.capacity) || 30))
+        : Number(current.capacity) || 30;
+    const roomOrLink =
+      req.body?.roomOrLink !== undefined
+        ? String(req.body.roomOrLink).trim()
+        : String(current.room_or_link || '');
+    const scheduleSummary =
+      req.body?.scheduleSummary !== undefined
+        ? String(req.body.scheduleSummary).trim()
+        : String(current.schedule_summary || '');
+    const description =
+      req.body?.description !== undefined
+        ? String(req.body.description).trim()
+        : String(current.description || '');
+
+    if (!title || title.length < 2) {
+      res.status(422).json({
+        success: false,
+        message: 'عنوان کلاس نمی‌تواند خالی یا کمتر از ۲ کاراکتر باشد.',
+      });
+      return;
+    }
+
+    await pool.query(
+      `UPDATE \`classes\`
+       SET \`title\` = ?, \`grade_level\` = ?, \`instructor_name\` = ?, \`capacity\` = ?, \`room_or_link\` = ?, \`schedule_summary\` = ?, \`description\` = ?
+       WHERE \`code\` = ?`,
+      [
+        title,
+        gradeLevel,
+        instructorName,
+        capacity,
+        roomOrLink,
+        scheduleSummary,
+        description,
+        code,
+      ]
+    );
+
+    await pool.query(
+      'INSERT INTO `activity_logs` (`text`, `created_at_label`, `type`) VALUES (?, ?, ?)',
+      [
+        `مشخصات کلاس «${title}» (کد ${code}) توسط مدیر بروزرسانی شد.`,
+        formatServerPersianDateTime(new Date()),
+        'system',
+      ]
+    );
+
+    res.json({
+      success: true,
+      message: `اطلاعات کلاس «${title}» با موفقیت در پایگاه داده بروزرسانی شد.`,
+      classItem: {
+        code,
+        title,
+        gradeLevel,
+        instructorName,
+        capacity,
+        roomOrLink,
+        scheduleSummary,
+        description,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message:
+        err instanceof Error ? err.message : 'خطا در بروزرسانی اطلاعات کلاس در پایگاه داده.',
+    });
+  }
+});
+
+app.delete('/api/admin/classes/:code', async (req: Request, res: Response) => {
+  const conn = await pool.getConnection();
+  try {
+    const callerRole = String(req.headers['x-user-role'] || '').trim();
+    if (callerRole === 'student') {
+      conn.release();
+      res.status(403).json({
+        success: false,
+        message: 'فقط مدیر سامانه مجاز به حذف کلاس است.',
+      });
+      return;
+    }
+
+    const code = normalizeDigitsServer(req.params.code || '').trim();
+    if (!code) {
+      conn.release();
+      res.status(400).json({
+        success: false,
+        message: 'کد کلاس نامعتبر است.',
+      });
+      return;
+    }
+
+    if ((REQUIRED_DEFAULT_CLASS_CODES as readonly string[]).includes(code)) {
+      conn.release();
+      res.status(403).json({
+        success: false,
+        message: `کلاس پیش‌فرض «${code}» جزء کلاس‌های پایه سامانه است و امکان حذف آن وجود ندارد. در صورت نیاز می‌توانید مشخصات آن را ویرایش کنید.`,
+      });
+      return;
+    }
+
+    const [existingRows] = await conn.query<RowDataPacket[]>(
+      'SELECT * FROM `classes` WHERE `code` = ? LIMIT 1',
+      [code]
+    );
+    if (existingRows.length === 0) {
+      conn.release();
+      res.status(404).json({
+        success: false,
+        message: `کلاسی با کد «${code}» در پایگاه داده یافت نشد.`,
+      });
+      return;
+    }
+
+    const classTitle = String(existingRows[0].title || code);
+
+    await conn.beginTransaction();
+
+    // Unassign students belonging to this deleted class instead of deleting students
+    const [unassignRes] = await conn.query<ResultSetHeader>(
+      "UPDATE `students` SET `class_code` = '' WHERE `class_code` = ?",
+      [code]
+    );
+    await conn.query('DELETE FROM `class_schedules` WHERE `class_code` = ?', [
+      code,
+    ]);
+    await conn.query('DELETE FROM `classes` WHERE `code` = ?', [code]);
+
+    await conn.query(
+      'INSERT INTO `activity_logs` (`text`, `created_at_label`, `type`) VALUES (?, ?, ?)',
+      [
+        `کلاس «${classTitle}» (کد ${code}) توسط مدیر حذف شد (${unassignRes.affectedRows} دانش‌آموز به وضعیت بدون کلاس منتقل شدند).`,
+        formatServerPersianDateTime(new Date()),
+        'system',
+      ]
+    );
+
+    await conn.commit();
+
+    res.json({
+      success: true,
+      unassignedStudents: unassignRes.affectedRows,
+      message:
+        unassignRes.affectedRows > 0
+          ? `کلاس «${classTitle}» حذف شد و ${unassignRes.affectedRows} دانش‌آموز عضو آن به وضعیت «بدون کلاس» منتقل شدند.`
+          : `کلاس «${classTitle}» با موفقیت از پایگاه داده حذف گردید.`,
+    });
+  } catch (err) {
+    await conn.rollback();
+    res.status(500).json({
+      success: false,
+      message:
+        err instanceof Error ? err.message : 'خطا در حذف کلاس از پایگاه داده.',
+    });
+  } finally {
+    conn.release();
+  }
+});
 
 /**
  * 13. Admin: Close or Reopen an Assignment (POST /api/admin/assignments/:id/status)
