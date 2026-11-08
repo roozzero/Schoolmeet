@@ -390,7 +390,40 @@ function syncAdminChrome(state: DatabaseState): void {
     $sidebarAvatar.removeClass('has-custom-avatar').css('background-image', '');
   }
 
+  syncProjectBranding(state);
   syncClassSelectOptions(state);
+}
+
+/**
+ * Synchronize custom project logo and login page cover image across the DOM
+ */
+export function syncProjectBranding(state: DatabaseState): void {
+  const s = state.settings;
+  const customLogo = String(s?.projectLogoUrl || '').trim();
+  const customLoginCover = String(s?.loginCoverImageUrl || '').trim();
+
+  const $brandIcons = $('.brand-school-icon');
+  if (customLogo) {
+    $brandIcons
+      .addClass('has-custom-logo')
+      .css('background-image', `url('${customLogo}')`);
+  } else {
+    $brandIcons.removeClass('has-custom-logo').css('background-image', '');
+  }
+
+  const $defaultCollage = $('#login-default-collage-grid');
+  const $customCoverBox = $('#login-custom-cover-box');
+  const $customCoverImg = $('#login-custom-cover-img');
+
+  if (customLoginCover) {
+    $defaultCollage.addClass('hidden');
+    $customCoverImg.attr('src', customLoginCover);
+    $customCoverBox.removeClass('hidden');
+  } else {
+    $customCoverBox.addClass('hidden');
+    $customCoverImg.attr('src', '');
+    $defaultCollage.removeClass('hidden');
+  }
 }
 
 /**
@@ -433,6 +466,7 @@ export function navigateAdminSection(
   $('.admin-nav-btn').removeClass('is-active');
   $(`.admin-nav-btn[data-section="${sectionId}"]`).addClass('is-active');
   $('#admin-sidebar').removeClass('is-mobile-open');
+  $('#admin-mobile-sidebar-backdrop').removeClass('is-open').attr('aria-hidden', 'true');
 
   if (updateHistory) {
     const targetPath = subPage
@@ -691,7 +725,7 @@ function renderClassesSection($container: JQuery<HTMLElement>, state: DatabaseSt
     }
     $container.html(`
       <div class="space-y-5">
-        <div class="flex items-center justify-between gap-3 flex-wrap">
+        <div class="flex items-center justify-between gap-3 flex-wrap adm-mob-classes-header">
           <h2 class="text-sm font-extrabold text-[#251B15] m-0">
             لیست کلاس‌های آموزشی (۰ کلاس)
           </h2>
@@ -719,7 +753,7 @@ function renderClassesSection($container: JQuery<HTMLElement>, state: DatabaseSt
   $container.html(`
     <div class="space-y-5">
       <!-- نوار ابزار بالای مدیریت کلاس‌ها: دکمه ایجاد کلاس جدید -->
-      <div class="flex items-center justify-between gap-3 flex-wrap">
+      <div class="flex items-center justify-between gap-3 flex-wrap adm-mob-classes-header">
         <h2 class="text-sm font-extrabold text-[#251B15] m-0">
           لیست کلاس‌های آموزشی (${toPersianDigits(state.classes.length)} کلاس)
         </h2>
@@ -842,8 +876,8 @@ function renderStudentsSection($container: JQuery<HTMLElement>, state: DatabaseS
   $container.html(`
     <div class="space-y-4">
       <!-- نوار ابزار فیلتر و جستجوی دانش‌آموزان -->
-      <div class="admin-surface-card flex flex-wrap items-center justify-between gap-3">
-        <div class="admin-segmented-bar flex-wrap">
+      <div class="admin-surface-card flex flex-wrap items-center justify-between gap-3 adm-mob-students-toolbar">
+        <div class="admin-segmented-bar flex-wrap adm-mob-students-filters">
           <button
             type="button"
             class="admin-seg-btn js-student-filter ${studentFilter === 'all' ? 'is-active' : ''}"
@@ -881,11 +915,11 @@ function renderStudentsSection($container: JQuery<HTMLElement>, state: DatabaseS
           </button>
         </div>
 
-        <div class="flex items-center gap-2.5">
+        <div class="flex items-center gap-2.5 adm-mob-students-search-actions">
           <input
             type="search"
             id="student-search-input"
-            class="school-input !h-9 !w-52 text-xs"
+            class="school-input !h-9 w-full md:!w-52 text-xs"
             placeholder="جستجوی نام یا شماره تلفن..."
             value="${toPersianDigits(studentSearchQuery)}"
           />
@@ -1065,8 +1099,8 @@ function renderAssignmentsSection($container: JQuery<HTMLElement>, state: Databa
   $container.html(`
     <div class="space-y-4">
       <!-- نوار ابزار تکالیف: فیلتر کلاس‌ها، جستجو و دکمه باز کردن صفحه ایجاد تکلیف جدید -->
-      <div class="admin-surface-card flex flex-wrap items-center justify-between gap-3">
-        <div class="admin-segmented-bar flex-wrap">
+      <div class="admin-surface-card flex flex-wrap items-center justify-between gap-3 adm-mob-hw-toolbar">
+        <div class="admin-segmented-bar flex-wrap adm-mob-hw-filters">
           <button
             type="button"
             class="admin-seg-btn js-hw-filter ${assignmentFilter === 'all' ? 'is-active' : ''}"
@@ -1090,11 +1124,11 @@ function renderAssignmentsSection($container: JQuery<HTMLElement>, state: Databa
             .join('')}
         </div>
 
-        <div class="flex items-center gap-2.5">
+        <div class="flex items-center gap-2.5 adm-mob-hw-search-actions">
           <input
             type="search"
             id="assignment-search-input"
-            class="school-input !h-9 !w-48 text-xs"
+            class="school-input !h-9 w-full md:!w-48 text-xs"
             placeholder="جستجوی عنوان تکلیف..."
             value="${toPersianDigits(assignmentSearchQuery)}"
           />
@@ -1248,16 +1282,16 @@ function renderAssignmentFormPage($container: JQuery<HTMLElement>, state: Databa
 
   $container.html(`
     <div class="space-y-4">
-      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap">
-        <div>
+      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap adm-mob-form-header">
+        <div class="adm-mob-form-header-info">
           <h2 class="text-base font-black text-[#251B15] m-0">
             ${editingItem ? `ویرایش تکلیف: ${toPersianDigits(editingItem.title)}` : 'صفحه ایجاد تکلیف جدید'}
           </h2>
-          <p class="text-xs text-[#6E5D4F] mt-1 m-0">
+          <p class="text-xs text-[#6E5D4F] mt-1 m-0 adm-mob-single-line-ellipsis">
             مشخصات، مهلت تحویل، فایل پیوست و کلاس هدف تکلیف را وارد نمایید.
           </p>
         </div>
-        <button type="button" class="btn-admin-action js-back-to-assignments-list">
+        <button type="button" class="btn-admin-action js-back-to-assignments-list adm-mob-full-back-btn">
           <span>بازگشت به لیست تکالیف ←</span>
         </button>
       </div>
@@ -1344,12 +1378,13 @@ function renderAssignmentFormPage($container: JQuery<HTMLElement>, state: Databa
             >${editingItem ? toPersianDigits(editingItem.description) : ''}</textarea>
           </div>
 
-          <div class="flex items-center justify-end gap-2.5 pt-2 border-t border-[#E6D8C5]">
+          <div class="flex items-center justify-end gap-2.5 pt-2 border-t border-[#E6D8C5] adm-mob-form-footer-actions">
             <button type="button" class="btn-admin-action !h-10 js-back-to-assignments-list">
               انصراف و بازگشت
             </button>
             <button type="submit" id="btn-save-hw-submit" class="btn-admin-primary !h-10">
-              ${editingItem ? 'ذخیره تغییرات تکلیف' : 'ثبت و انتشار تکلیف جدید'}
+              <span class="adm-desktop-only-inline">${editingItem ? 'ذخیره تغییرات تکلیف' : 'ثبت و انتشار تکلیف جدید'}</span>
+              <span class="adm-mobile-only-inline">ثبت و انتشار</span>
             </button>
           </div>
         </form>
@@ -1436,10 +1471,10 @@ function renderAssignmentDetailPage(
 
   const lockInfo = getAssignmentLockState(hw, getAuthoritativeNowMs());
   const detailStatusBadgeHtml = lockInfo.isClosedByAdmin
-    ? `<span class="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-[#FFF1F2] text-[#E11D48] border border-[#FECDD3]">بسته شده توسط مدرس</span>`
+    ? `<span class="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-[#FFF1F2] text-[#E11D48] border border-[#FECDD3] adm-mob-hw-status-badge"><span class="adm-desktop-only-inline">بسته شده توسط مدرس</span><span class="adm-mobile-only-inline">بسته شده</span></span>`
     : lockInfo.isDeadlineExpired
-    ? `<span class="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-[#FFFBEB] text-[#D97706] border border-[#FDE68A]">مهلت تحویل به پایان رسیده</span>`
-    : `<span class="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0]">فعال (در حال دریافت پاسخ)</span>`;
+    ? `<span class="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-[#FFFBEB] text-[#D97706] border border-[#FDE68A] adm-mob-hw-status-badge"><span class="adm-desktop-only-inline">مهلت تحویل به پایان رسیده</span><span class="adm-mobile-only-inline">مهلت گذشته</span></span>`
+    : `<span class="text-xs font-extrabold px-2.5 py-1 rounded-lg bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0] adm-mob-hw-status-badge"><span class="adm-desktop-only-inline">فعال (در حال دریافت پاسخ)</span><span class="adm-mobile-only-inline">فعال</span></span>`;
 
   const hwRecipientLabel = formatAdminItemRecipient(
     state,
@@ -1452,14 +1487,16 @@ function renderAssignmentDetailPage(
   $container.html(`
     <div class="space-y-4">
       <!-- هدر صفحه جزئیات تکلیف -->
-      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap">
-        <div>
-          <div class="flex items-center gap-2 flex-wrap">
-            <span class="text-xs font-extrabold text-[#1B5E5A] bg-[#E2EFEA] px-2.5 py-1 rounded-lg">
-              ${hwRecipientLabel}
-            </span>
-            ${detailStatusBadgeHtml}
-            <h2 class="text-base font-black text-[#251B15] m-0">
+      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap adm-mob-hw-detail-header">
+        <div class="adm-mob-hw-detail-info">
+          <div class="flex items-center gap-2 flex-wrap adm-mob-hw-detail-title-row">
+            <div class="flex items-center gap-2 adm-mob-hw-detail-badges">
+              <span class="text-xs font-extrabold text-[#1B5E5A] bg-[#E2EFEA] px-2.5 py-1 rounded-lg adm-mob-hw-recipient-badge">
+                ${hwRecipientLabel}
+              </span>
+              ${detailStatusBadgeHtml}
+            </div>
+            <h2 class="text-base font-black text-[#251B15] m-0 adm-mob-hw-detail-title">
               ${toPersianDigits(hw.title)}
             </h2>
           </div>
@@ -1468,7 +1505,7 @@ function renderAssignmentDetailPage(
           </p>
         </div>
 
-        <div class="flex items-center gap-2 flex-wrap">
+        <div class="flex items-center gap-2 flex-wrap adm-mob-hw-detail-actions">
           <button
             type="button"
             class="${
@@ -1477,17 +1514,20 @@ function renderAssignmentDetailPage(
             data-id="${hw.id}"
             data-status="${hw.status === 'closed' ? 'active' : 'closed'}"
           >
-            ${hw.status === 'closed' ? 'بازگشایی مجدد تکلیف' : 'بستن تکلیف (پایان دریافت)'}
+            <span class="adm-desktop-only-inline">${hw.status === 'closed' ? 'بازگشایی مجدد تکلیف' : 'بستن تکلیف (پایان دریافت)'}</span>
+            <span class="adm-mobile-only-inline">${hw.status === 'closed' ? 'بازگشایی' : 'بستن'}</span>
           </button>
           <button
             type="button"
             class="btn-admin-action js-edit-assignment"
             data-id="${hw.id}"
           >
-            ویرایش تکلیف
+            <span class="adm-desktop-only-inline">ویرایش تکلیف</span>
+            <span class="adm-mobile-only-inline">ویرایش</span>
           </button>
           <button type="button" class="btn-admin-action js-back-to-assignments-list">
-            بازگشت به لیست تکالیف ←
+            <span class="adm-desktop-only-inline">بازگشت به لیست تکالیف ←</span>
+            <span class="adm-mobile-only-inline">بازگشت</span>
           </button>
         </div>
       </div>
@@ -1502,20 +1542,22 @@ function renderAssignmentDetailPage(
           ${toPersianDigits(hw.description)}
         </p>
 
-        <div class="pt-3 border-t border-[#E6D8C5] flex items-center justify-between gap-3 flex-wrap">
-          <div class="flex items-center gap-2 text-xs">
+        <div class="pt-3 border-t border-[#E6D8C5] flex items-center justify-between gap-3 flex-wrap adm-mob-hw-detail-footer">
+          <div class="flex items-center gap-2 text-xs adm-mob-file-box">
             <span class="text-[#6E5D4F]">فایل راهنما / پیوست مدرس:</span>
-            <strong class="text-[#5A3A22]">${toPersianDigits(hw.attachmentName)}</strong>
-            <button
-              type="button"
-              class="btn-admin-action !h-7 !px-2.5 !text-[11px] js-download-hw-attachment"
-              data-id="${hw.id}"
-            >
-              دانلود فایل پیوست
-            </button>
+            <div class="flex items-center gap-2 adm-mob-file-action-line">
+              <strong class="text-[#5A3A22]">${toPersianDigits(hw.attachmentName)}</strong>
+              <button
+                type="button"
+                class="btn-admin-action !h-7 !px-2.5 !text-[11px] js-download-hw-attachment"
+                data-id="${hw.id}"
+              >
+                دانلود فایل پیوست
+              </button>
+            </div>
           </div>
 
-          <div class="flex items-center gap-3 text-xs">
+          <div class="flex items-center gap-3 text-xs adm-mob-delivery-stats">
             <span class="text-[#059669] font-extrabold">تحویل داده: ${toPersianDigits(submittedCount)} نفر</span>
             <span class="text-[#E11D48] font-extrabold">تحویل نداده: ${toPersianDigits(notSubmittedCount)} نفر</span>
           </div>
@@ -1734,8 +1776,8 @@ function renderResourcesSection($container: JQuery<HTMLElement>, state: Database
   $container.html(`
     <div class="space-y-4">
       <!-- نوار ابزار منابع آموزشی: فیلتر، جستجو و دکمه باز کردن صفحه افزودن منبع -->
-      <div class="admin-surface-card flex flex-wrap items-center justify-between gap-3">
-        <div class="admin-segmented-bar flex-wrap">
+      <div class="admin-surface-card flex flex-wrap items-center justify-between gap-3 adm-mob-res-toolbar">
+        <div class="admin-segmented-bar flex-wrap adm-mob-res-filters">
           <button
             type="button"
             class="admin-seg-btn js-res-filter ${resourceFilter === 'all' ? 'is-active' : ''}"
@@ -1759,11 +1801,11 @@ function renderResourcesSection($container: JQuery<HTMLElement>, state: Database
             .join('')}
         </div>
 
-        <div class="flex items-center gap-2.5">
+        <div class="flex items-center gap-2.5 adm-mob-res-search-actions">
           <input
             type="search"
             id="resource-search-input"
-            class="school-input !h-9 !w-52 text-xs"
+            class="school-input !h-9 w-full md:!w-52 text-xs"
             placeholder="جستجوی عنوان یا نوع منبع..."
             value="${toPersianDigits(resourceSearchQuery)}"
           />
@@ -1876,16 +1918,16 @@ function renderResourceFormPage($container: JQuery<HTMLElement>, state: Database
 
   $container.html(`
     <div class="space-y-4">
-      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap">
-        <div>
+      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap adm-mob-form-header">
+        <div class="adm-mob-form-header-info">
           <h2 class="text-base font-black text-[#251B15] m-0">
             ${editingRes ? `ویرایش منبع آموزشی: ${toPersianDigits(editingRes.title)}` : 'صفحه افزودن منبع آموزشی جدید'}
           </h2>
-          <p class="text-xs text-[#6E5D4F] mt-1 m-0">
+          <p class="text-xs text-[#6E5D4F] mt-1 m-0 adm-mob-single-line-ellipsis">
             فایل آموزشی، جزوه، تمرین یا لینک مربوط به کلاس‌ها را در این صفحه ثبت کنید.
           </p>
         </div>
-        <button type="button" class="btn-admin-action js-back-to-resources-list">
+        <button type="button" class="btn-admin-action js-back-to-resources-list adm-mob-full-back-btn">
           <span>بازگشت به لیست منابع ←</span>
         </button>
       </div>
@@ -1925,7 +1967,7 @@ function renderResourceFormPage($container: JQuery<HTMLElement>, state: Database
 
           <div>
             <label class="scool-field-label">نام فایل یا آدرس لینک</label>
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 adm-mob-res-file-row">
               <input
                 type="text"
                 id="res-url"
@@ -1958,12 +2000,13 @@ function renderResourceFormPage($container: JQuery<HTMLElement>, state: Database
             >${editingRes ? toPersianDigits(editingRes.description) : ''}</textarea>
           </div>
 
-          <div class="flex items-center justify-end gap-2.5 pt-2 border-t border-[#E6D8C5]">
+          <div class="flex items-center justify-end gap-2.5 pt-2 border-t border-[#E6D8C5] adm-mob-form-footer-actions">
             <button type="button" class="btn-admin-action !h-10 js-back-to-resources-list">
               انصراف و بازگشت
             </button>
             <button type="submit" id="btn-save-resource-submit" class="btn-admin-primary !h-10">
-              ${editingRes ? 'ذخیره تغییرات منبع آموزشی' : 'ثبت و انتشار منبع آموزشی'}
+              <span class="adm-desktop-only-inline">${editingRes ? 'ذخیره تغییرات منبع آموزشی' : 'ثبت و انتشار منبع آموزشی'}</span>
+              <span class="adm-mobile-only-inline">ثبت و انتشار</span>
             </button>
           </div>
         </form>
@@ -2036,22 +2079,22 @@ function renderResourceDetailPage(
   $container.html(`
     <div class="space-y-4">
       <!-- هدر صفحه جزئیات منبع آموزشی -->
-      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap">
-        <div>
-          <div class="flex items-center gap-2">
+      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap adm-mob-res-detail-header">
+        <div class="adm-mob-res-detail-info">
+          <div class="flex items-center gap-2 adm-mob-res-detail-title-row">
             <span class="text-xs font-extrabold text-[#1B5E5A] bg-[#E2EFEA] px-2.5 py-1 rounded-lg">
               ${res.category} · ${resRecipientLabel}
             </span>
-            <h2 class="text-base font-black text-[#251B15] m-0">
+            <h2 class="text-base font-black text-[#251B15] m-0 adm-mob-res-detail-title">
               ${toPersianDigits(res.title)}
             </h2>
           </div>
-          <p class="text-xs text-[#6E5D4F] mt-1.5 m-0 tabular-nums">
-            تاریخ ثبت: <strong class="text-[#251B15]">${toPersianDigits(resCreatedLabel)}</strong> · حجم / نوع: <strong class="text-[#251B15]">${toPersianDigits(res.fileSize)}</strong>
+          <p class="text-xs text-[#6E5D4F] mt-1.5 m-0 tabular-nums adm-mob-res-meta">
+            <span>تاریخ ثبت: <strong class="text-[#251B15]">${toPersianDigits(resCreatedLabel)}</strong></span><span class="adm-desktop-only-inline"> · </span><span class="adm-mob-res-size-line">حجم / نوع: <strong class="text-[#251B15]">${toPersianDigits(res.fileSize)}</strong></span>
           </p>
         </div>
 
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2 adm-mob-res-detail-actions">
           <button
             type="button"
             class="btn-admin-action js-edit-resource"
@@ -2075,20 +2118,22 @@ function renderResourceDetailPage(
           ${toPersianDigits(res.description)}
         </p>
 
-        <div class="pt-3 border-t border-[#E6D8C5] flex items-center justify-between gap-3 flex-wrap">
-          <div class="flex items-center gap-2 text-xs">
+        <div class="pt-3 border-t border-[#E6D8C5] flex items-center justify-between gap-3 flex-wrap adm-mob-res-detail-footer">
+          <div class="flex items-center gap-2 text-xs adm-mob-file-box">
             <span class="text-[#6E5D4F]">فایل / لینک منبع:</span>
-            <strong class="text-[#5A3A22]">${toPersianDigits(res.urlOrFileName)}</strong>
-            <button
-              type="button"
-              class="btn-admin-action !h-7 !px-2.5 !text-[11px] js-download-resource-file"
-              data-id="${res.id}"
-            >
-              دانلود فایل منبع
-            </button>
+            <div class="flex items-center gap-2 adm-mob-file-action-line">
+              <strong class="text-[#5A3A22]">${toPersianDigits(res.urlOrFileName)}</strong>
+              <button
+                type="button"
+                class="btn-admin-action !h-7 !px-2.5 !text-[11px] js-download-resource-file"
+                data-id="${res.id}"
+              >
+                دانلود فایل منبع
+              </button>
+            </div>
           </div>
 
-          <div class="flex items-center gap-3 text-xs">
+          <div class="flex items-center gap-3 text-xs adm-mob-delivery-stats">
             <span class="text-[#059669] font-extrabold">مشاهده کرده: ${toPersianDigits(viewedCount)} نفر</span>
             <span class="text-[#D97706] font-extrabold">مشاهده نکرده: ${toPersianDigits(notViewedCount)} نفر</span>
           </div>
@@ -2145,8 +2190,8 @@ function renderAnnouncementsSection($container: JQuery<HTMLElement>, state: Data
   $container.html(`
     <div class="space-y-4">
       <!-- نوار ابزار اطلاعیه‌ها: فیلتر، جستجو و دکمه ارسال اطلاعیه جدید -->
-      <div class="admin-surface-card flex flex-wrap items-center justify-between gap-3">
-        <div class="admin-segmented-bar flex-wrap">
+      <div class="admin-surface-card flex flex-wrap items-center justify-between gap-3 adm-mob-ann-toolbar">
+        <div class="admin-segmented-bar flex-wrap adm-mob-ann-filters">
           <button
             type="button"
             class="admin-seg-btn js-ann-filter ${announcementFilter === 'all' ? 'is-active' : ''}"
@@ -2184,11 +2229,11 @@ function renderAnnouncementsSection($container: JQuery<HTMLElement>, state: Data
           </button>
         </div>
 
-        <div class="flex items-center gap-2.5">
+        <div class="flex items-center gap-2.5 adm-mob-ann-search-actions">
           <input
             type="search"
             id="announcement-search-input"
-            class="school-input !h-9 !w-52 text-xs"
+            class="school-input !h-9 w-full md:!w-52 text-xs"
             placeholder="جستجو در عنوان یا متن اطلاعیه..."
             value="${toPersianDigits(announcementSearchQuery)}"
           />
@@ -2213,34 +2258,36 @@ function renderAnnouncementsSection($container: JQuery<HTMLElement>, state: Data
                   );
                   const annCreatedLabel = formatPersianDateTime(ann.createdAt);
                   return `
-                  <div class="admin-surface-card">
-                    <div class="flex items-center justify-between gap-2">
-                      <div class="flex items-center gap-2 flex-wrap">
-                        <span class="text-sm font-black text-[#251B15]">${toPersianDigits(ann.title)}</span>
-                        ${
-                          ann.notificationType === 'resource'
-                            ? `<span class="text-[11px] font-extrabold px-2 py-0.5 rounded-md bg-[#E2EFEA] text-[#1B5E5A]">منبع آموزشی جدید</span>`
-                            : ''
-                        }
-                        <span class="text-[11px] font-bold px-2 py-0.5 rounded-md ${
-                          ann.priority === 'فوری'
-                            ? 'bg-[#FFF1F2] text-[#E11D48]'
-                            : ann.priority === 'مهم'
-                            ? 'bg-[#FFFBEB] text-[#D97706]'
-                            : 'bg-[#ECFDF5] text-[#059669]'
-                        }">
-                          اولویت ${ann.priority}
-                        </span>
-                        <span class="text-[11px] font-extrabold px-2.5 py-0.5 rounded-md bg-[#E2EFEA] text-[#1B5E5A]">
-                          مخاطب: ${annRecipientLabel}
-                        </span>
-                        <span class="text-[11px] font-extrabold px-2.5 py-0.5 rounded-md bg-[#ECFDF5] text-[#059669] tabular-nums">
-                          خوانده شده توسط ${toPersianDigits(readers.length)} نفر
-                        </span>
+                  <div class="admin-surface-card adm-mob-ann-card">
+                    <div class="flex items-center justify-between gap-2 adm-mob-ann-card-header">
+                      <div class="flex items-center gap-2 flex-wrap adm-mob-ann-main">
+                        <span class="text-sm font-black text-[#251B15] adm-mob-ann-title">${toPersianDigits(ann.title)}</span>
+                        <div class="flex items-center gap-2 flex-wrap adm-mob-ann-badges">
+                          ${
+                            ann.notificationType === 'resource'
+                              ? `<span class="text-[11px] font-extrabold px-2 py-0.5 rounded-md bg-[#E2EFEA] text-[#1B5E5A] adm-mob-ann-type-badge">منبع آموزشی جدید</span>`
+                              : ''
+                          }
+                          <span class="text-[11px] font-bold px-2 py-0.5 rounded-md adm-mob-ann-priority-badge ${
+                            ann.priority === 'فوری'
+                              ? 'bg-[#FFF1F2] text-[#E11D48]'
+                              : ann.priority === 'مهم'
+                              ? 'bg-[#FFFBEB] text-[#D97706]'
+                              : 'bg-[#ECFDF5] text-[#059669]'
+                          }">
+                            <span class="adm-desktop-only-inline">اولویت </span>${ann.priority}
+                          </span>
+                          <span class="text-[11px] font-extrabold px-2.5 py-0.5 rounded-md bg-[#E2EFEA] text-[#1B5E5A] adm-mob-ann-recipient-badge">
+                            <span class="adm-desktop-only-inline">مخاطب: </span>${annRecipientLabel}
+                          </span>
+                          <span class="text-[11px] font-extrabold px-2.5 py-0.5 rounded-md bg-[#ECFDF5] text-[#059669] tabular-nums adm-mob-ann-readers-badge">
+                            خوانده شده توسط ${toPersianDigits(readers.length)} نفر
+                          </span>
+                        </div>
                       </div>
                       <button
                         type="button"
-                        class="btn-icon-action btn-icon-danger js-delete-announcement"
+                        class="btn-icon-action btn-icon-danger js-delete-announcement adm-mob-ann-delete-btn"
                         data-id="${ann.id}"
                         title="حذف اطلاعیه"
                       >
@@ -2250,14 +2297,14 @@ function renderAnnouncementsSection($container: JQuery<HTMLElement>, state: Data
                       </button>
                     </div>
                     <p class="text-xs text-[#6E5D4F] mt-2 m-0 leading-relaxed">${toPersianDigits(ann.content)}</p>
-                    <div class="mt-3 pt-2.5 border-t border-[#E6D8C5] flex items-center justify-between gap-2 flex-wrap text-[11px] text-[#6E5D4F]">
+                    <div class="mt-3 pt-2.5 border-t border-[#E6D8C5] flex items-center justify-between gap-2 flex-wrap text-[11px] text-[#6E5D4F] adm-mob-ann-card-footer">
                       <div class="flex items-center gap-3 flex-wrap">
                         <span>گیرندگان: <strong class="text-[#5A3A22]">${annRecipientLabel}</strong></span>
                         <span class="tabular-nums">تاریخ انتشار: ${toPersianDigits(annCreatedLabel)}</span>
                       </div>
                       <button
                         type="button"
-                        class="btn-admin-action !h-8 !px-3 !text-xs js-open-ann-readers-modal"
+                        class="btn-admin-action !h-8 !px-3 !text-xs js-open-ann-readers-modal adm-mob-ann-readers-btn"
                         data-id="${ann.id}"
                       >
                         مشاهده لیست خوانده‌ها (${toPersianDigits(readers.length)} نفر)
@@ -2306,9 +2353,9 @@ function renderTicketsSection($container: JQuery<HTMLElement>, state: DatabaseSt
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
       <!-- لیست تیکت‌ها با عکس پروفایل دانش‌آموز -->
       <div class="lg:col-span-5 admin-surface-card">
-        <div class="flex items-center justify-between gap-2 mb-3.5 flex-wrap">
+        <div class="flex items-center justify-between gap-2 mb-3.5 flex-wrap adm-mob-tickets-header">
           <h3 class="text-sm font-extrabold text-[#251B15] m-0">صندوق تیکت‌ها (${toPersianDigits(state.tickets.length)})</h3>
-          <div class="admin-segmented-bar flex-wrap">
+          <div class="admin-segmented-bar flex-wrap adm-mob-ticket-filters">
             <button type="button" class="admin-seg-btn js-ticket-filter ${ticketFilter === 'all' ? 'is-active' : ''}" data-filter="all">همه (${toPersianDigits(state.tickets.length)})</button>
             <button type="button" class="admin-seg-btn js-ticket-filter ${ticketFilter === 'در انتظار پاسخ' ? 'is-active' : ''}" data-filter="در انتظار پاسخ">در انتظار پاسخ (${toPersianDigits(openPendingCount)})</button>
             <button type="button" class="admin-seg-btn js-ticket-filter ${ticketFilter === 'پاسخ داده شده' ? 'is-active' : ''}" data-filter="پاسخ داده شده">پاسخ‌داده‌شده (${toPersianDigits(answeredCount)})</button>
@@ -2505,7 +2552,7 @@ function renderProfileSection($container: JQuery<HTMLElement>, state: DatabaseSt
             </div>
           </div>
 
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-2 adm-mob-prof-avatar-actions">
             <label for="prof-avatar-upload" class="btn-admin-action cursor-pointer">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
@@ -2550,7 +2597,7 @@ function renderProfileSection($container: JQuery<HTMLElement>, state: DatabaseSt
             <textarea id="prof-bio" class="school-textarea">${toPersianDigits(admin.bio)}</textarea>
           </div>
 
-          <button type="submit" class="btn-admin-primary">ذخیره اطلاعات پروفایل</button>
+          <button type="submit" class="btn-admin-primary adm-mob-prof-save-btn">ذخیره اطلاعات پروفایل</button>
         </form>
       </div>
 
@@ -2586,51 +2633,154 @@ function renderProfileSection($container: JQuery<HTMLElement>, state: DatabaseSt
    ============================================================================ */
 function renderSettingsSection($container: JQuery<HTMLElement>, state: DatabaseState): void {
   const s = state.settings;
+  const hasCustomLogo = Boolean(s.projectLogoUrl && s.projectLogoUrl.trim());
+  const hasCustomLoginCover = Boolean(s.loginCoverImageUrl && s.loginCoverImageUrl.trim());
+
   $container.html(`
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
-      <!-- تنظیمات عمومی سامانه -->
-      <div class="lg:col-span-5 admin-surface-card">
-        <h3 class="text-sm font-extrabold text-[#251B15] mb-4 m-0">تنظیمات کلی سامانه اسکول میت</h3>
-        <form id="form-system-settings" class="space-y-3.5">
-          <div>
-            <label class="scool-field-label">عنوان سامانه</label>
-            <input type="text" id="set-platform-name" class="school-input" value="اسکول میت" required />
-          </div>
-          <div class="grid grid-cols-2 gap-3">
+      <!-- ستون راست: تنظیمات عمومی سامانه + تغییر لوگوی پروژه و عکس صفحه لاگین -->
+      <div class="lg:col-span-5 space-y-5">
+        <div class="admin-surface-card">
+          <h3 class="text-sm font-extrabold text-[#251B15] mb-4 m-0">تنظیمات کلی سامانه اسکول میت</h3>
+          <form id="form-system-settings" class="space-y-3.5">
             <div>
-              <label class="scool-field-label">سال تحصیلی جاری</label>
-              <input type="text" id="set-academic-year" class="school-input tabular-nums" value="${toPersianDigits(s.academicYear)}" required />
+              <label class="scool-field-label">عنوان سامانه</label>
+              <input type="text" id="set-platform-name" class="school-input" value="${toPersianDigits(s.platformName || 'اسکول میت')}" required />
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="scool-field-label">سال تحصیلی جاری</label>
+                <input type="text" id="set-academic-year" class="school-input tabular-nums" value="${toPersianDigits(s.academicYear)}" required />
+              </div>
+              <div>
+                <label class="scool-field-label">
+                  <span class="adm-desktop-only-inline">حداکثر حجم فایل تکلیف (مگابایت)</span>
+                  <span class="adm-mobile-only-inline">حداکثر حجم فایل (مگابایت)</span>
+                </label>
+                <input type="text" id="set-max-upload" class="school-input tabular-nums" value="${toPersianDigits(s.maxUploadSizeMb)}" required />
+              </div>
             </div>
             <div>
-              <label class="scool-field-label">حداکثر حجم فایل تکلیف (مگابایت)</label>
-              <input type="text" id="set-max-upload" class="school-input tabular-nums" value="${toPersianDigits(s.maxUploadSizeMb)}" required />
+              <label class="scool-field-label">شماره پشتیبانی سامانه</label>
+              <input type="tel" id="set-support-phone" class="school-input tabular-nums" value="${toPersianDigits(s.supportPhone)}" required />
+            </div>
+
+            <div class="space-y-2 pt-1">
+              <label class="flex items-center gap-2.5 text-xs font-bold text-[#251B15] cursor-pointer">
+                <input type="checkbox" id="set-allow-reg" class="w-4 h-4 accent-[#5A3A22]" ${s.allowNewRegistrations ? 'checked' : ''} />
+                <span>امکان ثبت‌نام دانش‌آموزان جدید در صفحه ورود فعال باشد</span>
+              </label>
+              <label class="flex items-center gap-2.5 text-xs font-bold text-[#251B15] cursor-pointer">
+                <input type="checkbox" id="set-require-approval" class="w-4 h-4 accent-[#5A3A22]" ${s.requireAdminApproval ? 'checked' : ''} />
+                <span>حساب دانش‌آموزان جدید نیازمند تأیید ادمین باشد</span>
+              </label>
+            </div>
+
+            <div class="pt-2 flex items-center gap-2 adm-mob-settings-actions">
+              <button type="submit" class="btn-admin-primary flex-1">
+                <span class="adm-desktop-only-inline">ذخیره تنظیمات سامانه</span>
+                <span class="adm-mobile-only-inline">ذخیره تنظیمات</span>
+              </button>
+              <button type="button" id="btn-reset-demo-db" class="btn-admin-danger !h-[38px]">بازنشانی داده‌ها</button>
+            </div>
+          </form>
+        </div>
+
+        <!-- کارت تغییر لوگوی پروژه و عکس صفحه لاگین -->
+        <div class="admin-surface-card space-y-4">
+          <div>
+            <h3 class="text-sm font-extrabold text-[#251B15] m-0">تغییر لوگوی پروژه و عکس صفحه لاگین</h3>
+            <p class="text-xs text-[#6E5D4F] mt-1 m-0">
+              لوگوی اصلی سامانه و تصویر نمایشی صفحه ورود و ثبت‌نام را از این بخش مدیریت کنید.
+            </p>
+          </div>
+
+          <!-- ۱. تغییر لوگوی پروژه -->
+          <div class="p-3.5 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] space-y-3">
+            <div class="flex items-center gap-3.5">
+              <div
+                class="brand-school-icon !w-14 !h-14 !rounded-2xl ${hasCustomLogo ? 'has-custom-logo' : ''}"
+                style="${hasCustomLogo ? `background-image: url('${s.projectLogoUrl}');` : ''}"
+                role="img"
+                aria-label="پیش‌نمایش لوگوی پروژه"
+              ></div>
+              <div class="min-w-0 flex-1">
+                <div class="text-xs font-black text-[#251B15]">لوگوی پروژه</div>
+                <div class="text-[11px] font-bold ${hasCustomLogo ? 'text-[#059669]' : 'text-[#6E5D4F]'} mt-0.5">
+                  ${hasCustomLogo ? 'لوگوی اختصاصی انتخاب‌شده فعال است' : 'لوگوی پیش‌فرض اسکول میت فعال است'}
+                </div>
+                <div class="text-[10.5px] text-[#8C7A6B] mt-0.5">
+                  نمایش در هدر صفحه ورود و ثبت‌نام (فرمت PNG، JPG یا SVG)
+                </div>
+              </div>
+            </div>
+
+            <div id="set-logo-upload-progress" class="hidden"></div>
+
+            <div class="flex items-center gap-2 flex-wrap adm-mob-prof-avatar-actions">
+              <label for="set-project-logo-upload" class="btn-admin-action cursor-pointer flex-1 justify-center">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                </svg>
+                <span>انتخاب لوگوی پروژه</span>
+              </label>
+              <input type="file" id="set-project-logo-upload" accept="image/*" class="hidden" />
+
+              <button
+                type="button"
+                id="btn-remove-project-logo"
+                class="btn-admin-danger !h-9 !px-3 text-xs ${hasCustomLogo ? '' : 'hidden'}"
+              >
+                حذف لوگو
+              </button>
             </div>
           </div>
-          <div>
-            <label class="scool-field-label">شماره پشتیبانی سامانه</label>
-            <input type="tel" id="set-support-phone" class="school-input tabular-nums" value="${toPersianDigits(s.supportPhone)}" required />
-          </div>
 
-          <div class="space-y-2 pt-1">
-            <label class="flex items-center gap-2.5 text-xs font-bold text-[#251B15] cursor-pointer">
-              <input type="checkbox" id="set-allow-reg" class="w-4 h-4 accent-[#5A3A22]" ${s.allowNewRegistrations ? 'checked' : ''} />
-              <span>امکان ثبت‌نام دانش‌آموزان جدید در صفحه ورود فعال باشد</span>
-            </label>
-            <label class="flex items-center gap-2.5 text-xs font-bold text-[#251B15] cursor-pointer">
-              <input type="checkbox" id="set-require-approval" class="w-4 h-4 accent-[#5A3A22]" ${s.requireAdminApproval ? 'checked' : ''} />
-              <span>حساب دانش‌آموزان جدید نیازمند تأیید ادمین باشد</span>
-            </label>
-          </div>
+          <!-- ۲. تغییر عکس صفحه لاگین -->
+          <div class="p-3.5 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] space-y-3">
+            <div class="flex items-center gap-3.5">
+              <div
+                class="settings-login-cover-preview ${hasCustomLoginCover ? 'has-custom-cover' : ''}"
+                style="${hasCustomLoginCover ? `background-image: url('${s.loginCoverImageUrl}');` : ''}"
+                role="img"
+                aria-label="پیش‌نمایش عکس صفحه لاگین"
+              ></div>
+              <div class="min-w-0 flex-1">
+                <div class="text-xs font-black text-[#251B15]">عکس صفحه لاگین (ورود)</div>
+                <div class="text-[11px] font-bold ${hasCustomLoginCover ? 'text-[#059669]' : 'text-[#6E5D4F]'} mt-0.5">
+                  ${hasCustomLoginCover ? 'تصویر اختصاصی صفحه لاگین فعال است' : 'تصویر کلاژ پیش‌فرض صفحه لاگین فعال است'}
+                </div>
+                <div class="text-[10.5px] text-[#8C7A6B] mt-0.5">
+                  نمایش در قاب تصویری صفحه ورود و ثبت‌نام دانش‌آموزان
+                </div>
+              </div>
+            </div>
 
-          <div class="pt-2 flex items-center gap-2">
-            <button type="submit" class="btn-admin-primary flex-1">ذخیره تنظیمات سامانه</button>
-            <button type="button" id="btn-reset-demo-db" class="btn-admin-danger !h-[38px]">بازنشانی داده‌ها</button>
+            <div id="set-login-cover-upload-progress" class="hidden"></div>
+
+            <div class="flex items-center gap-2 flex-wrap adm-mob-prof-avatar-actions">
+              <label for="set-login-cover-upload" class="btn-admin-action cursor-pointer flex-1 justify-center">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                <span>انتخاب عکس صفحه لاگین</span>
+              </label>
+              <input type="file" id="set-login-cover-upload" accept="image/*" class="hidden" />
+
+              <button
+                type="button"
+                id="btn-remove-login-cover"
+                class="btn-admin-danger !h-9 !px-3 text-xs ${hasCustomLoginCover ? '' : 'hidden'}"
+              >
+                حذف عکس
+              </button>
+            </div>
           </div>
-        </form>
+        </div>
       </div>
 
-      <!-- مشخصات سریع کلاس‌ها -->
-      <div class="lg:col-span-7 admin-surface-card">
+      <!-- ستون چپ: مشخصات سریع کلاس‌ها -->
+      <div class="lg:col-span-7 admin-surface-card h-fit">
         <h3 class="text-sm font-extrabold text-[#251B15] mb-4 m-0">مشخصات کلاس‌های آموزشی</h3>
         <form id="form-all-classes-settings" class="space-y-4">
           ${state.classes
@@ -2779,6 +2929,19 @@ export function initAdminPanelEvents(): void {
     }
   });
 
+  // Mobile hamburger menu button & backdrop for Admin Sidebar
+  $(document).on('click', '#btn-admin-mobile-menu', function () {
+    const isOpen = $('#admin-sidebar').toggleClass('is-mobile-open').hasClass('is-mobile-open');
+    $('#admin-mobile-sidebar-backdrop')
+      .toggleClass('is-open', isOpen)
+      .attr('aria-hidden', isOpen ? 'false' : 'true');
+  });
+
+  $(document).on('click', '#admin-mobile-sidebar-backdrop', function () {
+    $('#admin-sidebar').removeClass('is-mobile-open');
+    $('#admin-mobile-sidebar-backdrop').removeClass('is-open').attr('aria-hidden', 'true');
+  });
+
   // Open specific class directly from Dashboard class card
   $(document).on('click', '.js-open-class-direct', function () {
     const code = String($(this).attr('data-code') || '901');
@@ -2788,6 +2951,8 @@ export function initAdminPanelEvents(): void {
 
   // Logout from Admin Panel back to Auth View (/login)
   $('#btn-admin-logout').on('click', () => {
+    $('#admin-sidebar').removeClass('is-mobile-open');
+    $('#admin-mobile-sidebar-backdrop').removeClass('is-open').attr('aria-hidden', 'true');
     clearAuthSession();
     $('#admin-workspace-view').addClass('view-hidden');
     $('#public-auth-view').removeClass('view-hidden');
@@ -4803,12 +4968,149 @@ export function initAdminPanelEvents(): void {
     $btn.prop('disabled', true).text('در حال ذخیره...');
     try {
       await persistDbState(state);
+      syncProjectBranding(state);
       renderActiveSection();
       showToast('تنظیمات ذخیره شد', 'تنظیمات کلی سامانه در دیتابیس بروزرسانی گردید.', 'success');
     } catch (err) {
       showToast('خطا در ذخیره تنظیمات', err instanceof Error ? err.message : 'خطا در ارتباط با سرور', 'error');
     } finally {
       $btn.prop('disabled', false).text(origText);
+    }
+  });
+
+  // Upload & Remove Project Logo in Settings
+  $(document).on('change', '#set-project-logo-upload', async function (this: HTMLInputElement) {
+    const file = this.files && this.files[0];
+    if (!file) return;
+
+    renderAdminUploadProgressWidget('#set-logo-upload-progress', {
+      status: 'uploading',
+      percent: 0,
+      fileName: file.name,
+    });
+
+    const uploadRes = await uploadFileWithProgress(file, (pct) => {
+      renderAdminUploadProgressWidget('#set-logo-upload-progress', {
+        status: 'uploading',
+        percent: pct,
+        fileName: file.name,
+      });
+    });
+
+    if (!uploadRes.success || !uploadRes.fileUrl) {
+      renderAdminUploadProgressWidget('#set-logo-upload-progress', {
+        status: 'error',
+        fileName: file.name,
+        errorMessage: uploadRes.message || 'آپلود لوگوی پروژه ناموفق بود.',
+      });
+      showToast('خطا در آپلود لوگو', uploadRes.message || 'آپلود لوگوی پروژه ناموفق بود.', 'error');
+      this.value = '';
+      return;
+    }
+
+    const cacheBustedUrl = `${uploadRes.fileUrl}?v=${Date.now()}`;
+    const state = loadDbState();
+    state.settings.projectLogoUrl = cacheBustedUrl;
+
+    const saved = await persistDbState(state);
+    if (!saved.success) {
+      showToast('خطا در ذخیره لوگو', saved.message, 'error');
+      this.value = '';
+      return;
+    }
+
+    syncProjectBranding(state);
+    renderActiveSection();
+    showToast('لوگوی پروژه تغییر کرد', 'لوگوی جدید پروژه با موفقیت آپلود و در پایگاه داده ذخیره گردید.', 'success');
+  });
+
+  $(document).on('click', '#btn-remove-project-logo', async function () {
+    const $btn = $(this);
+    if ($btn.prop('disabled')) return;
+    $btn.prop('disabled', true);
+
+    try {
+      const state = loadDbState();
+      state.settings.projectLogoUrl = '';
+      const saved = await persistDbState(state);
+      if (!saved.success) {
+        showToast('خطا در حذف لوگو', saved.message, 'error');
+        return;
+      }
+
+      syncProjectBranding(state);
+      renderActiveSection();
+      showToast('لوگوی پروژه بازنشانی شد', 'لوگوی پروژه به حالت پیش‌فرض سامانه بازگردانده شد.', 'info');
+    } finally {
+      $btn.prop('disabled', false);
+    }
+  });
+
+  // Upload & Remove Login Page Cover Image in Settings
+  $(document).on('change', '#set-login-cover-upload', async function (this: HTMLInputElement) {
+    const file = this.files && this.files[0];
+    if (!file) return;
+
+    renderAdminUploadProgressWidget('#set-login-cover-upload-progress', {
+      status: 'uploading',
+      percent: 0,
+      fileName: file.name,
+    });
+
+    const uploadRes = await uploadFileWithProgress(file, (pct) => {
+      renderAdminUploadProgressWidget('#set-login-cover-upload-progress', {
+        status: 'uploading',
+        percent: pct,
+        fileName: file.name,
+      });
+    });
+
+    if (!uploadRes.success || !uploadRes.fileUrl) {
+      renderAdminUploadProgressWidget('#set-login-cover-upload-progress', {
+        status: 'error',
+        fileName: file.name,
+        errorMessage: uploadRes.message || 'آپلود تصویر صفحه لاگین ناموفق بود.',
+      });
+      showToast('خطا در آپلود تصویر', uploadRes.message || 'آپلود تصویر صفحه لاگین ناموفق بود.', 'error');
+      this.value = '';
+      return;
+    }
+
+    const cacheBustedUrl = `${uploadRes.fileUrl}?v=${Date.now()}`;
+    const state = loadDbState();
+    state.settings.loginCoverImageUrl = cacheBustedUrl;
+
+    const saved = await persistDbState(state);
+    if (!saved.success) {
+      showToast('خطا در ذخیره تصویر', saved.message, 'error');
+      this.value = '';
+      return;
+    }
+
+    syncProjectBranding(state);
+    renderActiveSection();
+    showToast('عکس صفحه لاگین تغییر کرد', 'تصویر جدید صفحه ورود با موفقیت آپلود و در پایگاه داده ذخیره گردید.', 'success');
+  });
+
+  $(document).on('click', '#btn-remove-login-cover', async function () {
+    const $btn = $(this);
+    if ($btn.prop('disabled')) return;
+    $btn.prop('disabled', true);
+
+    try {
+      const state = loadDbState();
+      state.settings.loginCoverImageUrl = '';
+      const saved = await persistDbState(state);
+      if (!saved.success) {
+        showToast('خطا در حذف تصویر', saved.message, 'error');
+        return;
+      }
+
+      syncProjectBranding(state);
+      renderActiveSection();
+      showToast('عکس صفحه لاگین بازنشانی شد', 'تصویر صفحه ورود به حالت پیش‌فرض سامانه بازگردانده شد.', 'info');
+    } finally {
+      $btn.prop('disabled', false);
     }
   });
 
@@ -5278,10 +5580,10 @@ function renderGradebookSection($container: JQuery<HTMLElement>, state: Database
   $container.html(`
     <div class="space-y-4">
       <!-- نوار ابزار دفتر نمره: فیلتر کلاس‌ها و دکمه ثبت جلسه جدید -->
-      <div class="admin-surface-card flex flex-wrap items-center justify-between gap-3">
-        <div class="flex items-center gap-2 flex-wrap">
+      <div class="admin-surface-card flex flex-wrap items-center justify-between gap-3 adm-mob-gb-toolbar">
+        <div class="flex items-center gap-2 flex-wrap adm-mob-gb-filter-wrap">
           <span class="text-xs font-extrabold text-[#6E5D4F] ml-1">فیلتر جلسات بر اساس کلاس:</span>
-          <div class="admin-segmented-bar flex-wrap">
+          <div class="admin-segmented-bar flex-wrap adm-mob-gb-filters">
             <button
               type="button"
               class="admin-seg-btn js-gb-class-tab ${gradebookClassCode === 'all' ? 'is-active' : ''}"
@@ -5306,7 +5608,7 @@ function renderGradebookSection($container: JQuery<HTMLElement>, state: Database
           </div>
         </div>
 
-        <button type="button" id="btn-open-create-gb-session" class="btn-admin-primary !h-9">
+        <button type="button" id="btn-open-create-gb-session" class="btn-admin-primary !h-9 adm-mob-gb-create-btn">
           + ثبت جلسه جدید
         </button>
       </div>
@@ -5367,13 +5669,13 @@ function renderGradebookSection($container: JQuery<HTMLElement>, state: Database
                       </div>
 
                       <div class="mt-4 pt-3 border-t border-[#E6D8C5] space-y-3">
-                        <div class="flex items-center justify-between text-[11px] tabular-nums">
-                          <div class="flex items-center gap-1.5">
+                        <div class="flex items-center justify-between text-[11px] tabular-nums adm-mob-gb-card-stats">
+                          <div class="flex items-center gap-1.5 adm-mob-gb-att-row">
                             <span class="px-2 py-0.5 rounded-md bg-[#ECFDF5] text-[#059669] font-extrabold">حاضر: ${toPersianDigits(presentCount)}</span>
                             <span class="px-2 py-0.5 rounded-md bg-[#FFFBEB] text-[#D97706] font-extrabold">تأخیر: ${toPersianDigits(lateCount)}</span>
                             <span class="px-2 py-0.5 rounded-md bg-[#FFF1F2] text-[#E11D48] font-extrabold">غایب: ${toPersianDigits(absentCount)}</span>
                           </div>
-                          <div class="flex items-center gap-1 font-extrabold">
+                          <div class="flex items-center gap-1 font-extrabold adm-mob-gb-posneg-row">
                             <span class="px-2 py-0.5 rounded-md bg-[#ECFDF5] text-[#059669]">مثبت: +${toPersianDigits(totalPos)}</span>
                             <span class="px-2 py-0.5 rounded-md bg-[#FFF1F2] text-[#E11D48]">منفی: −${toPersianDigits(totalNeg)}</span>
                           </div>
@@ -5446,8 +5748,8 @@ function renderGradebookSessionDetailPage(
   $container.html(`
     <div class="space-y-4">
       <!-- هدر صفحه اختصاصی جلسه در دفتر نمره -->
-      <div class="admin-surface-card flex flex-wrap items-center justify-between gap-3">
-        <div>
+      <div class="admin-surface-card flex flex-wrap items-center justify-between gap-3 adm-mob-gb-session-header">
+        <div class="adm-mob-gb-session-info">
           <div class="flex items-center gap-2 flex-wrap">
             <span class="text-xs font-extrabold text-[#1B5E5A] bg-[#E2EFEA] px-2.5 py-1 rounded-lg">
               کلاس ${toPersianDigits(activeSession.classCode)}
@@ -5464,36 +5766,42 @@ function renderGradebookSessionDetailPage(
           </p>
         </div>
 
-        <div class="flex items-center gap-2 flex-wrap">
+        <div class="flex items-center gap-2 flex-wrap adm-mob-gb-session-actions">
           <button
             type="button"
             id="btn-save-gradebook-session"
             data-session-id="${activeSession.id}"
             class="btn-admin-primary !h-9"
           >
-            ذخیره نهایی نمرات و حضور و غیاب جلسه
+            <span class="adm-desktop-only-inline">ذخیره نهایی نمرات و حضور و غیاب جلسه</span>
+            <span class="adm-mobile-only-inline">ذخیره</span>
           </button>
           <button type="button" class="btn-admin-action !h-9 js-gb-back-to-sessions">
-            بازگشت به لیست جلسات ←
+            <span class="adm-desktop-only-inline">بازگشت به لیست جلسات ←</span>
+            <span class="adm-mobile-only-inline">بازگشت</span>
           </button>
         </div>
       </div>
 
       <!-- خلاصه آمار حضور و غیاب و مجموع مثبت/منفی این جلسه -->
-      <div class="admin-surface-card !py-3 flex flex-wrap items-center justify-between gap-3">
+      <div class="admin-surface-card !py-3 flex flex-wrap items-center justify-between gap-3 adm-mob-gb-session-summary">
         <span class="text-xs font-extrabold text-[#5A3A22]">
           لیست دانش‌آموزان کلاس ${toPersianDigits(activeSession.classCode)} (${toPersianDigits(classStudents.length)} نفر)
         </span>
-        <div class="flex items-center gap-2 flex-wrap text-xs tabular-nums">
-          <span class="status-pill status-pill-approved">حاضر: ${toPersianDigits(presentCount)}</span>
-          <span class="status-pill status-pill-pending">تأخیر: ${toPersianDigits(lateCount)}</span>
-          <span class="status-pill status-pill-rejected">غایب: ${toPersianDigits(absentCount)}</span>
-          <span class="px-2.5 py-1 rounded-lg bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0] font-extrabold">
-            مجموع مثبت جلسه: +${toPersianDigits(sessionTotalPos)}
-          </span>
-          <span class="px-2.5 py-1 rounded-lg bg-[#FFF1F2] text-[#E11D48] border border-[#FECDD3] font-extrabold">
-            مجموع منفی جلسه: −${toPersianDigits(sessionTotalNeg)}
-          </span>
+        <div class="flex items-center gap-2 flex-wrap text-xs tabular-nums adm-mob-gb-summary-badges">
+          <div class="flex items-center gap-2 flex-wrap adm-mob-gb-att-row">
+            <span class="status-pill status-pill-approved">حاضر: ${toPersianDigits(presentCount)}</span>
+            <span class="status-pill status-pill-pending">تأخیر: ${toPersianDigits(lateCount)}</span>
+            <span class="status-pill status-pill-rejected">غایب: ${toPersianDigits(absentCount)}</span>
+          </div>
+          <div class="flex items-center gap-2 flex-wrap adm-mob-gb-posneg-row">
+            <span class="px-2.5 py-1 rounded-lg bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0] font-extrabold">
+              مجموع مثبت جلسه: +${toPersianDigits(sessionTotalPos)}
+            </span>
+            <span class="px-2.5 py-1 rounded-lg bg-[#FFF1F2] text-[#E11D48] border border-[#FECDD3] font-extrabold">
+              مجموع منفی جلسه: −${toPersianDigits(sessionTotalNeg)}
+            </span>
+          </div>
         </div>
       </div>
 

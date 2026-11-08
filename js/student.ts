@@ -386,6 +386,8 @@ export function navigateStudentSection(
 
   $('.student-nav-btn').removeClass('is-active');
   $(`.student-nav-btn[data-section="${sectionId}"]`).addClass('is-active');
+  $('#student-sidebar').removeClass('is-mobile-open');
+  $('#student-mobile-sidebar-backdrop').removeClass('is-open');
 
   if (updateHistory) {
     const path = subPage
@@ -664,21 +666,23 @@ function renderStudentDashboard($container: JQuery<HTMLElement>, state: Database
                   .map(
                     (ann) => `
                     <div class="p-3.5 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB]">
-                      <div class="flex items-center justify-between gap-2 flex-wrap">
-                        <div class="flex items-center gap-2 flex-wrap">
+                      <div class="flex items-center justify-between gap-2 flex-wrap st-mob-dash-ann-header">
+                        <div class="flex items-center gap-2 flex-wrap adm-mob-ann-main">
                           <span class="text-xs font-extrabold text-[#251B15]">${toPersianDigits(ann.title)}</span>
-                          <span class="text-[10.5px] font-bold px-2 py-0.5 rounded-md bg-[#E2EFEA] text-[#1B5E5A]">
-                            ${formatStudentItemRecipient(state, student, ann.targetClasses, ann.targetStudentId, ann.targetStudentName)}
-                          </span>
-                          ${
-                            ann.notificationType === 'feedback'
-                              ? `<span class="text-[10.5px] font-extrabold px-2 py-0.5 rounded-md bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0]">بازخورد اختصاصی مدرس</span>`
-                              : ann.notificationType === 'assignment'
-                              ? `<span class="text-[10.5px] font-extrabold px-2 py-0.5 rounded-md bg-[#E2EFEA] text-[#1B5E5A]">اعلان تکلیف جدید</span>`
-                              : ann.notificationType === 'resource'
-                              ? `<span class="text-[10.5px] font-extrabold px-2 py-0.5 rounded-md bg-[#F3E5D0] text-[#5A3A22] border border-[#DFC8A9]">منبع آموزشی جدید</span>`
-                              : ''
-                          }
+                          <div class="flex items-center gap-1.5 flex-wrap adm-mob-ann-badges">
+                            <span class="text-[10.5px] font-bold px-2 py-0.5 rounded-md bg-[#E2EFEA] text-[#1B5E5A] adm-mob-ann-recipient-badge">
+                              ${formatStudentItemRecipient(state, student, ann.targetClasses, ann.targetStudentId, ann.targetStudentName)}
+                            </span>
+                            ${
+                              ann.notificationType === 'feedback'
+                                ? `<span class="text-[10.5px] font-extrabold px-2 py-0.5 rounded-md bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0] adm-mob-ann-type-badge">بازخورد اختصاصی مدرس</span>`
+                                : ann.notificationType === 'assignment'
+                                ? `<span class="text-[10.5px] font-extrabold px-2 py-0.5 rounded-md bg-[#E2EFEA] text-[#1B5E5A] adm-mob-ann-type-badge">اعلان تکلیف جدید</span>`
+                                : ann.notificationType === 'resource'
+                                ? `<span class="text-[10.5px] font-extrabold px-2 py-0.5 rounded-md bg-[#F3E5D0] text-[#5A3A22] border border-[#DFC8A9] adm-mob-ann-type-badge">منبع آموزشی جدید</span>`
+                                : ''
+                            }
+                          </div>
                         </div>
                         <span class="text-[11px] text-[#6E5D4F] tabular-nums">${toPersianDigits(formatPersianDateTime(ann.createdAt))}</span>
                       </div>
@@ -714,12 +718,12 @@ function renderStudentAssignments($container: JQuery<HTMLElement>, state: Databa
 
   $container.html(`
     <div class="space-y-4">
-      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap">
-        <div>
+      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap adm-mob-form-header">
+        <div class="adm-mob-form-header-info">
           <h2 class="text-sm font-extrabold text-[#251B15] m-0">
             تکالیف من (${toPersianDigits(myAssignments.length)} تکلیف)
           </h2>
-          <p class="text-xs text-[#6E5D4F] mt-1 m-0">
+          <p class="text-xs text-[#6E5D4F] mt-1 m-0 adm-mob-single-line-ellipsis">
             برای مشاهده جزئیات، دانلود فایل راهنما و ارسال پاسخ، روی هر تکلیف کلیک کنید.
           </p>
         </div>
@@ -864,9 +868,9 @@ function renderStudentAssignmentDetailPage(
 
   $container.html(`
     <div class="space-y-4">
-      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap">
-        <div>
-          <div class="flex items-center gap-2 flex-wrap">
+      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap adm-mob-hw-detail-header">
+        <div class="adm-mob-hw-detail-info">
+          <div class="flex items-center gap-2 flex-wrap adm-mob-hw-detail-title-row">
             <h2 class="text-base font-black text-[#251B15] m-0">${toPersianDigits(hw.title)}</h2>
             <span class="text-[11px] font-extrabold px-2.5 py-0.5 rounded-lg ${
               lockInfo.isLocked
@@ -886,7 +890,7 @@ function renderStudentAssignmentDetailPage(
             مهلت تحویل: <strong class="${lockInfo.isDeadlineExpired ? 'text-[#E11D48]' : 'text-[#251B15]'}">${toPersianDigits(hw.dueDate)}</strong> · بارم: <strong class="text-[#1B5E5A]">${toPersianDigits(hw.maxScore)} نمره</strong>
           </p>
         </div>
-        <button type="button" class="btn-admin-action js-st-back-to-hw-list">
+        <button type="button" class="btn-admin-action js-st-back-to-hw-list adm-mob-full-back-btn">
           بازگشت به تکالیف من ←
         </button>
       </div>
@@ -897,15 +901,18 @@ function renderStudentAssignmentDetailPage(
           <div class="admin-surface-card space-y-3">
             <h3 class="text-sm font-extrabold text-[#251B15] m-0">شرح و موارد مورد نیاز تکلیف</h3>
             <p class="text-xs text-[#3E3027] m-0 leading-relaxed">${toPersianDigits(hw.description)}</p>
-            <div class="pt-3 border-t border-[#E6D8C5] flex items-center justify-between gap-2 flex-wrap">
-              <span class="text-xs text-[#6E5D4F]">فایل راهنمای مدرس: <strong class="text-[#5A3A22]">${toPersianDigits(hw.attachmentName)}</strong></span>
-              <button
-                type="button"
-                class="btn-admin-action !h-8 !text-xs js-st-download-hw-guide"
-                data-id="${hw.id}"
-              >
-                دانلود فایل راهنما
-              </button>
+            <div class="pt-3 border-t border-[#E6D8C5] flex items-center justify-between gap-2 flex-wrap adm-mob-file-box">
+              <span class="text-xs text-[#6E5D4F]">فایل راهنمای مدرس:</span>
+              <div class="flex items-center gap-2 adm-mob-file-action-line">
+                <strong class="text-xs text-[#5A3A22] truncate">${toPersianDigits(hw.attachmentName)}</strong>
+                <button
+                  type="button"
+                  class="btn-admin-action !h-8 !text-xs shrink-0 js-st-download-hw-guide"
+                  data-id="${hw.id}"
+                >
+                  دانلود فایل راهنما
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1092,9 +1099,10 @@ function renderStudentAssignmentDetailPage(
                   <div id="st-hw-upload-progress-box" class="hidden"></div>
                 </div>
 
-                <div class="flex items-center gap-2 pt-2">
+                <div class="flex items-center gap-2 pt-2 adm-mob-form-footer-actions">
                   <button type="submit" id="btn-st-submit-hw" class="btn-admin-primary !h-10 flex-1">
-                    ${existingSub ? 'بروزرسانی پاسخ ارسالی' : 'ثبت و ارسال نهایی تکلیف'}
+                    <span class="adm-desktop-only-inline">${existingSub ? 'بروزرسانی پاسخ ارسالی' : 'ثبت و ارسال نهایی تکلیف'}</span>
+                    <span class="adm-mobile-only-inline">${existingSub ? 'بروزرسانی پاسخ' : 'ثبت و ارسال'}</span>
                   </button>
                   <button type="button" class="btn-admin-action !h-10 js-st-back-to-hw-list">
                     انصراف
@@ -1159,11 +1167,11 @@ function renderStudentGrades($container: JQuery<HTMLElement>, state: DatabaseSta
 
       <!-- کارت‌های نمرات و عملکرد جلسات کلاسی -->
       <div>
-        <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center justify-between mb-3 st-mob-grades-sec-header">
           <h3 class="text-sm font-extrabold text-[#251B15] m-0">
             کارت‌های نمرات و عملکرد جلسات کلاس (${toPersianDigits(myEntries.length)} جلسه)
           </h3>
-          <span class="text-xs font-bold text-[#6E5D4F]">
+          <span class="text-xs font-bold text-[#6E5D4F] adm-mob-single-line-ellipsis">
             برای مشاهده جزئیات کامل هر جلسه روی دکمه «مشاهده جزئیات» کلیک کنید
           </span>
         </div>
@@ -1193,7 +1201,7 @@ function renderStudentGrades($container: JQuery<HTMLElement>, state: DatabaseSta
                         </div>
 
                         <div class="mt-4 pt-3 border-t border-[#E6D8C5] space-y-3">
-                          <div class="flex items-center justify-between gap-2 flex-wrap tabular-nums">
+                          <div class="flex items-center justify-between gap-2 flex-wrap tabular-nums st-mob-grade-card-stats">
                             <span class="inline-flex items-center gap-1.5 text-xs font-bold text-[#251B15]">
                               <span>نمره جلسه:</span>
                               ${
@@ -1203,7 +1211,7 @@ function renderStudentGrades($container: JQuery<HTMLElement>, state: DatabaseSta
                               }
                             </span>
 
-                            <div class="flex items-center gap-1.5">
+                            <div class="flex items-center gap-1.5 adm-mob-gb-posneg-row">
                               <span class="px-2.5 py-0.5 rounded-lg bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0] text-xs font-black">
                                 مثبت: +${toPersianDigits(entry.positiveCount || 0)}
                               </span>
@@ -1259,8 +1267,8 @@ function renderStudentResources($container: JQuery<HTMLElement>, state: Database
 
   $container.html(`
     <div class="space-y-4">
-      <div class="admin-surface-card flex flex-wrap items-center justify-between gap-3">
-        <div class="admin-segmented-bar flex-wrap">
+      <div class="admin-surface-card flex flex-wrap items-center justify-between gap-3 adm-mob-res-toolbar">
+        <div class="admin-segmented-bar flex-wrap st-mob-res-filters">
           <button
             type="button"
             class="admin-seg-btn js-st-res-filter ${studentResCategoryFilter === 'all' ? 'is-active' : ''}"
@@ -1294,7 +1302,7 @@ function renderStudentResources($container: JQuery<HTMLElement>, state: Database
         <input
           type="search"
           id="st-resource-search-input"
-          class="school-input !h-9 !w-56 text-xs"
+          class="school-input !h-9 w-full md:!w-56 text-xs"
           placeholder="جستجو در منابع آموزشی..."
           value="${toPersianDigits(studentResSearchQuery)}"
         />
@@ -1373,8 +1381,8 @@ function renderStudentResourceDetailPage(
 
   $container.html(`
     <div class="space-y-4">
-      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap">
-        <div>
+      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap adm-mob-res-detail-header">
+        <div class="adm-mob-res-detail-info">
           <span class="text-xs font-extrabold text-[#1B5E5A] bg-[#E2EFEA] px-2.5 py-1 rounded-lg">
             ${res.category}
           </span>
@@ -1382,7 +1390,7 @@ function renderStudentResourceDetailPage(
             ${toPersianDigits(res.title)}
           </h2>
         </div>
-        <button type="button" class="btn-admin-action js-st-back-to-res-list">
+        <button type="button" class="btn-admin-action js-st-back-to-res-list adm-mob-full-back-btn">
           بازگشت به منابع آموزشی ←
         </button>
       </div>
@@ -1393,7 +1401,7 @@ function renderStudentResourceDetailPage(
           <p class="text-xs text-[#3E3027] m-0 leading-relaxed">${toPersianDigits(res.description)}</p>
         </div>
 
-        <div class="p-4 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] flex items-center justify-between gap-3 flex-wrap">
+        <div class="p-4 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] flex items-center justify-between gap-3 flex-wrap st-mob-res-download-box">
           <div class="space-y-1 text-xs">
             <div>نام فایل / منبع: <strong class="text-[#5A3A22]">${toPersianDigits(res.urlOrFileName)}</strong></div>
             <div class="text-[#6E5D4F] tabular-nums">حجم: ${toPersianDigits(res.fileSize)} · تاریخ انتشار: ${toPersianDigits(res.createdAt)}</div>
@@ -1401,7 +1409,7 @@ function renderStudentResourceDetailPage(
 
           <button
             type="button"
-            class="btn-admin-primary js-st-download-resource"
+            class="btn-admin-primary js-st-download-resource st-mob-res-download-btn"
             data-id="${res.id}"
           >
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -1437,7 +1445,7 @@ function renderStudentAnnouncements($container: JQuery<HTMLElement>, state: Data
 
   $container.html(`
     <div class="space-y-4">
-      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap">
+      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap adm-mob-ann-toolbar">
         <div>
           <h2 class="text-sm font-extrabold text-[#251B15] m-0">
             اطلاعیه‌ها و اعلان‌های کلاس ${toPersianDigits(student.classCode || 'من')} (${toPersianDigits(list.length)})
@@ -1449,7 +1457,7 @@ function renderStudentAnnouncements($container: JQuery<HTMLElement>, state: Data
         <input
           type="search"
           id="st-announcement-search"
-          class="school-input !h-9 !w-56 text-xs"
+          class="school-input !h-9 w-full md:!w-56 text-xs"
           placeholder="جستجو در اطلاعیه‌ها..."
           value="${toPersianDigits(studentAnnSearchQuery)}"
         />
@@ -1472,43 +1480,45 @@ function renderStudentAnnouncements($container: JQuery<HTMLElement>, state: Data
 
                   return `
                     <div class="admin-surface-card ${readLog ? 'opacity-95' : 'border-[#5A3A22]'}">
-                      <div class="flex items-center justify-between gap-2 flex-wrap">
-                        <div class="flex items-center gap-2 flex-wrap">
+                      <div class="flex items-center justify-between gap-2 flex-wrap st-mob-ann-card-header">
+                        <div class="flex items-center gap-2 flex-wrap adm-mob-ann-main">
                           <span class="text-sm font-black text-[#251B15]">${toPersianDigits(ann.title)}</span>
-                          <span class="text-[11px] font-bold px-2 py-0.5 rounded-md ${
-                            ann.priority === 'فوری'
-                              ? 'bg-[#FFF1F2] text-[#E11D48]'
-                              : ann.priority === 'مهم'
-                              ? 'bg-[#FFFBEB] text-[#D97706]'
-                              : 'bg-[#ECFDF5] text-[#059669]'
-                          }">
-                            ${ann.priority}
-                          </span>
-                          ${
-                            ann.notificationType === 'feedback'
-                              ? `<span class="text-[11px] font-extrabold px-2 py-0.5 rounded-md bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0]">بازخورد مدرس</span>`
-                              : ann.notificationType === 'assignment'
-                              ? `<span class="text-[11px] font-extrabold px-2 py-0.5 rounded-md bg-[#E2EFEA] text-[#1B5E5A]">تکلیف جدید</span>`
-                              : ann.notificationType === 'resource'
-                              ? `<span class="text-[11px] font-extrabold px-2 py-0.5 rounded-md bg-[#F3E5D0] text-[#5A3A22] border border-[#DFC8A9]">منبع آموزشی جدید</span>`
-                              : ''
-                          }
-                          ${
-                            !readLog
-                              ? `<span class="text-[11px] font-extrabold px-2 py-0.5 rounded-md bg-[#FFFBEB] text-[#D97706]">جدید (خوانده نشده)</span>`
-                              : ''
-                          }
+                          <div class="flex items-center gap-1.5 flex-wrap adm-mob-ann-badges">
+                            <span class="text-[11px] font-bold px-2 py-0.5 rounded-md adm-mob-ann-priority-badge ${
+                              ann.priority === 'فوری'
+                                ? 'bg-[#FFF1F2] text-[#E11D48]'
+                                : ann.priority === 'مهم'
+                                ? 'bg-[#FFFBEB] text-[#D97706]'
+                                : 'bg-[#ECFDF5] text-[#059669]'
+                            }">
+                              ${ann.priority}
+                            </span>
+                            ${
+                              ann.notificationType === 'feedback'
+                                ? `<span class="text-[11px] font-extrabold px-2 py-0.5 rounded-md bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0] adm-mob-ann-type-badge">بازخورد مدرس</span>`
+                                : ann.notificationType === 'assignment'
+                                ? `<span class="text-[11px] font-extrabold px-2 py-0.5 rounded-md bg-[#E2EFEA] text-[#1B5E5A] adm-mob-ann-type-badge">تکلیف جدید</span>`
+                                : ann.notificationType === 'resource'
+                                ? `<span class="text-[11px] font-extrabold px-2 py-0.5 rounded-md bg-[#F3E5D0] text-[#5A3A22] border border-[#DFC8A9] adm-mob-ann-type-badge">منبع آموزشی جدید</span>`
+                                : ''
+                            }
+                            ${
+                              !readLog
+                                ? `<span class="text-[11px] font-extrabold px-2 py-0.5 rounded-md bg-[#FFFBEB] text-[#D97706] adm-mob-ann-readers-badge">جدید (خوانده نشده)</span>`
+                                : ''
+                            }
+                          </div>
                         </div>
                         <span class="text-xs text-[#6E5D4F] tabular-nums">${toPersianDigits(createdLabel)}</span>
                       </div>
                       <p class="text-xs text-[#3E3027] mt-2 m-0 leading-relaxed whitespace-pre-line">${toPersianDigits(ann.content)}</p>
 
-                      <div class="mt-3 pt-2.5 border-t border-[#E6D8C5] flex items-center justify-between gap-2 flex-wrap">
+                      <div class="mt-3 pt-2.5 border-t border-[#E6D8C5] flex items-center justify-between gap-2 flex-wrap adm-mob-ann-card-footer">
                         <span class="text-[11px] text-[#6E5D4F]">
                           مخاطب: <strong class="text-[#5A3A22]">${targetLabel}</strong>
                         </span>
 
-                        <div class="flex items-center gap-2 flex-wrap">
+                        <div class="flex items-center gap-2 flex-wrap st-mob-ann-actions">
                           ${
                             ann.assignmentId
                               ? `<button
@@ -1591,17 +1601,17 @@ function renderStudentTickets($container: JQuery<HTMLElement>, state: DatabaseSt
 
   $container.html(`
     <div class="space-y-4">
-      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap">
-        <div>
+      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap adm-mob-form-header">
+        <div class="adm-mob-form-header-info">
           <h2 class="text-sm font-extrabold text-[#251B15] m-0">
             تیکت‌ها و پشتیبانی آموزشی (${toPersianDigits(myTickets.length)} تیکت)
           </h2>
-          <p class="text-xs text-[#6E5D4F] mt-1 m-0">
+          <p class="text-xs text-[#6E5D4F] mt-1 m-0 adm-mob-single-line-ellipsis">
             سوالات درسی یا فایل‌های خود را از طریق تیکت برای مدرس ارسال نمایید.
           </p>
         </div>
 
-        <button type="button" id="btn-st-open-create-ticket" class="btn-admin-primary !h-9">
+        <button type="button" id="btn-st-open-create-ticket" class="btn-admin-primary !h-9 adm-mob-full-back-btn">
           + ایجاد تیکت جدید
         </button>
       </div>
@@ -1713,17 +1723,17 @@ function renderStudentTickets($container: JQuery<HTMLElement>, state: DatabaseSt
                       ></textarea>
                     </div>
                     <div id="st-ticket-reply-upload-progress" class="hidden"></div>
-                    <div class="flex items-center justify-between gap-2 flex-wrap">
-                      <div class="flex items-center gap-2">
-                        <label for="st-ticket-reply-file" class="btn-admin-action cursor-pointer">
+                    <div class="flex items-center justify-between gap-2 flex-wrap st-mob-ticket-reply-footer">
+                      <div class="flex items-center gap-2 st-mob-ticket-reply-attach">
+                        <label for="st-ticket-reply-file" class="btn-admin-action cursor-pointer shrink-0">
                           <span>افزودن فایل ضمیمه</span>
                         </label>
                         <input type="file" id="st-ticket-reply-file" class="hidden" />
-                        <span id="st-ticket-attached-name" class="text-xs font-bold text-[#1B5E5A]">
+                        <span id="st-ticket-attached-name" class="text-xs font-bold text-[#1B5E5A] truncate">
                           ${pendingStudentTicketFileName ? toPersianDigits(pendingStudentTicketFileName) : 'فایلی انتخاب نشده'}
                         </span>
                       </div>
-                      <button type="submit" id="btn-st-submit-reply-ticket" class="btn-admin-primary">ارسال پیام</button>
+                      <button type="submit" id="btn-st-submit-reply-ticket" class="btn-admin-primary st-mob-ticket-reply-btn">ارسال پیام</button>
                     </div>
                   </form>
                   `
@@ -1746,17 +1756,17 @@ function renderStudentCreateTicketPage(
 ): void {
   $container.html(`
     <div class="space-y-4">
-      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap">
-        <div>
+      <div class="admin-surface-card flex items-center justify-between gap-3 flex-wrap adm-mob-form-header">
+        <div class="adm-mob-form-header-info">
           <h2 class="text-base font-black text-[#251B15] m-0">
             صفحه ایجاد و ارسال تیکت جدید به مدرس
           </h2>
-          <p class="text-xs text-[#6E5D4F] mt-1 m-0">
+          <p class="text-xs text-[#6E5D4F] mt-1 m-0 adm-mob-single-line-ellipsis">
             سوال درسی، درخواست راهنمایی یا فایل تمرین خود را در این صفحه ثبت و ارسال کنید.
           </p>
         </div>
 
-        <button type="button" class="btn-admin-action js-st-back-to-tickets">
+        <button type="button" class="btn-admin-action js-st-back-to-tickets adm-mob-full-back-btn">
           بازگشت به لیست تیکت‌ها ←
         </button>
       </div>
@@ -1796,8 +1806,8 @@ function renderStudentCreateTicketPage(
           </div>
 
           <div class="p-3.5 rounded-xl bg-[#FDFBF7] border border-[#E5DBCB] space-y-2">
-            <div class="flex items-center justify-between gap-3 flex-wrap">
-              <div class="flex items-center gap-2.5">
+            <div class="flex items-center justify-between gap-3 flex-wrap st-mob-new-ticket-file-row">
+              <div class="flex items-center gap-2.5 flex-wrap">
                 <label for="st-new-ticket-file" class="btn-admin-action cursor-pointer">
                   <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
@@ -1821,12 +1831,14 @@ function renderStudentCreateTicketPage(
             <div id="st-new-ticket-upload-progress" class="hidden"></div>
           </div>
 
-          <div class="flex items-center justify-end gap-2.5 pt-2 border-t border-[#E6D8C5]">
+          <div class="flex items-center justify-end gap-2.5 pt-2 border-t border-[#E6D8C5] adm-mob-form-footer-actions">
             <button type="button" class="btn-admin-action !h-10 js-st-back-to-tickets">
-              انصراف و بازگشت
+              <span class="adm-desktop-only-inline">انصراف و بازگشت</span>
+              <span class="adm-mobile-only-inline">انصراف</span>
             </button>
             <button type="submit" id="btn-st-submit-new-ticket" class="btn-admin-primary !h-10">
-              ثبت و ارسال نهایی تیکت
+              <span class="adm-desktop-only-inline">ثبت و ارسال نهایی تیکت</span>
+              <span class="adm-mobile-only-inline">ثبت و ارسال</span>
             </button>
           </div>
         </form>
@@ -1842,8 +1854,9 @@ function renderStudentCreateTicketPage(
 function renderStudentProfile($container: JQuery<HTMLElement>, state: DatabaseState): void {
   const student = getActiveStudent(state);
 
+  const hasCustomStudentAvatar = Boolean(student.avatarUrl && !student.avatarRemoved);
   let avatarBoxHtml = '';
-  if (student.avatarUrl && !student.avatarRemoved) {
+  if (hasCustomStudentAvatar) {
     avatarBoxHtml = `<div class="student-avatar-lg has-custom-avatar" style="background-image: url('${student.avatarUrl}');" role="img" aria-label="تصویر پروفایل دانش‌آموز"></div>`;
   } else {
     avatarBoxHtml = `<div class="student-avatar-lg bg-[#EADCCA] flex items-center justify-center text-[#5A3A22]" style="background-image: none;" role="img" aria-label="آواتار پیش‌فرض دانش‌آموز">
@@ -1882,7 +1895,7 @@ function renderStudentProfile($container: JQuery<HTMLElement>, state: DatabaseSt
             </div>
           </div>
 
-          <div class="flex items-center gap-2 flex-wrap">
+          <div class="flex items-center gap-2 flex-wrap adm-mob-prof-avatar-actions">
             <label for="st-prof-avatar-upload" class="btn-admin-action cursor-pointer">
               <span>تغییر تصویر پروفایل</span>
             </label>
@@ -1891,7 +1904,7 @@ function renderStudentProfile($container: JQuery<HTMLElement>, state: DatabaseSt
             <button
               type="button"
               id="btn-st-delete-avatar"
-              class="btn-admin-danger !h-9 !px-3 text-xs"
+              class="btn-admin-danger !h-9 !px-3 text-xs ${hasCustomStudentAvatar ? '' : 'hidden'}"
             >
               حذف عکس پروفایل
             </button>
@@ -1958,7 +1971,7 @@ function renderStudentProfile($container: JQuery<HTMLElement>, state: DatabaseSt
             >${student.bio || ''}</textarea>
           </div>
 
-          <button type="submit" id="btn-st-save-profile" class="btn-admin-primary">ذخیره مشخصات پروفایل</button>
+          <button type="submit" id="btn-st-save-profile" class="btn-admin-primary adm-mob-prof-save-btn">ذخیره مشخصات پروفایل</button>
         </form>
       </div>
 
@@ -2148,6 +2161,19 @@ export function initStudentPanelEvents(): void {
     }
   });
 
+  $(document).on('click', '#btn-student-mobile-menu', function () {
+    const $sidebar = $('#student-sidebar');
+    const $backdrop = $('#student-mobile-sidebar-backdrop');
+    const willOpen = !$sidebar.hasClass('is-mobile-open');
+    $sidebar.toggleClass('is-mobile-open', willOpen);
+    $backdrop.toggleClass('is-open', willOpen);
+  });
+
+  $(document).on('click', '#student-mobile-sidebar-backdrop', function () {
+    $('#student-sidebar').removeClass('is-mobile-open');
+    $('#student-mobile-sidebar-backdrop').removeClass('is-open');
+  });
+
   $(document).on('click', '.student-nav-btn, .js-st-go-section', function () {
     const sec = $(this).data('section') as StudentSectionId;
     if (sec) {
@@ -2157,6 +2183,8 @@ export function initStudentPanelEvents(): void {
   });
 
   $('#btn-student-logout').on('click', () => {
+    $('#student-sidebar').removeClass('is-mobile-open');
+    $('#student-mobile-sidebar-backdrop').removeClass('is-open');
     setActiveUserRole('');
     setActiveStudentSessionId(0);
     $('#student-workspace-view').addClass('view-hidden');
@@ -2167,6 +2195,8 @@ export function initStudentPanelEvents(): void {
 
   // Open Assignment Detail Page in Student Panel
   $(document).on('click', '.js-st-open-hw-detail', function () {
+    $('#student-sidebar').removeClass('is-mobile-open');
+    $('#student-mobile-sidebar-backdrop').removeClass('is-open');
     activeStudentHwId = Number($(this).attr('data-id'));
     pendingStudentHwFileName = '';
     pendingStudentHwFileDataUrl = '';

@@ -1,3 +1,4 @@
+import bcrypt from 'bcryptjs';
 import { PoolConnection, RowDataPacket } from 'mysql2/promise';
 import { pool } from './db';
 
@@ -600,6 +601,12 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    name: '009_seed_test_admin_and_student',
+    up: async (conn: PoolConnection) => {
+      await ensureTestAccountsSeeded(conn, true);
+    },
+  },
 ];
 
 export const REQUIRED_DEFAULT_CLASS_CODES = ['901', '902', '903'] as const;
@@ -775,6 +782,9 @@ export async function runMigrations(): Promise<{
       );
     }
 
+    // Ensure the requested test admin and test student accounts exist in MySQL
+    await ensureTestAccountsSeeded(conn, false);
+
     return {
       applied: appliedNow,
       totalExecuted: executedSet.size + appliedNow.length,
@@ -784,4 +794,124 @@ export async function runMigrations(): Promise<{
     conn.release();
   }
 }
+
+/**
+ * Ensures the test Administrator account and approved test Student account exist in MySQL.
+ */
+export async function ensureTestAccountsSeeded(
+  existingConn?: PoolConnection,
+  resetTestPasswords: boolean = false
+): Promise<void> {
+  const conn = existingConn || (await pool.getConnection());
+  try {
+    const adminPhone = (process.env.ADMIN_PHONE || '09360302652').trim();
+    const adminPassword = process.env.ADMIN_PASSWORD || '123456';
+    const adminFirstName = (process.env.ADMIN_FIRST_NAME || 'روزبه').trim();
+    const adminLastName = (process.env.ADMIN_LAST_NAME || 'توکلی').trim();
+    const adminEmail = (process.env.ADMIN_EMAIL || 'a@gmail.com').trim();
+    const adminRoleTitle = (process.env.ADMIN_ROLE_TITLE || 'مدیر').trim();
+
+    const [existingAdmin] = await conn.query<RowDataPacket[]>(
+      'SELECT `id`, `password_hash` FROM `admins` WHERE `phone` = ? LIMIT 1',
+      [adminPhone]
+    );
+    if (existingAdmin.length === 0) {
+      const adminHash = await bcrypt.hash(adminPassword, 10);
+      await conn.query(
+        `INSERT INTO \`admins\` (\`first_name\`, \`last_name\`, \`phone\`, \`email\`, \`role_title\`, \`bio\`, \`password_hash\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          adminFirstName,
+          adminLastName,
+          adminPhone,
+          adminEmail,
+          adminRoleTitle,
+          'مدرس و مدیر سامانه آموزشی اسکول میت',
+          adminHash,
+        ]
+      );
+      console.log(
+        `[ScoolMeet Seed] Created test admin account: ${adminFirstName} ${adminLastName} (${adminPhone})`
+      );
+    } else if (resetTestPasswords || !existingAdmin[0].password_hash) {
+      const adminHash = await bcrypt.hash(adminPassword, 10);
+      await conn.query(
+        `UPDATE \`admins\` SET \`first_name\` = ?, \`last_name\` = ?, \`email\` = ?, \`role_title\` = ?, \`password_hash\` = ? WHERE \`id\` = ?`,
+        [
+          adminFirstName,
+          adminLastName,
+          adminEmail,
+          adminRoleTitle,
+          adminHash,
+          existingAdmin[0].id,
+        ]
+      );
+    }
+
+    const testStudents = [
+      {
+        phone: (process.env.TEST_STUDENT_PHONE || '09121234567').trim(),
+        password: process.env.TEST_STUDENT_PASSWORD || '123456',
+        firstName: (process.env.TEST_STUDENT_FIRST_NAME || 'امیرحسین').trim(),
+        lastName: (process.env.TEST_STUDENT_LAST_NAME || 'رضایی').trim(),
+        email: (process.env.TEST_STUDENT_EMAIL || 'student@scoolmeet.ir').trim(),
+        classCode: (process.env.TEST_STUDENT_CLASS || '901').trim(),
+      },
+      {
+        phone: '09123456789',
+        password: '123456',
+        firstName: 'علی',
+        lastName: 'محمدی',
+        email: 'ali@scoolmeet.ir',
+        classCode: '901',
+      },
+    ];
+
+    for (const ts of testStudents) {
+      const [existingStudent] = await conn.query<RowDataPacket[]>(
+        'SELECT `id`, `status`, `password_hash` FROM `students` WHERE `phone` = ? LIMIT 1',
+        [ts.phone]
+      );
+      if (existingStudent.length === 0) {
+        const studentHash = await bcrypt.hash(ts.password, 10);
+        await conn.query(
+          `INSERT INTO \`students\` (\`first_name\`, \`last_name\`, \`phone\`, \`email\`, \`class_code\`, \`status\`, \`notes\`, \`bio\`, \`password_hash\`)
+           VALUES (?, ?, ?, ?, ?, 'approved', ?, ?, ?)`,
+          [
+            ts.firstName,
+            ts.lastName,
+            ts.phone,
+            ts.email,
+            ts.classCode,
+            'حساب دانش‌آموز تست (تأیید شده)',
+            'دانش‌آموز کلاس برنامه‌نویسی و طراحی وب',
+            studentHash,
+          ]
+        );
+        console.log(
+          `[ScoolMeet Seed] Created approved test student account: ${ts.firstName} ${ts.lastName} (${ts.phone}, Class ${ts.classCode})`
+        );
+      } else {
+        if (resetTestPasswords || !existingStudent[0].password_hash) {
+          const studentHash = await bcrypt.hash(ts.password, 10);
+          await conn.query(
+            "UPDATE `students` SET `status` = 'approved', `class_code` = ?, `password_hash` = ? WHERE `id` = ?",
+            [ts.classCode, studentHash, existingStudent[0].id]
+          );
+        } else if (String(existingStudent[0].status) !== 'approved') {
+          await conn.query(
+            "UPDATE `students` SET `status` = 'approved', `class_code` = ? WHERE `id` = ?",
+            [ts.classCode, existingStudent[0].id]
+          );
+        }
+      }
+    }
+  } finally {
+    if (!existingConn) {
+      conn.release();
+    }
+  }
+}
+
+
 

@@ -138,6 +138,8 @@ function createEmptyState(): DatabaseState {
       requireAdminApproval: true,
       maxUploadSizeMb: 15,
       supportPhone: '',
+      projectLogoUrl: '',
+      loginCoverImageUrl: '',
     },
   };
 }

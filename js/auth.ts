@@ -3,6 +3,7 @@ import {
   initAdminPanelEvents,
   navigateAdminSection,
   renderActiveSection,
+  syncProjectBranding,
 } from './admin';
 import { loginStudentApi, registerStudentApi } from './api';
 import {
@@ -235,6 +236,7 @@ export function applyRouteState(updateHistory = false): void {
   $('#admin-workspace-view').addClass('view-hidden');
   $('#student-workspace-view').addClass('view-hidden');
   $('#public-auth-view').removeClass('view-hidden');
+  syncProjectBranding(loadDbState());
   switchPublicTab(resolved.tab || 'login', updateHistory);
 }
 
@@ -244,8 +246,9 @@ export function initScoolMeetApp(): void {
   if (isAppInitialized) return;
   isAppInitialized = true;
 
-  onDbStateSynced(() => {
+  onDbStateSynced((state) => {
     syncRegistrationClassOptions();
+    syncProjectBranding(state);
   });
 
   // Tab buttons

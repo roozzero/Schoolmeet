@@ -24,6 +24,30 @@
   flex-shrink: 0;
 }
 
+.brand-school-icon.has-custom-logo {
+  background-size: cover !important;
+  background-position: center !important;
+}
+
+.settings-login-cover-preview {
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  background-color: #EADCCA;
+  background-image: url('/assets/aistudio/image_af6b658b.png');
+  background-size: 280%;
+  background-position: 24% 38%;
+  background-repeat: no-repeat;
+  border: 1.5px solid #D9CBB8;
+  box-shadow: 0 6px 16px -4px rgba(90, 58, 34, 0.16);
+  flex-shrink: 0;
+}
+
+.settings-login-cover-preview.has-custom-cover {
+  background-size: cover !important;
+  background-position: center !important;
+}
+
 /* Segmented Mode Switcher (Login / Student Registration) */
 .mode-tabs-bar {
   display: grid;

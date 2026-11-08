@@ -8,6 +8,7 @@ import { getAssignmentLockState } from '../js/validation';
 import { getDbInfo, pool, testDatabaseConnection } from './db';
 import {
   ensureDefaultClassesSeeded,
+  ensureTestAccountsSeeded,
   REQUIRED_DEFAULT_CLASS_CODES,
   runMigrations,
 } from './migrations';
@@ -666,6 +667,7 @@ app.get('/api/state', async (req: Request, res: Response) => {
     }
 
     await ensureDefaultClassesSeeded();
+    await ensureTestAccountsSeeded();
 
     const [adminRows] = await pool.query<RowDataPacket[]>(
       'SELECT * FROM `admins` ORDER BY `id` ASC LIMIT 1'
@@ -990,6 +992,8 @@ app.get('/api/state', async (req: Request, res: Response) => {
           : true,
       maxUploadSizeMb: Number(settingsMap.maxUploadSizeMb) || 15,
       supportPhone: settingsMap.supportPhone || admin.phone || '',
+      projectLogoUrl: settingsMap.projectLogoUrl || '',
+      loginCoverImageUrl: settingsMap.loginCoverImageUrl || '',
     };
 
     // If requested by an approved student, strictly scope the returned data to that student
@@ -1885,6 +1889,8 @@ app.post('/api/state', async (req: Request, res: Response) => {
         ['requireAdminApproval', String(Boolean(s.requireAdminApproval))],
         ['maxUploadSizeMb', String(Number(s.maxUploadSizeMb) || 15)],
         ['supportPhone', normalizeIranianPhoneServer(s.supportPhone || '')],
+        ['projectLogoUrl', String(s.projectLogoUrl || '')],
+        ['loginCoverImageUrl', String(s.loginCoverImageUrl || '')],
       ];
 
       for (const [key, val] of entries) {
@@ -1943,6 +1949,8 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
     }
 
     const phone = normalizeIranianPhoneServer(rawPhone);
+
+    await ensureTestAccountsSeeded();
 
     // 1. Check Admins table first
     const [adminRows] = await pool.query<RowDataPacket[]>(

@@ -202,6 +202,8 @@ export interface SystemSettings {
   requireAdminApproval: boolean;
   maxUploadSizeMb: number;
   supportPhone: string;
+  projectLogoUrl?: string;
+  loginCoverImageUrl?: string;
 }
 
 export interface ActivityLogItem {

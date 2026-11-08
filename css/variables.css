@@ -69,3 +69,42 @@ div {
   display: none !important;
 }
 
+/* ==========================================================================
+   اسکرول‌بار سفارشی و زیبای پروژه هماهنگ با پالت رنگی اسکول میت
+   ========================================================================== */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #B4987C rgba(237, 232, 214, 0.55);
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: rgba(237, 232, 214, 0.6);
+  border-radius: 999px;
+  margin: 4px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #C2A88D 0%, #8E6B4E 100%);
+  border-radius: 999px;
+  border: 2px solid #FAF5EC;
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.35);
+  transition: background 0.2s ease;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #9C785A 0%, #5A3A22 100%);
+  border-color: #F3ECE0;
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background: #462C19;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
