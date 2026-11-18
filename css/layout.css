@@ -97,29 +97,31 @@
 .collage-student-tile {
   width: 182px;
   height: 180px;
-  background-image: url('/assets/aistudio/image_af6b658b.png');
+  background-color: #EADCCA;
+  border: 1px solid #DFD0BC;
   background-repeat: no-repeat;
-  background-size: 1381.8px 868px;
+  background-size: contain;
+  background-position: center;
   box-shadow: 0 12px 26px -10px rgba(37, 27, 21, 0.14);
 }
 
 .collage-student-tile-tl {
-  background-position: -126px -149.8px;
+  background-image: url('/assets/aistudio/001_clean.png');
   border-radius: 999px 6px 6px 999px;
 }
 
 .collage-student-tile-tr {
-  background-position: -330.4px -149.8px;
+  background-image: url('/assets/aistudio/002_clean.png');
   border-radius: 20px;
 }
 
 .collage-student-tile-bl {
-  background-position: -126px -352.8px;
+  background-image: url('/assets/aistudio/004_clean.png');
   border-radius: 20px;
 }
 
 .collage-student-tile-br {
-  background-position: -330.4px -352.8px;
+  background-image: url('/assets/aistudio/003_clean.png');
   border-radius: 6px 999px 999px 6px;
 }
 

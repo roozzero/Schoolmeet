@@ -11,21 +11,21 @@
 }
 
 .brand-school-icon {
-  width: 48px;
-  height: 48px;
-  border-radius: 14px;
-  background-color: #EADCCA;
-  background-image: url('/assets/aistudio/image_af6b658b.png');
-  background-size: 270%;
-  background-position: 86% 18%;
+  width: 56px;
+  height: 56px;
+  border-radius: 0;
+  background-color: transparent;
+  background-image: url('/assets/aistudio/graduation_S_true_transparent_9c7b89f5.png');
+  background-size: contain;
+  background-position: center;
   background-repeat: no-repeat;
-  border: 1.5px solid #D9CBB8;
-  box-shadow: 0 6px 16px -4px rgba(90, 58, 34, 0.16);
+  border: none;
+  box-shadow: none;
   flex-shrink: 0;
 }
 
 .brand-school-icon.has-custom-logo {
-  background-size: cover !important;
+  background-size: contain !important;
   background-position: center !important;
 }
 
@@ -34,9 +34,9 @@
   height: 56px;
   border-radius: 16px;
   background-color: #EADCCA;
-  background-image: url('/assets/aistudio/image_af6b658b.png');
-  background-size: 280%;
-  background-position: 24% 38%;
+  background-image: url('/assets/aistudio/001_clean.png');
+  background-size: contain;
+  background-position: center;
   background-repeat: no-repeat;
   border: 1.5px solid #D9CBB8;
   box-shadow: 0 6px 16px -4px rgba(90, 58, 34, 0.16);
